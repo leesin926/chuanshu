@@ -1,0 +1,45 @@
+﻿SOFTWARE LICENSE AND DISCLAIMER
+
+IMPORTANT: Read these terms in full before using this software. Choosing "I accept"
+means you agree to every term below; choosing "I do not accept" aborts the
+installation without changing anything on your system.
+
+1. SCOPE OF LICENSE
+This software is provided "as is". You are granted a free, non-exclusive,
+non-transferable, sublicence-free right to use it on your own computer.
+Without the developer's written consent you may not copy, modify, reverse
+engineer, redistribute, or sell this software or any part of it.
+
+2. NO WARRANTY
+This software is not professional advice of any kind (including legal, financial
+or medical). To the extent permitted by law, the developer provides no warranties
+of any kind, whether express or implied, including implied warranties of
+merchantability, fitness for a particular purpose, non-infringement, and
+uninterrupted operation.
+
+3. RISK AND DATA BACKUP
+Back up any data that could be affected before you start. The software creates a
+settings file and run logs under your user directory and may read or write files
+you explicitly select. The developer is not liable for any data loss, business
+interruption, device damage, or any other direct or indirect loss arising from
+use of, or inability to use, this software.
+
+4. THIRD-PARTY COMPONENTS
+This software is built with PySide6 (Qt for Python) and ships the Qt libraries,
+licensed under LGPLv3/GPL. The build tools, the installer, and every dependency
+remain subject to their own licence terms.
+
+5. PRIVACY AND DATA
+The software collects no usage data and sends no telemetry. Logs are written only
+to your machine at:
+    %APPDATA%\ChuanShu\ChuanShu\logs\app.log
+Deleting that folder erases every local record.
+
+6. CHANGES AND TERMINATION
+The developer may revise these terms in later releases; the text shown on this
+page at install time is the one that applies. You may end your use at any time by
+uninstalling and removing the user data folder.
+
+------------------------------------------------------------
+This is template text shipped with the project skeleton. Adapt it to your actual
+product and jurisdiction before release, and seek professional advice if needed.

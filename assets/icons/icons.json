@@ -1,0 +1,28 @@
+{
+  "color_placeholder": "currentColor",
+  "pixmap_sizes": [16, 20, 24, 32],
+  "default_icon_size": 30,
+  "window_icon": "logo",
+  "glyphs": {
+    "close": "close.svg",
+    "globe": "globe.svg",
+    "logo": "logo.svg",
+    "maximize": "maximize.svg",
+    "minimize": "minimize.svg",
+    "moon": "moon.svg",
+    "restore": "restore.svg",
+    "sun": "sun.svg"
+  },
+  "buttons": {
+    "app": "logo",
+    "lang": "globe",
+    "theme": { "default": "sun", "dark": "moon" },
+    "min": "minimize",
+    "max": { "default": "maximize", "maximized": "restore" },
+    "close": "close",
+    "tray": "logo"
+  },
+  "icon_sizes": {
+    "app": 20
+  }
+}

@@ -1,0 +1,174 @@
+# Translations template for ChuanShu.
+# Copyright (C) 2026 ORGANIZATION
+# This file is distributed under the same license as the ChuanShu project.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: ChuanShu 0.1.0\n"
+"Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
+"POT-Creation-Date: 2026-10-19 14:34+0800\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: app/crash.py:43
+msgid "程序遇到未处理的错误。操作可以继续，但请查看日志。"
+msgstr ""
+
+#: app/crash.py:44
+msgid "日志文件"
+msgstr ""
+
+#: app/crash.py:59
+msgid "未处理的异常"
+msgstr ""
+
+#: app/crash.py:67
+msgid "后台线程异常"
+msgstr ""
+
+#: app/crash.py:95
+msgid "界面处理异常"
+msgstr ""
+
+#: app/ui/main_window.py:179
+msgid "跟随系统"
+msgstr ""
+
+#: app/ui/main_window.py:179
+msgid "浅色"
+msgstr ""
+
+#: app/ui/main_window.py:179
+msgid "深色"
+msgstr ""
+
+#: app/ui/main_window.py:195 app/ui/main_window.py:320
+#, python-brace-format
+msgid "外观：{name}"
+msgstr ""
+
+#: app/ui/main_window.py:268
+#, python-brace-format
+msgid "关闭 {app}"
+msgstr ""
+
+#: app/ui/main_window.py:269
+msgid "窗口关闭后，希望退出程序还是留在托盘后台运行？"
+msgstr ""
+
+#: app/ui/main_window.py:273
+msgid "最小化到托盘"
+msgstr ""
+
+#: app/ui/main_window.py:275
+msgid "退出程序"
+msgstr ""
+
+#: app/ui/main_window.py:278
+msgid "取消"
+msgstr ""
+
+#: app/ui/main_window.py:280
+msgid "记住我的选择"
+msgstr ""
+
+#: app/ui/main_window.py:318 app/ui/title_bar.py:82
+msgid "应用菜单"
+msgstr ""
+
+#: app/ui/main_window.py:319 app/ui/title_bar.py:83
+msgid "语言"
+msgstr ""
+
+#: app/ui/main_window.py:321 app/ui/title_bar.py:86
+msgid "最小化"
+msgstr ""
+
+#: app/ui/main_window.py:322 app/ui/title_bar.py:88
+msgid "关闭"
+msgstr ""
+
+#: app/ui/main_window.py:326
+msgid "隐藏到托盘"
+msgstr ""
+
+#: app/ui/main_window.py:327 app/ui/tray.py:31 app/ui/tray.py:62
+#, python-brace-format
+msgid "退出 {app}"
+msgstr ""
+
+#: app/ui/main_window.py:328 app/ui/main_window.py:360
+#, python-brace-format
+msgid "关于 {app}"
+msgstr ""
+
+#: app/ui/main_window.py:332
+msgid "桌面工具骨架"
+msgstr ""
+
+#: app/ui/main_window.py:334
+msgid ""
+"这是一个包含国际化、日志、异常捕获与打包流程的 PySide6 起点工程。\n"
+"标题栏的语言图标切界面语言、外观图标切深浅主题，最左侧的图标是应用菜单；选择都会持久化到用户目录。"
+msgstr ""
+
+#: app/ui/main_window.py:340
+#, python-brace-format
+msgid "当前语言：{lang}    日志：{path}"
+msgstr ""
+
+#: app/ui/main_window.py:351
+#, python-brace-format
+msgid "已点击 {n} 次"
+msgid_plural "已点击 {n} 次"
+msgstr[0] ""
+msgstr[1] ""
+
+#: app/ui/main_window.py:361
+msgid "Qt"
+msgstr ""
+
+#: app/ui/title_bar.py:84
+msgid "外观"
+msgstr ""
+
+#: app/ui/title_bar.py:87 app/ui/title_bar.py:147
+msgid "最大化"
+msgstr ""
+
+#: app/ui/title_bar.py:147
+msgid "还原"
+msgstr ""
+
+#: app/ui/tray.py:28 app/ui/tray.py:60
+msgid "打开主界面"
+msgstr ""
+
+#: app/ui/tray.py:29 app/ui/tray.py:61
+msgid "开机自动启动"
+msgstr ""
+
+#: app/ui/tray.py:52
+msgid "无法开启开机自动启动"
+msgstr ""
+
+#: app/ui/tray.py:53
+#, python-brace-format
+msgid ""
+"仅打包后的 Windows 版本可以注册开机自启。\n"
+"当前命令：{cmd}"
+msgstr ""
+
+#: app/ui/tray.py:70
+msgid ""
+"已最小化到托盘，仍在后台运行。\n"
+"双击托盘图标可重新打开。"
+msgstr ""
+

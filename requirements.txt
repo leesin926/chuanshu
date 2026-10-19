@@ -1,0 +1,4 @@
+# Runtime dependency. Use Essentials instead of the PySide6 metapackage: the metapackage
+# also pulls WebEngine + Pdf (hundreds of MB) that a small tool never imports.
+# Add PySide6-Addons only if you really need QtMultimedia/QtCharts/etc.
+PySide6-Essentials>=6.8

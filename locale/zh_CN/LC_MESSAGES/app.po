@@ -1,0 +1,180 @@
+# Simplified Chinese catalogue. Msgids are already Chinese, so each msgstr
+# mirrors it.
+msgid ""
+msgstr ""
+"Project-Id-Version: WoWo3 0.1.0\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-10-19 14:34+0800\n"
+"PO-Revision-Date: 2026-10-19 00:00+0800\n"
+"Last-Translator: \n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: app/crash.py:43
+msgid "程序遇到未处理的错误。操作可以继续，但请查看日志。"
+msgstr "程序遇到未处理的错误。操作可以继续，但请查看日志。"
+
+#: app/crash.py:44
+msgid "日志文件"
+msgstr "日志文件"
+
+#: app/crash.py:59
+msgid "未处理的异常"
+msgstr "未处理的异常"
+
+#: app/crash.py:67
+msgid "后台线程异常"
+msgstr "后台线程异常"
+
+#: app/crash.py:95
+msgid "界面处理异常"
+msgstr "界面处理异常"
+
+#: app/ui/main_window.py:179
+msgid "跟随系统"
+msgstr "跟随系统"
+
+#: app/ui/main_window.py:179
+msgid "浅色"
+msgstr "浅色"
+
+#: app/ui/main_window.py:179
+msgid "深色"
+msgstr "深色"
+
+#: app/ui/main_window.py:195 app/ui/main_window.py:320
+#, python-brace-format
+msgid "外观：{name}"
+msgstr "外观：{name}"
+
+#: app/ui/main_window.py:268
+#, python-brace-format
+msgid "关闭 {app}"
+msgstr "关闭 {app}"
+
+#: app/ui/main_window.py:269
+msgid "窗口关闭后，希望退出程序还是留在托盘后台运行？"
+msgstr "窗口关闭后，希望退出程序还是留在托盘后台运行？"
+
+#: app/ui/main_window.py:273
+msgid "最小化到托盘"
+msgstr "最小化到托盘"
+
+#: app/ui/main_window.py:275
+msgid "退出程序"
+msgstr "退出程序"
+
+#: app/ui/main_window.py:278
+msgid "取消"
+msgstr "取消"
+
+#: app/ui/main_window.py:280
+msgid "记住我的选择"
+msgstr "记住我的选择"
+
+#: app/ui/main_window.py:318 app/ui/title_bar.py:82
+msgid "应用菜单"
+msgstr "应用菜单"
+
+#: app/ui/main_window.py:319 app/ui/title_bar.py:83
+msgid "语言"
+msgstr "语言"
+
+#: app/ui/main_window.py:321 app/ui/title_bar.py:86
+msgid "最小化"
+msgstr "最小化"
+
+#: app/ui/main_window.py:322 app/ui/title_bar.py:88
+msgid "关闭"
+msgstr "关闭"
+
+#: app/ui/main_window.py:326
+msgid "隐藏到托盘"
+msgstr "隐藏到托盘"
+
+#: app/ui/main_window.py:327 app/ui/tray.py:31 app/ui/tray.py:62
+#, python-brace-format
+msgid "退出 {app}"
+msgstr "退出 {app}"
+
+#: app/ui/main_window.py:328 app/ui/main_window.py:360
+#, python-brace-format
+msgid "关于 {app}"
+msgstr "关于 {app}"
+
+#: app/ui/main_window.py:332
+msgid "桌面工具骨架"
+msgstr "桌面工具骨架"
+
+#: app/ui/main_window.py:334
+msgid ""
+"这是一个包含国际化、日志、异常捕获与打包流程的 PySide6 起点工程。\n"
+"标题栏的语言图标切界面语言、外观图标切深浅主题，最左侧的图标是应用菜单；选择都会持久化到用户目录。"
+msgstr ""
+"这是一个包含国际化、日志、异常捕获与打包流程的 PySide6 起点工程。\n"
+"标题栏的语言图标切界面语言、外观图标切深浅主题，最左侧的图标是应用菜单；选择都会持久化到用户目录。"
+
+#: app/ui/main_window.py:340
+#, python-brace-format
+msgid "当前语言：{lang}    日志：{path}"
+msgstr "当前语言：{lang}    日志：{path}"
+
+#: app/ui/main_window.py:351
+#, python-brace-format
+msgid "已点击 {n} 次"
+msgid_plural "已点击 {n} 次"
+msgstr[0] "已点击 {n} 次"
+
+#: app/ui/main_window.py:361
+msgid "Qt"
+msgstr "Qt"
+
+#: app/ui/title_bar.py:84
+msgid "外观"
+msgstr "外观"
+
+#: app/ui/title_bar.py:87 app/ui/title_bar.py:147
+msgid "最大化"
+msgstr "最大化"
+
+#: app/ui/title_bar.py:147
+msgid "还原"
+msgstr "还原"
+
+#: app/ui/tray.py:28 app/ui/tray.py:60
+msgid "打开主界面"
+msgstr "打开主界面"
+
+#: app/ui/tray.py:29 app/ui/tray.py:61
+msgid "开机自动启动"
+msgstr "开机自动启动"
+
+#: app/ui/tray.py:52
+msgid "无法开启开机自动启动"
+msgstr "无法开启开机自动启动"
+
+#: app/ui/tray.py:53
+#, python-brace-format
+msgid ""
+"仅打包后的 Windows 版本可以注册开机自启。\n"
+"当前命令：{cmd}"
+msgstr ""
+"仅打包后的 Windows 版本可以注册开机自启。\n"
+"当前命令：{cmd}"
+
+#: app/ui/tray.py:70
+msgid ""
+"已最小化到托盘，仍在后台运行。\n"
+"双击托盘图标可重新打开。"
+msgstr ""
+"已最小化到托盘，仍在后台运行。\n"
+"双击托盘图标可重新打开。"
+
+#~ msgid "菜单"
+#~ msgstr "菜单"
+

@@ -1,0 +1,10 @@
+# Build residue
+/build/
+/dist/
+/__pycache__/
+/**/__pycache__/
+*.pyc
+.probe/
+# Per-machine tool config
+/.idea/
+/.qoder/
