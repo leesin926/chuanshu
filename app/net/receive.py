@@ -383,6 +383,9 @@ class ReceiveService:
             "compatible_versions": list(self.proto.compatible_versions),
             "features": ["resume", "chunk-hash", "directory"],
             "port": self.port,
+            # Discovery advertises a prefix only; the full digest here is what lets a
+            # candidate become a peer you can pin.
+            "fingerprint": self.identity.fingerprint,
         }
 
     # ------------------------------------------------------------- transfers

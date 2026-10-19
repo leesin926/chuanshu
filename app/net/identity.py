@@ -169,6 +169,13 @@ def load_or_create(directory: Path | None = None) -> Identity:
     return Identity(directory, peer_id, key, cert)
 
 
+def _peer_fingerprint(conn: ssl.SSLSocket) -> str:
+    der = conn.getpeercert(binary_form=True)
+    if der is None:
+        raise ssl.SSLError("peer sent no certificate")
+    return fingerprint_of(x509.load_der_x509_certificate(der))
+
+
 def verify_pinned(conn: ssl.SSLSocket, expected_fingerprint: str) -> None:
     """Accept a peer only if its SPKI digest is the one the QR/pin list promised.
 
@@ -178,11 +185,21 @@ def verify_pinned(conn: ssl.SSLSocket, expected_fingerprint: str) -> None:
     with the same key keeps the same fingerprint, which is what makes reinstalling a
     peer non-breaking.
     """
-    der = conn.getpeercert(binary_form=True)
-    if der is None:
-        raise ssl.SSLError("peer sent no certificate")
-    if fingerprint_of(x509.load_der_x509_certificate(der)) != expected_fingerprint:
+    if _peer_fingerprint(conn) != expected_fingerprint:
         raise ssl.SSLError("SPKI fingerprint does not match the pinned value")
+
+
+def read_fingerprint(conn: ssl.SSLSocket, advertised_prefix: str = "") -> str:
+    """Fingerprint of a peer we have not paired with yet, as advertised by discovery.
+
+    A prefix is all mDNS and the UDP announce carry (spec §2), so this can only reject a
+    wrong-address collision - it is not authentication. Real trust arrives with the
+    4-digit code that both screens show at the same time (spec §3).
+    """
+    digest = _peer_fingerprint(conn)
+    if advertised_prefix and not digest.startswith(advertised_prefix):
+        raise ssl.SSLError("certificate does not match the discovered fingerprint prefix")
+    return digest
 
 
 def client_context() -> ssl.SSLContext:

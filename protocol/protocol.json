@@ -15,6 +15,15 @@
     "discovery_udp": 43721,
     "note": "transport_default may be taken; a peer then binds an ephemeral port and advertises the real one through mDNS TXT/UDP announce/QR. discovery_udp must stay fixed because broadcast has no other way to be found."
   },
+  "discovery": {
+    "channels": ["mdns", "udp", "qr"],
+    "mdns_txt_fields": ["ver", "name", "fp", "ts"],
+    "udp_payload_fields": ["peer_id", "port", "v", "name", "fp", "ts"],
+    "announce_interval_s": 3,
+    "peer_expiry_s": 15,
+    "fingerprint_prefix_chars": 16,
+    "note": "Broadcast carries a fingerprint PREFIX only; the full SPKI digest comes from GET /v1/hello and must match that prefix before pairing. Presence is not trust."
+  },
   "transport": {
     "chunk_size": 4194304,
     "max_parallel_chunks": 2,

@@ -42,12 +42,15 @@ app/net/
   identity.py        Ed25519 自签证书、SPKI 指纹固定、已配对设备表（identity/ 目录）
   receive.py         接收端 HTTPS 服务：配对、offer、分块落盘、路径清洗、崩溃后认领未完成 offer
   send.py            发送端：plan→offer→分块→finalize，token 失效时用已信任的 key 静默重配对
+  discovery.py       局域网发现：mDNS 注册/浏览 + UDP 广播 43721 + 扫码兜底；广播只带指纹前缀，
+                     完整摘要必须经 verify() 从 /v1/hello 取回；每条通道可用与否单独上报
   errors.py          错误码的中文 msgid 字面量（给 pybabel 抽取用），与 protocol.json 必须一致
 protocol/
   protocol.json      机器可读契约：端口、chunk_size、端点清单、错误码表、限制值
   spec.md            语义与理由：为什么这么定，两端必须一致实现什么
 scripts/
-  protocol_selftest.py  M0 验收：配对→多文件含目录→杀进程重启→续传→finalize，40 条断言
+  protocol_selftest.py  M0 验收：配对→多文件含目录→杀进程重启→续传→finalize→两条发现通道，
+                        51 条断言（报告写在 .probe/protocol_report.txt）
   receiver_host.py      给自测用的独立接收进程
 assets/icons/
   icons.json         图标配置：`window_icon` 指定全应用 logo，`glyphs` 字形表，`buttons` 角色→字形

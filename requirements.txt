@@ -5,5 +5,7 @@ PySide6-Essentials>=6.8
 
 # Transport core: Ed25519 self-signed certs + SPKI pinning (app/net/identity.py).
 cryptography>=42
-# LAN discovery via mDNS (app/net/discovery.py). Ships as pure Python + no native deps.
-zeroconf>=0.132
+# LAN discovery via mDNS (app/net/discovery.py). Floor is the version this was verified
+# against: a typed ServiceListener must go through the listener= keyword, because the
+# positional third argument is the legacy list-of-callables form.
+zeroconf>=0.151

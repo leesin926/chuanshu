@@ -258,6 +258,86 @@ def phase_restart(proto: protocol_spec.Protocol, workspace: Path) -> None:
             stop_host(handle2)
 
 
+def phase_discovery(proto: protocol_spec.Protocol, workspace: Path) -> None:
+    """Two symmetric peers finding each other, then promoting a prefix to an anchor."""
+    from app.net.discovery import DiscoveryService, Peer
+
+    a_id = load_or_create(workspace / "disc-a")
+    b_id = load_or_create(workspace / "disc-b")
+
+    def make_receiver(identity: object, name: str, root: str):
+        service = ReceiveService(identity, name, lambda manifest, who: True, host="0.0.0.0", port=0, root=workspace / root)
+        service.start()
+        return service
+
+    a_svc = make_receiver(a_id, "PC-A", "disc-a-received")
+    b_svc = make_receiver(b_id, "Phone-B", "disc-b-received")
+    # Broadcast, not a unicast to 127.0.0.1: measured on this host, a unicast aimed at a
+    # port two sockets share is delivered to only one of them, while broadcast reaches
+    # every local listener. Two instances on one machine is exactly the case that has to
+    # work before two machines do.
+    a = DiscoveryService(a_id, "PC-A", a_svc.port)
+    b = DiscoveryService(b_id, "Phone-B", b_svc.port)
+    try:
+        a.start()
+        b.start()
+        states = {name: channel.state for name, channel in b.channels.items()}
+        check("at least one discovery channel is up", any(c.state == "ok" for c in b.channels.values()), states)
+
+        candidate = None
+        deadline = time.time() + 15
+        while time.time() < deadline and candidate is None:
+            a.announce()
+            b.announce()
+            found = [p for p in b.candidates() if p.prefix == a.prefix]
+            candidate = found[0] if found else None
+            if candidate is None:
+                time.sleep(0.5)
+        roster = {p.prefix: sorted(p.via) for p in b.candidates()}
+        check("peer found over the wire", candidate is not None, f"channels={states} roster={roster}")
+        check("a device never lists itself", all(p.prefix != a.prefix for p in a.candidates()), [p.prefix for p in a.candidates()])
+        if candidate is not None:
+            # Give mDNS a grace window of its own: it announces once at registration and
+            # the browser resolves asynchronously, so it can legitimately trail UDP here.
+            grace = time.time() + 6.0
+            via: list[str] = sorted(candidate.via)
+            while time.time() < grace and "mdns" not in via:
+                time.sleep(0.5)
+                again = [p for p in b.candidates() if p.prefix == a.prefix]
+                via = sorted(again[0].via) if again else via
+            checked = b.verify(candidate)
+            check("verify promotes the prefix to a pinnable digest", checked.fingerprint == a_id.fingerprint and checked.verified, checked.fingerprint[:12])
+            check("verify keeps what hello says", checked.peer_id == a_id.peer_id and checked.name == "PC-A" and checked.port == a_svc.port, checked.public())
+            check("candidate reached us over", bool(via), f"via={via} channels={states}")
+            if b.channels["mdns"].state == "ok":
+                # A channel that reports ok has to actually deliver, or the status lie is
+                # worse than the outage the UI would have shown.
+                check("mdns claiming ok really delivered", "mdns" in via, f"via={via}")
+
+            impostor = Peer(prefix="0" * proto.prefix_chars, host=candidate.host, port=candidate.port)
+            try:
+                b.verify(impostor)
+                check("prefix mismatch rejected", False, "a wrong prefix was accepted")
+            except Exception as error:  # noqa: BLE001 - any rejection of the mismatch is fine
+                check("prefix mismatch rejected", True, type(error).__name__)
+
+        code = b_svc.current_pair_code()
+        url = b.pairing_qr(code, host="127.0.0.1")
+        fields = protocol_spec.parse_qr(url)
+        check(
+            "qr carries address, version, full fingerprint and code",
+            fields == {"h": "127.0.0.1", "p": str(b_svc.port), "v": str(proto.version), "f": b_id.fingerprint, "c": code},
+            fields,
+        )
+        expect_error("qr with an unsupported version is refused", "UNSUPPORTED_PROTOCOL", lambda: protocol_spec.parse_qr(url.replace(f"v={proto.version}", "v=99")))
+        expect_error("qr without a fingerprint is refused", "UNSUPPORTED_PROTOCOL", lambda: protocol_spec.parse_qr("chuanshu://p?h=127.0.0.1&p=43720&v=1"))
+    finally:
+        b.stop()
+        a.stop()
+        b_svc.stop()
+        a_svc.stop()
+
+
 def phase_catalogue(proto: protocol_spec.Protocol) -> None:
     en = gettext.translation("app", str(ROOT / "locale"), languages=["en"])
     zh = gettext.translation("app", str(ROOT / "locale"), languages=["zh_CN"])
@@ -283,6 +363,7 @@ def main() -> int:
         workspace = Path(tmp)
         phase_in_process(proto, workspace)
         phase_restart(proto, workspace)
+        phase_discovery(proto, workspace)
     phase_catalogue(proto)
     check("chunks per file match the contract", proto.chunk_size == 4194304, proto.chunk_size)
     print("\n".join(REPORT.read_text(encoding="utf-8").splitlines()))

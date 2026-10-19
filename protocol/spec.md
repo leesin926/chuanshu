@@ -29,10 +29,15 @@ peer_id 视为同一台设备。
 
 1. **mDNS**：注册 `_chuanshu._tcp.local.`，TXT 带 `ver`、`name`、`fp`（fingerprint 前 16 位）、`ts`。
    iOS 必须在 Info.plist 的 `NSBonjourServices` 里声明 `_chuanshu._tcp`。
-2. **UDP 广播 43721**：每 3s 发一次 `{peer_id, port, ver, name}`，监听常驻。多播在部分
+2. **UDP 广播 43721**：每 3s 发一次 `{peer_id, port, v, name, fp, ts}`，监听常驻。多播在部分
    环境（iOS 新版本、鸿蒙卓易通兼容层）会被拦，所以它是补充而非依赖。
 3. **扫码/手输 IP**：二维码里带齐 §3 的全部字段，不依赖任何发现协议。发现失败时 UI 必须
    直接给出这条出口，不能只写日志。
+
+前两条广播只带 **fingerprint 前缀**，不带完整摘要：广播本身不构成信任，前缀只用来排除
+"地址撞错机器"。完整摘要由 `GET /v1/hello` 的 `fingerprint` 字段给出，收到候选后必须先核对
+前缀再进入 §3 配对。"完整指纹 + 同屏 4 位码"两个条件同时成立才算配对成功——单靠广播谁都能
+发一份，这一点不能骗自己。
 
 ## 3. 配对（TOFU + 带外确认）
 
@@ -147,6 +152,6 @@ v1 视为冻结的条件：`py scripts/protocol_selftest.py` 用**同一份代�
 配对 → 多文件含目录 → 中途断开 → 续传 → finalize 全绿，且错误码表两端各能渲染出
 中英文文案。参考实现即验收工具，不接受只写在文档里的约定。
 
-PC 端已于 2026-10-19 达成（40 条断言，含"杀掉接收进程再拉起"的真重启路径，见
-`.probe/protocol_report.txt`）。手机端接入时必须用**同一份 `protocol.json` 和同一组
-fixture**重跑一遍，只认它自己那端的绿色结果。
+PC 端已于 2026-10-19 达成（51 条断言，含"杀掉接收进程再拉起"的真重启路径，以及 mDNS + UDP
+两条通道各自真的发现了对端，见 `.probe/protocol_report.txt`）。手机端接入时必须用**同一份
+`protocol.json` 和同一组 fixture**重跑一遍，只认它自己那端的绿色结果。
