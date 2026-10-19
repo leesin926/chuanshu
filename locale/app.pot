@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: ChuanShu 0.1.0\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2026-10-19 14:34+0800\n"
+"POT-Creation-Date: 2026-10-19 15:08+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -37,101 +37,145 @@ msgstr ""
 msgid "界面处理异常"
 msgstr ""
 
-#: app/ui/main_window.py:179
+#: app/net/errors.py:13
+msgid "对端版本不兼容"
+msgstr ""
+
+#: app/net/errors.py:14
+msgid "尚未与这台设备配对"
+msgstr ""
+
+#: app/net/errors.py:15
+msgid "配对码不正确或已过期"
+msgstr ""
+
+#: app/net/errors.py:16
+msgid "对方拒绝了这次传输"
+msgstr ""
+
+#: app/net/errors.py:17
+msgid "传输请求不存在或已结束"
+msgstr ""
+
+#: app/net/errors.py:18
+msgid "分块序号超出文件范围"
+msgstr ""
+
+#: app/net/errors.py:19
+msgid "分块校验失败"
+msgstr ""
+
+#: app/net/errors.py:20
+msgid "文件校验失败"
+msgstr ""
+
+#: app/net/errors.py:21
+msgid "文件名被接收方拒绝"
+msgstr ""
+
+#: app/net/errors.py:22
+msgid "接收方存储空间不足"
+msgstr ""
+
+#: app/net/errors.py:23
+msgid "对方正在处理另一个传输"
+msgstr ""
+
+#: app/ui/main_window.py:183
 msgid "跟随系统"
 msgstr ""
 
-#: app/ui/main_window.py:179
+#: app/ui/main_window.py:183
 msgid "浅色"
 msgstr ""
 
-#: app/ui/main_window.py:179
+#: app/ui/main_window.py:183
 msgid "深色"
 msgstr ""
 
-#: app/ui/main_window.py:195 app/ui/main_window.py:320
+#: app/ui/main_window.py:199 app/ui/main_window.py:325
 #, python-brace-format
 msgid "外观：{name}"
 msgstr ""
 
-#: app/ui/main_window.py:268
+#: app/ui/main_window.py:272
 #, python-brace-format
 msgid "关闭 {app}"
 msgstr ""
 
-#: app/ui/main_window.py:269
+#: app/ui/main_window.py:273
 msgid "窗口关闭后，希望退出程序还是留在托盘后台运行？"
 msgstr ""
 
-#: app/ui/main_window.py:273
+#: app/ui/main_window.py:277
 msgid "最小化到托盘"
 msgstr ""
 
-#: app/ui/main_window.py:275
+#: app/ui/main_window.py:279
 msgid "退出程序"
 msgstr ""
 
-#: app/ui/main_window.py:278
+#: app/ui/main_window.py:282
 msgid "取消"
 msgstr ""
 
-#: app/ui/main_window.py:280
+#: app/ui/main_window.py:284
 msgid "记住我的选择"
 msgstr ""
 
-#: app/ui/main_window.py:318 app/ui/title_bar.py:82
+#: app/ui/main_window.py:323 app/ui/title_bar.py:82
 msgid "应用菜单"
 msgstr ""
 
-#: app/ui/main_window.py:319 app/ui/title_bar.py:83
+#: app/ui/main_window.py:324 app/ui/title_bar.py:83
 msgid "语言"
 msgstr ""
 
-#: app/ui/main_window.py:321 app/ui/title_bar.py:86
+#: app/ui/main_window.py:326 app/ui/title_bar.py:86
 msgid "最小化"
 msgstr ""
 
-#: app/ui/main_window.py:322 app/ui/title_bar.py:88
+#: app/ui/main_window.py:327 app/ui/title_bar.py:88
 msgid "关闭"
 msgstr ""
 
-#: app/ui/main_window.py:326
+#: app/ui/main_window.py:331
 msgid "隐藏到托盘"
 msgstr ""
 
-#: app/ui/main_window.py:327 app/ui/tray.py:31 app/ui/tray.py:62
+#: app/ui/main_window.py:332 app/ui/tray.py:31 app/ui/tray.py:62
 #, python-brace-format
 msgid "退出 {app}"
 msgstr ""
 
-#: app/ui/main_window.py:328 app/ui/main_window.py:360
+#: app/ui/main_window.py:333 app/ui/main_window.py:365
 #, python-brace-format
 msgid "关于 {app}"
 msgstr ""
 
-#: app/ui/main_window.py:332
+#: app/ui/main_window.py:337
 msgid "桌面工具骨架"
 msgstr ""
 
-#: app/ui/main_window.py:334
+#: app/ui/main_window.py:339
 msgid ""
 "这是一个包含国际化、日志、异常捕获与打包流程的 PySide6 起点工程。\n"
 "标题栏的语言图标切界面语言、外观图标切深浅主题，最左侧的图标是应用菜单；选择都会持久化到用户目录。"
 msgstr ""
 
-#: app/ui/main_window.py:340
+#: app/ui/main_window.py:345
 #, python-brace-format
 msgid "当前语言：{lang}    日志：{path}"
 msgstr ""
 
-#: app/ui/main_window.py:351
+#: app/ui/main_window.py:356
 #, python-brace-format
 msgid "已点击 {n} 次"
 msgid_plural "已点击 {n} 次"
 msgstr[0] ""
 msgstr[1] ""
 
-#: app/ui/main_window.py:361
+#: app/ui/main_window.py:366
 msgid "Qt"
 msgstr ""
 

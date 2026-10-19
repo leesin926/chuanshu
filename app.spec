@@ -22,6 +22,11 @@ datas = [
 _icons = Path(SPECPATH) / "assets" / "icons"
 datas += [(str(f), "assets/icons") for f in sorted(_icons.iterdir()) if f.is_file()]
 
+# The wire contract. app/net/spec.py reads protocol.json at startup, so a build that
+# leaves it out fails on the first request rather than at import time.
+_protocol = Path(SPECPATH) / "protocol"
+datas += [(str(f), "protocol") for f in sorted(_protocol.iterdir()) if f.is_file()]
+
 a = Analysis(
     ["app/main.py"],
     pathex=[SPECPATH],

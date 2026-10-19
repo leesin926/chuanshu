@@ -2,3 +2,8 @@
 # also pulls WebEngine + Pdf (hundreds of MB) that a small tool never imports.
 # Add PySide6-Addons only if you really need QtMultimedia/QtCharts/etc.
 PySide6-Essentials>=6.8
+
+# Transport core: Ed25519 self-signed certs + SPKI pinning (app/net/identity.py).
+cryptography>=42
+# LAN discovery via mDNS (app/net/discovery.py). Ships as pure Python + no native deps.
+zeroconf>=0.132
