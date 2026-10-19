@@ -1,6 +1,24 @@
 # 传书 ChuanShu — PC 端（PySide6 桌面客户端）
 
-国际化（gettext）、日志与异常捕获、PyInstaller 打包、Inno Setup 安装包的一条龙起点工程。
+局域网文件互传的桌面端：对等协议（既能发也能收）、Ed25519 自签证书 + SPKI 指纹固定、
+断点续传。同时保留国际化（gettext）、日志与异常捕获、PyInstaller 打包、Inno Setup 安装包
+这条脚手架链路。
+
+## 仓库与分支
+
+| | 位置 | 内容 |
+|---|---|---|
+| PC 端 | 本仓库（远端名 `chuanshu-pc`） | PySide6 桌面端，Linux/Windows/macOS |
+| 手机端 | `chuanshu-mobile` | uni-app x，一套代码出 Android / iOS / 鸿蒙 |
+| 协议契约 | 两边各存一份 `protocol/` | `protocol.json` 是唯一真相源，手机端放在 `shared/protocol/` 并带来源摘要戳 |
+
+分支按打包方式分开，不要让一个安装包背另一套方案的依赖：
+
+- `main` = 局域网直连（mDNS + UDP 广播 + 扫码），当前唯一有实现的路线。
+- `cloud-relay` = 云中转。它**不复制协议**，只替换寻址（见 `protocol/spec.md` §8）；中继服务
+  还没有，所以这条分支暂时与 `main` 同树，等中转服务端落地后只改寻址和账号鉴权。
+
+两端各自跑同一份 `protocol/protocol.json` 校验自己那端；契约改动先改文件、再改代码。
 
 ## 目录结构
 
@@ -19,6 +37,18 @@ app/
   ui/title_bar.py    自绘标题栏：六个图标按钮 + popup_below()、拖动/缩放/最大化、边缘缩放 eventFilter
   ui/theme.py        深浅两套 Palette 与由它生成的 QSS
   ui/tray.py         系统托盘菜单（打开主界面 / 开机自启 / 退出）
+app/net/
+  spec.py            读取 protocol/protocol.json：端点、错误码→HTTP、二维码字段顺序
+  identity.py        Ed25519 自签证书、SPKI 指纹固定、已配对设备表（identity/ 目录）
+  receive.py         接收端 HTTPS 服务：配对、offer、分块落盘、路径清洗、崩溃后认领未完成 offer
+  send.py            发送端：plan→offer→分块→finalize，token 失效时用已信任的 key 静默重配对
+  errors.py          错误码的中文 msgid 字面量（给 pybabel 抽取用），与 protocol.json 必须一致
+protocol/
+  protocol.json      机器可读契约：端口、chunk_size、端点清单、错误码表、限制值
+  spec.md            语义与理由：为什么这么定，两端必须一致实现什么
+scripts/
+  protocol_selftest.py  M0 验收：配对→多文件含目录→杀进程重启→续传→finalize，40 条断言
+  receiver_host.py      给自测用的独立接收进程
 assets/icons/
   icons.json         图标配置：`window_icon` 指定全应用 logo，`glyphs` 字形表，`buttons` 角色→字形
                      （含主题/最大化变体），`pixmap_sizes` 每个 QIcon 的尺寸，`icon_sizes` 每按钮尺寸
