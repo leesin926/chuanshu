@@ -9,3 +9,7 @@ cryptography>=42
 # against: a typed ServiceListener must go through the listener= keyword, because the
 # positional third argument is the legacy list-of-callables form.
 zeroconf>=0.151
+
+# Pairing QR (app/ui/transfer.py). The SvgPathImage factory is pure Python, so the picture
+# is rendered by QtSvg instead of pulling Pillow in for a PIL image.
+qrcode>=8

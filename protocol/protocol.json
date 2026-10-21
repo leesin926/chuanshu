@@ -43,7 +43,7 @@
       "method": "GET",
       "path": "/v1/hello",
       "auth": false,
-      "purpose": "version + capability probe"
+      "purpose": "version + capability probe; the optional chunk_pace_ms says how slowly a sender must write a body bigger than one TLS record (milliseconds per 4 KiB record, absent or 0 = as fast as you like) - a Harmony receiver needs 15, below that a 4 MiB chunk arrives whole with the wrong bytes and the receiving process can die on the attempt"
     },
     {
       "method": "POST",

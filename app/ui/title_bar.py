@@ -66,6 +66,7 @@ class TitleBar(QWidget):
     minimize_requested = Signal()
     toggle_maximize_requested = Signal()
     close_requested = Signal()
+    settings_requested = Signal()
 
     def __init__(self, parent: QWidget) -> None:
         super().__init__(parent)
@@ -81,6 +82,7 @@ class TitleBar(QWidget):
         # Which glyph each button shows, and how big, comes from assets/icons/icons.json.
         self.app_button = self._icon_button("AppButton", "app", _("应用菜单"))
         self.lang_button = self._icon_button("LangButton", "lang", _("语言"))
+        self.settings_button = self._icon_button("SettingsButton", "settings", _("设置"))
         self.theme_button = self._icon_button("ThemeButton", "theme", _("外观"))
 
         self.min_button = self._icon_button("MinButton", "min", _("最小化"))
@@ -89,6 +91,7 @@ class TitleBar(QWidget):
         self.min_button.clicked.connect(self.minimize_requested)
         self.max_button.clicked.connect(self.toggle_maximize_requested)
         self.close_button.clicked.connect(self.close_requested)
+        self.settings_button.clicked.connect(self.settings_requested)
 
         row = QWidget(self)
         row_layout = QHBoxLayout(row)
@@ -99,6 +102,7 @@ class TitleBar(QWidget):
         row_layout.addWidget(self.title_label)
         row_layout.addStretch(1)
         row_layout.addWidget(self.lang_button)
+        row_layout.addWidget(self.settings_button)
         row_layout.addWidget(self.theme_button)
         row_layout.addSpacing(6)
         row_layout.addWidget(self.min_button)
@@ -133,7 +137,7 @@ class TitleBar(QWidget):
     def restyle(self, color: str, dark: bool) -> None:
         """Rebuild the glyph icons in the current palette color (called on theme switch)."""
         self.theme_button.setProperty("icon_variant", "dark" if dark else "default")
-        for button in (self.app_button, self.lang_button, self.theme_button,
+        for button in (self.app_button, self.lang_button, self.settings_button, self.theme_button,
                        self.min_button, self.max_button, self.close_button):
             self._apply_glyph(button, color)
 

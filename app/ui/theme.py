@@ -100,9 +100,51 @@ QMainWindow, QWidget#Central {{
 }}
 QLabel {{ color: {p.text}; background: transparent; }}
 QLabel#TitleLabel {{ font-size: 13px; font-weight: 600; }}
-QLabel#HintLabel {{ color: {p.text_muted}; }}
+QLabel#Muted {{ color: {p.text_muted}; }}
+QLabel#PairCode {{ font-size: 22px; font-weight: 700; letter-spacing: 3px; color: {p.accent}; }}
+/* The QR keeps its own white quiet zone in either theme; the frame is drawn, not painted. */
+QLabel#QrBox {{ background: #ffffff; border: 1px solid {p.border}; border-radius: 6px; }}
+QLabel#SectionTitle {{ font-size: 15px; font-weight: 600; }}
+
+QDialog {{ background: {p.window}; color: {p.text}; }}
+QLineEdit, QComboBox {{
+    background: {p.surface};
+    border: 1px solid {p.border};
+    border-radius: 6px;
+    padding: 5px 8px;
+    color: {p.text};
+    selection-background-color: {p.accent};
+}}
+QLineEdit:focus, QComboBox:focus {{ border: 1px solid {p.accent}; }}
+QRadioButton, QCheckBox {{ spacing: 6px; }}
+/* The settings window's left-hand menu: no frame, the selection is the only chrome. */
+QListWidget#SettingsMenu {{ background: transparent; border: none; outline: none; }}
+QListWidget#SettingsMenu::item {{ padding: 8px 10px; border-radius: 6px; color: {p.text_muted}; }}
+QListWidget#SettingsMenu::item:selected {{ background: {p.menu_hover}; color: {p.text}; font-weight: 600; }}
 
 QWidget#TitleBar {{ background: {p.surface}; border-bottom: 1px solid {p.border}; }}
+
+QGroupBox {{
+    background: {p.surface};
+    border: 1px solid {p.border};
+    border-radius: 8px;
+    margin-top: 10px;
+    padding: 14px 12px 12px 12px;
+}}
+QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 4px; color: {p.text_muted}; }}
+
+QListWidget {{ background: {p.window}; border: 1px solid {p.border}; border-radius: 6px; padding: 2px; }}
+QListWidget::item {{ padding: 6px; border-radius: 4px; color: {p.text}; }}
+QListWidget::item:selected {{ background: {p.menu_hover}; color: {p.text}; }}
+
+QProgressBar {{
+    background: {p.window};
+    border: 1px solid {p.border};
+    border-radius: 6px;
+    text-align: center;
+    color: {p.text};
+}}
+QProgressBar::chunk {{ background: {p.accent}; border-radius: 5px; }}
 
 QToolButton#AppButton, QToolButton#LangButton, QToolButton#ThemeButton,
 QToolButton#MinButton, QToolButton#MaxButton, QToolButton#CloseButton {{
@@ -136,6 +178,18 @@ QPushButton {{
 QPushButton:hover {{ background: {p.accent}; }}
 QPushButton:pressed {{ background: {p.pressed}; color: {p.text}; }}
 QPushButton:disabled {{ background: {p.border}; color: {p.text_muted}; }}
+/* A secondary action that sits next to the value it edits, not in a row under it.
+   Every state needs its own rule: QPushButton:hover would otherwise win the paint. */
+QPushButton#Inline {{
+    background: transparent;
+    color: {p.accent};
+    border: none;
+    border-radius: 4px;
+    padding: 1px 6px;
+}}
+QPushButton#Inline:hover {{ background: {p.menu_hover}; color: {p.accent}; }}
+QPushButton#Inline:pressed {{ background: {p.hover}; color: {p.text}; }}
+QPushButton#Inline:disabled {{ background: transparent; color: {p.text_muted}; }}
 
 QCheckBox {{ color: {p.text}; }}
 QToolTip {{ background: {p.surface}; color: {p.text}; border: 1px solid {p.border}; }}

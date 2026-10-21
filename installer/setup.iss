@@ -109,6 +109,15 @@ Name: "zh_CN"; MessagesFile: "{#BundledZh}"; LicenseFile: "{#LicZh}"
 [Tasks]
 ; {cm:xxx} 引用的是当前 .isl 里的消息键，换语言文件时键名不能改。
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
+; 默认不勾：这条任务要弹 UAC 提权，让用户自己决定。
+Name: "firewall"; Description: "{cm:FirewallTask}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+
+[CustomMessages]
+; 任务描述与提示按向导语言各一份；键前缀必须和 [Languages] 的 Name 对得上。
+FirewallTask=Let Windows Firewall accept incoming files from other devices (needs admin)
+zh_CN.FirewallTask=允许 Windows 防火墙放行来自其它设备的传入连接（需要管理员权限）
+FirewallSkipped=The firewall rule was not added. ChuanShu will ask Windows for permission the first time it listens; if you answer cancel, Windows leaves a permanent block rule and the LAN stops finding this device. Add it later yourself with:
+zh_CN.FirewallSkipped=没有添加防火墙规则。传书第一次监听时 Windows 会弹窗询问，一旦点了"取消"，系统会留下一条永久的阻止规则，局域网里就再也发现不到这台设备。可以稍后自行执行：
 
 [Files]
 ; 整棵 one-folder 树原样复制：ChuanShu.exe + _internal\（含 PySide6、locale\**.mo 与 assets\icons\）。
@@ -124,3 +133,35 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: deskto
 [Run]
 ; 完成页的"运行"勾选项。& 要转义成 &&，否则会被当成助记符下划线。
 Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(AppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+// [Code] 段里注释只能用 //，分号在这里是语句分隔符而不是注释，写错了编译期就报 'BEGIN' expected。
+// 传书靠 mDNS 与 UDP 广播互相发现，而 Windows 防火墙默认拦入站。不放行时首次监听会弹
+// 系统授权框；实测点"取消"后系统留下的是两条永久"阻止"规则（按程序路径匹配），之后这台
+// 设备在局域网里彻底隐身，比没装还难查。所以安装期就把规则加好，让用户根本遇不到那个框。
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ResultCode: Integer;
+  Rule: string;
+begin
+  if CurStep <> ssPostInstall then Exit;
+  if not WizardIsTaskSelected('firewall') then Exit;
+  // 只放子网内、只放专用与域配置文件：连公用网络也放行是没必要的口子，这里刻意不放。
+  Rule := 'advfirewall firewall add rule name="{#AppName}" dir=in action=allow'
+    + ' profile=domain,private remoteip=LocalSubnet'
+    + ' program="' + ExpandConstant('{app}\{#AppExeName}') + '"';
+  // 安装器默认是普通权限，加规则得单独提权；用户拒绝 UAC 只影响这一条规则，不该让安装失败。
+  if not ShellExec('runas', 'netsh.exe', Rule, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+    MsgBox(ExpandConstant('{cm:FirewallSkipped}') + #10#10 + 'netsh ' + Rule, mbInformation, MB_OK);
+end;
+
+function InitializeUninstall(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  // 名字和路径两个条件同时匹配才删，绝不会碰到用户自己加的其它规则；删不掉也照常卸载。
+  ShellExec('runas', 'netsh.exe',
+    'advfirewall firewall delete rule name="{#AppName}" program="' + ExpandConstant('{app}\{#AppExeName}') + '"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Result := True;
+end;

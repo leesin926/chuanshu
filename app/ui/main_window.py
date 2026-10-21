@@ -4,15 +4,13 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, qVersion
+from PySide6.QtCore import QEvent, QPoint, QRect, Qt, qVersion
 from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
-    QLabel,
     QMainWindow,
     QMessageBox,
-    QPushButton,
     QSystemTrayIcon,
     QMenu,
     QVBoxLayout,
@@ -20,18 +18,17 @@ from PySide6.QtWidgets import (
 )
 
 from app import autostart, icons
-from app.config import Settings
-from app.i18n import LanguageManager, _, _n
+from app.config import CLOSE_ASK, CLOSE_QUIT, CLOSE_TRAY, Settings
+from app.i18n import LanguageManager, _
 from app.logging_setup import log_file
 from app.meta import COPYRIGHT, VERSION, display_name
 from app.ui import theme
+from app.ui.settings_dialog import SettingsDialog
 from app.ui.title_bar import EdgeResizeFilter, TitleBar, apply_rounded_corners
+from app.ui.transfer import TransferPanel
 from app.ui.tray import TrayIcon
 
 log = logging.getLogger(__name__)
-
-#: value stored in settings.json for the "what happens on close" question.
-CLOSE_ASK, CLOSE_TRAY, CLOSE_QUIT = "ask", "tray", "quit"
 
 
 class MainWindow(QMainWindow):
@@ -39,10 +36,11 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.settings = settings
         self.languages = languages
-        self.clicks = 0
         #: False while the window is only hidden to the tray; the real quit sets it.
         self._quitting = False
         self._restore_rect = None
+        #: Built on the first click of the gear button, then reused so it keeps its section.
+        self.settings_window: SettingsDialog | None = None
         #: Property read by TitleBar/EdgeResizeFilter; kept in sync with Qt's state.
         self.is_maximized = False
 
@@ -59,6 +57,7 @@ class MainWindow(QMainWindow):
         self.title_bar.minimize_requested.connect(self.showMinimized)
         self.title_bar.toggle_maximize_requested.connect(self.toggle_maximized)
         self.title_bar.close_requested.connect(self.request_close)
+        self.title_bar.settings_requested.connect(self.open_settings)
 
         central = QWidget(self)
         central.setObjectName("Central")
@@ -80,26 +79,23 @@ class MainWindow(QMainWindow):
         self._build_tray()
 
         self.languages.changed.connect(self.retranslate)
+        # No fixed floor here on purpose. An explicit minimum overrides the layout's own,
+        # so the window could be made narrower than the widest control in a language and
+        # Qt then clipped that control instead of refusing the size. The layout decides.
         size = self.settings.get("window", {})
-        self.resize(int(size.get("width", 720)), int(size.get("height", 480)))
-        self.setMinimumSize(QSize(520, 360))
+        self.resize(
+            max(int(size.get("width", 1080)), self.minimumWidth()),
+            max(int(size.get("height", 680)), self.minimumHeight()),
+        )
         self.apply_theme(self.settings.get("theme", "auto"), save=False)
         self.retranslate()
 
     def _build_body(self) -> QVBoxLayout:
         body = QVBoxLayout()
-        body.setContentsMargins(18, 16, 18, 12)
+        body.setContentsMargins(18, 14, 18, 12)
         body.setSpacing(8)
-        self.title_label = QLabel()
-        self.hint_label = QLabel()
-        self.hint_label.setObjectName("HintLabel")
-        self.hint_label.setWordWrap(True)
-        self.count_button = QPushButton()
-        self.count_button.clicked.connect(self.on_count)
-        body.addWidget(self.title_label)
-        body.addWidget(self.hint_label)
-        body.addWidget(self.count_button, alignment=Qt.AlignLeft)
-        body.addStretch(1)
+        self.panel = TransferPanel(self.settings, self)
+        body.addWidget(self.panel, 1)
         return body
 
     def _build_popups(self) -> None:
@@ -244,9 +240,21 @@ class MainWindow(QMainWindow):
         self.activateWindow()
 
     def hide_to_tray(self) -> None:
+        # A settings window left on the desktop above a hidden app is a loose end.
+        if self.settings_window is not None and self.settings_window.isVisible():
+            self.settings_window.close()
         self.hide()
         if QSystemTrayIcon.isSystemTrayAvailable():
             self.tray.notify_background(self.brand())
+
+    def open_settings(self) -> None:
+        """The gear button. Non-modal on purpose: receiving keeps working while it is open."""
+        if self.settings_window is None:
+            self.settings_window = SettingsDialog(self, self.settings, self.languages, self.panel)
+        self.settings_window.reload()
+        self.settings_window.show()
+        self.settings_window.raise_()
+        self.settings_window.activateWindow()
 
     def on_autostart_toggled(self, checked: bool) -> None:
         applied = autostart.set_enabled(checked)
@@ -299,6 +307,8 @@ class MainWindow(QMainWindow):
 
     def quit_app(self) -> None:
         self._quitting = True
+        # Releases the ports and answers any offer still waiting on the user as a decline.
+        self.panel.shutdown()
         self.tray.hide()
         self.close()
 
@@ -322,6 +332,7 @@ class MainWindow(QMainWindow):
         for button, tip in (
             (bar.app_button, _("应用菜单")),
             (bar.lang_button, _("语言")),
+            (bar.settings_button, _("设置")),
             (bar.theme_button, _("外观：{name}").format(name=self.theme_labels()[self.settings.get("theme", "auto")])),
             (bar.min_button, _("最小化")),
             (bar.close_button, _("关闭")),
@@ -334,13 +345,9 @@ class MainWindow(QMainWindow):
         labels = self.theme_labels()
         for action in self.theme_group.actions():
             action.setText(labels[action.data()])
-        self.title_label.setText(_("桌面工具骨架"))
-        self.hint_label.setText(
-            _("这是一个包含国际化、日志、异常捕获与打包流程的 PySide6 起点工程。\n"
-              "标题栏的语言图标切界面语言、外观图标切深浅主题，最左侧的图标是应用菜单；"
-              "选择都会持久化到用户目录。")
-        )
-        self.count_button.setText(self.count_text())
+        self.panel.retranslate()
+        if self.settings_window is not None:
+            self.settings_window.retranslate()
         self.status.showMessage(
             _("当前语言：{lang}    日志：{path}").format(
                 lang=self.languages.display_name(self.languages.current), path=log_file()
@@ -351,13 +358,6 @@ class MainWindow(QMainWindow):
         self.tray.retranslate(self.brand())
         if self.isVisible():
             self.apply_theme(self.settings.get("theme", "auto"), save=False)
-
-    def count_text(self) -> str:
-        return _n("已点击 {n} 次", "已点击 {n} 次", self.clicks).format(n=self.clicks)
-
-    def on_count(self) -> None:
-        self.clicks += 1
-        self.count_button.setText(self.count_text())
 
     def show_about(self) -> None:
         QMessageBox.about(

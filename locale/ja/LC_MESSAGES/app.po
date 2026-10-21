@@ -1,0 +1,899 @@
+# Japanese translations for ChuanShu.
+# Copyright (C) 2026 ORGANIZATION
+# This file is distributed under the same license as the ChuanShu project.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: ChuanShu 0.1.0\n"
+"Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
+"POT-Creation-Date: 2026-10-21 03:18+0800\n"
+"PO-Revision-Date: 2026-10-19 20:00+0800\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: ja\n"
+"Language-Team: ja <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: app/crash.py:43
+msgid "程序遇到未处理的错误。操作可以继续，但请查看日志。"
+msgstr "プログラムが未処理のエラーに遭遇しました。作業は続けられますが、ログを確認してください。"
+
+#: app/crash.py:44
+msgid "日志文件"
+msgstr "ログファイル"
+
+#: app/crash.py:59
+msgid "未处理的异常"
+msgstr "未処理の例外"
+
+#: app/crash.py:67
+msgid "后台线程异常"
+msgstr "バックグラウンドスレッドのエラー"
+
+#: app/crash.py:95
+msgid "界面处理异常"
+msgstr "画面の処理エラー"
+
+#: app/net/errors.py:13
+msgid "对端版本不兼容"
+msgstr "相手のバージョンが互換性ではありません。"
+
+#: app/net/errors.py:14
+msgid "尚未与这台设备配对"
+msgstr "この端末はまだペアリングされていません。"
+
+#: app/net/errors.py:15
+msgid "配对码不正确或已过期"
+msgstr "ペアリングコードが正しくないか、有効期限が切れました。"
+
+#: app/net/errors.py:16
+msgid "对方拒绝了这次传输"
+msgstr "相手がこの転送を拒否しました。"
+
+#: app/net/errors.py:17
+msgid "传输请求不存在或已结束"
+msgstr "その転送要求は存在しないか、すでに終了しました。"
+
+#: app/net/errors.py:18
+msgid "分块序号超出文件范围"
+msgstr "ブロック番号がファイルの範囲を越えています。"
+
+#: app/net/errors.py:19
+msgid "分块校验失败"
+msgstr "ブロックのチェックサムが一致しません。"
+
+#: app/net/errors.py:20
+msgid "文件校验失败"
+msgstr "ファイルのチェックサムが一致しません。"
+
+#: app/net/errors.py:21
+msgid "文件名被接收方拒绝"
+msgstr "受信側がこのファイル名を拒否しました。"
+
+#: app/net/errors.py:22
+msgid "接收方存储空间不足"
+msgstr "受信側に空き容量がありません。"
+
+#: app/net/errors.py:23
+msgid "对方正在处理另一个传输"
+msgstr "相手は別の転送を処理中です。"
+
+#: app/ui/main_window.py:179 app/ui/settings_dialog.py:192
+msgid "跟随系统"
+msgstr "システム設定に従う"
+
+#: app/ui/main_window.py:179 app/ui/settings_dialog.py:192
+msgid "浅色"
+msgstr "ライト"
+
+#: app/ui/main_window.py:179 app/ui/settings_dialog.py:192
+msgid "深色"
+msgstr "ダーク"
+
+#: app/ui/main_window.py:195 app/ui/main_window.py:336
+#, python-brace-format
+msgid "外观：{name}"
+msgstr "外観：{name}"
+
+#: app/ui/main_window.py:280
+#, python-brace-format
+msgid "关闭 {app}"
+msgstr "{app} を閉じる"
+
+#: app/ui/main_window.py:281
+msgid "窗口关闭后，希望退出程序还是留在托盘后台运行？"
+msgstr "ウィンドウを閉じたあと、終了しますか？それともトレイで待機しますか？"
+
+#: app/ui/main_window.py:285 app/ui/settings_dialog.py:200
+msgid "最小化到托盘"
+msgstr "トレイに最小化"
+
+#: app/ui/main_window.py:287
+msgid "退出程序"
+msgstr "プログラムを終了"
+
+#: app/ui/main_window.py:290 app/ui/transfer.py:148
+msgid "取消"
+msgstr "キャンセル"
+
+#: app/ui/main_window.py:292
+msgid "记住我的选择"
+msgstr "選択を記憶"
+
+#: app/ui/main_window.py:333 app/ui/title_bar.py:83
+msgid "应用菜单"
+msgstr "アプリメニュー"
+
+#: app/ui/main_window.py:334 app/ui/title_bar.py:84
+msgid "语言"
+msgstr "言語"
+
+#: app/ui/main_window.py:335 app/ui/settings_dialog.py:430
+#: app/ui/title_bar.py:85
+msgid "设置"
+msgstr "設定"
+
+#: app/ui/main_window.py:337 app/ui/title_bar.py:88
+msgid "最小化"
+msgstr "最小化"
+
+#: app/ui/main_window.py:338 app/ui/settings_dialog.py:95
+#: app/ui/title_bar.py:90
+msgid "关闭"
+msgstr "閉じる"
+
+#: app/ui/main_window.py:342
+msgid "隐藏到托盘"
+msgstr "トレイに隠す"
+
+#: app/ui/main_window.py:343 app/ui/tray.py:31 app/ui/tray.py:62
+#, python-brace-format
+msgid "退出 {app}"
+msgstr "{app} を終了"
+
+#: app/ui/main_window.py:344 app/ui/main_window.py:365
+#, python-brace-format
+msgid "关于 {app}"
+msgstr "{app} について"
+
+#: app/ui/main_window.py:352
+#, python-brace-format
+msgid "当前语言：{lang}    日志：{path}"
+msgstr "現在の言語：{lang}    ログ：{path}"
+
+#: app/ui/main_window.py:366
+msgid "Qt"
+msgstr "Qt"
+
+#: app/ui/settings_dialog.py:197
+msgid "开机时自动启动"
+msgstr "起動時に自動で開始"
+
+#: app/ui/settings_dialog.py:200
+msgid "每次询问"
+msgstr "毎回確認する"
+
+#: app/ui/settings_dialog.py:200
+msgid "直接退出"
+msgstr "すぐ終了する"
+
+#: app/ui/settings_dialog.py:204
+msgid "常规"
+msgstr "一般"
+
+#: app/ui/settings_dialog.py:205 app/ui/transfer.py:658
+msgid "设备名"
+msgstr "デバイス名"
+
+#: app/ui/settings_dialog.py:206
+msgid "这个名称会出现在附近设备的名单里，改完立即生效。"
+msgstr "この名前は相手のデバイス一覧に表示されます。変更はすぐに反映されます。"
+
+#: app/ui/settings_dialog.py:207
+msgid "界面语言"
+msgstr "表示言語"
+
+#: app/ui/settings_dialog.py:208 app/ui/title_bar.py:86
+msgid "外观"
+msgstr "外観"
+
+#: app/ui/settings_dialog.py:210
+msgid "关闭窗口时"
+msgstr "ウィンドウを閉じるとき"
+
+#: app/ui/settings_dialog.py:217
+msgid "浏览…"
+msgstr "参照..."
+
+#: app/ui/settings_dialog.py:220
+msgid "恢复默认"
+msgstr "既定に戻す"
+
+#: app/ui/settings_dialog.py:235 app/ui/transfer.py:479
+msgid "打开接收目录"
+msgstr "受信フォルダーを開く"
+
+#: app/ui/settings_dialog.py:237
+msgid "传输"
+msgstr "転送"
+
+#: app/ui/settings_dialog.py:238
+msgid "接收目录"
+msgstr "受信フォルダー"
+
+#: app/ui/settings_dialog.py:239
+msgid "对方发来的文件按每一次传输建一个子文件夹。"
+msgstr "相手から届いたファイルは、転送ごとに別々のサブフォルダーへ保存されます。"
+
+#: app/ui/settings_dialog.py:241
+msgid "端口"
+msgstr "ポート"
+
+#: app/ui/settings_dialog.py:242
+msgid "分块"
+msgstr "ブロックサイズ"
+
+#: app/ui/settings_dialog.py:243
+msgid "配对码"
+msgstr "ペアリングコード"
+
+#: app/ui/settings_dialog.py:245
+msgid "上面这几项由 protocol/protocol.json 冻结，手机端按同一份契约校验，改了就配不上对。"
+msgstr "上の項目は protocol/protocol.json で固定されており、スマホ側も同じ契約で検証します。変更するとペアリングできなくなります。"
+
+#: app/ui/settings_dialog.py:254
+msgid "撤销这台设备"
+msgstr "このデバイスの登録を解除"
+
+#: app/ui/settings_dialog.py:256
+msgid "已配对设备"
+msgstr "ペアリング済みデバイス"
+
+#: app/ui/settings_dialog.py:258
+msgid "配对成功过的设备记在这里，下次传文件不再问配对码。怀疑对方换过密钥就撤销它。"
+msgstr "ペアリングに成功したデバイスがここに記録され、次回の転送ではコードを聞きません。相手の鍵が替わったと思ったら解除してください。"
+
+#: app/ui/settings_dialog.py:274
+msgid "打开日志目录"
+msgstr "ログフォルダーを開く"
+
+#: app/ui/settings_dialog.py:276
+msgid "关于"
+msgstr "情報"
+
+#: app/ui/settings_dialog.py:277
+msgid "版本"
+msgstr "バージョン"
+
+#: app/ui/settings_dialog.py:279
+msgid "界面库"
+msgstr "UIツールキット"
+
+#: app/ui/settings_dialog.py:280
+msgid "协议"
+msgstr "プロトコル"
+
+#: app/ui/settings_dialog.py:281
+msgid "数据目录"
+msgstr "データフォルダー"
+
+#: app/ui/settings_dialog.py:282
+msgid "日志"
+msgstr "ログ"
+
+#: app/ui/settings_dialog.py:308
+#, python-brace-format
+msgid "局域网端口 {port}，发现端口 {discovery}"
+msgstr "LAN ポート {port}、検出ポート {discovery}"
+
+#: app/ui/settings_dialog.py:311
+#, python-brace-format
+msgid "每块 {size} 字节，最多 {n} 块并行"
+msgstr "1ブロック {size} バイト、最大 {n} ブロック同時"
+
+#: app/ui/settings_dialog.py:316
+#, python-brace-format
+msgid "{digits} 位数字，固定不换；只有点主页面的「更换配对码和密码」才会换一组"
+msgstr "{digits} 桁で固定。ペアリングコードとパスワードを変更を押すまで新しい組には変わりません"
+
+#: app/ui/settings_dialog.py:318
+#, python-brace-format
+msgid "{digits} 位数字，{ttl} 秒后换一个"
+msgstr "{digits} 桁、{ttl} 秒で新しいコードに"
+
+#: app/ui/settings_dialog.py:323
+#, python-brace-format
+msgid "契约版本 v{version}（{name}）"
+msgstr "契約バージョン v{version}（{name}）"
+
+#: app/ui/settings_dialog.py:353
+msgid "未知设备"
+msgstr "不明なデバイス"
+
+#: app/ui/settings_dialog.py:355
+#, python-brace-format
+msgid "指纹 {fp}"
+msgstr "フィンガープリント {fp}"
+
+#: app/ui/settings_dialog.py:371
+#, python-brace-format
+msgid "设备名已改成 {name}"
+msgstr "デバイス名を {name} に変更しました"
+
+#: app/ui/settings_dialog.py:391
+msgid "选择接收目录"
+msgstr "受信フォルダーを選択"
+
+#: app/ui/settings_dialog.py:415
+msgid "这台设备已经不在名单里了。"
+msgstr "そのデバイスはもう一覧にありません。"
+
+#: app/ui/settings_dialog.py:422
+#, python-brace-format
+msgid "已撤销 {name}，它已从已连接的设备里移出，下次传文件要重新配对。"
+msgstr "{name} を取り消しました。接続済み一覧から外れ、次の転送では再ペアリングが必要です。"
+
+#: app/ui/settings_dialog.py:435
+msgid "这台设备对别人显示的名字"
+msgstr "他のデバイスに表示されるこの端末の名前"
+
+#: app/ui/settings_dialog.py:436
+msgid "只改这个程序的界面文字"
+msgstr "このアプリの表示文字だけ変わります"
+
+#: app/ui/settings_dialog.py:438
+msgid "只有打包好的 Windows 版本能改开机自启。"
+msgstr "パッケージ化した Windows 版だけが自動起動を登録できます。"
+
+#: app/ui/settings_dialog.py:440
+msgid "登录 Windows 后自动运行，并留在托盘"
+msgstr "Windows にサインインしたら自動的に起動し、トレイに残る"
+
+#: app/ui/settings_dialog.py:442
+msgid "换一个存放收到文件的文件夹"
+msgstr "受信ファイルの保存先フォルダーを別のものにする"
+
+#: app/ui/settings_dialog.py:443
+msgid "回到应用数据目录下的 received"
+msgstr "アプリのデータフォルダー内の received に戻す"
+
+#: app/ui/settings_dialog.py:444
+msgid "忘记这台设备的密钥，下次传文件要重新输配对码"
+msgstr "このデバイスの鍵を忘れる。次の転送ではペアリングコードをもう一度入力します"
+
+#: app/ui/title_bar.py:89 app/ui/title_bar.py:151
+msgid "最大化"
+msgstr "最大化"
+
+#: app/ui/title_bar.py:151
+msgid "还原"
+msgstr "元に戻す"
+
+#: app/ui/transfer.py:120
+msgid "连接设备"
+msgstr "デバイスを接続"
+
+#: app/ui/transfer.py:147 app/ui/transfer.py:501
+msgid "连接"
+msgstr "接続"
+
+#: app/ui/transfer.py:158
+msgid "下面是广播出来的候选设备。选中一台，回到主界面填它的配对码和密码，再点连接。"
+msgstr "以下はブロードキャストで知らせてきた候補です。1台選び、メイン画面でそのペアリングコードとパスワードを入力して「接続」を押してください。"
+
+#: app/ui/transfer.py:159
+msgid "手输地址…"
+msgstr "アドレスを入力…"
+
+#: app/ui/transfer.py:160
+msgid "没在局域网里广播出来的设备，可以输入它的地址，或粘贴 chuanshu:// 配对串。"
+msgstr "LAN で配信されていないデバイスは、アドレスを入力するか chuanshu:// のペアリング文字列を貼り付けてください。"
+
+#: app/ui/transfer.py:161
+msgid "刷新"
+msgstr "更新"
+
+#: app/ui/transfer.py:170
+msgid "（已连接）"
+msgstr "（接続済み）"
+
+#: app/ui/transfer.py:173 app/ui/transfer.py:174
+msgid "手动添加"
+msgstr "手動追加"
+
+#: app/ui/transfer.py:174
+#, python-brace-format
+msgid "发现于 {via}；指纹前缀 {fp}"
+msgstr "{via} で発見；指紋の冒頭 {fp}"
+
+#: app/ui/transfer.py:179
+msgid "没找到设备。手输对方地址，或粘贴它的配对串。"
+msgstr "デバイスが見つかりません。アドレスを手入力するか、ペアリング文字列を貼り付けてください。"
+
+#: app/ui/transfer.py:184
+msgid "手动添加设备"
+msgstr "アドレスでデバイスを追加"
+
+#: app/ui/transfer.py:184
+#, python-brace-format
+msgid "输入对方地址（{example}）或配对串："
+msgstr "相手のアドレス（{example}）またはペアリング文字列："
+
+#: app/ui/transfer.py:194
+#, python-brace-format
+msgid "已确认 {name}，指纹前缀 {fp}。选中它点连接。"
+msgstr "{name} に到達しました（指紋プレフィックス {fp}）。選択して「接続」を押してください。"
+
+#: app/ui/transfer.py:201
+msgid "先选中一台设备，再点连接。"
+msgstr "まずデバイスを選び、それから「接続」を押してください。"
+
+#: app/ui/transfer.py:321 app/ui/transfer.py:504
+msgid "让对方扫这个码，就能带着配对码和密码连过来。"
+msgstr "相手がこのコードをスキャンすると、ペアリングコードとパスワードを手に接続してきます。"
+
+#: app/ui/transfer.py:467
+msgid "我的设备"
+msgstr "自分のデバイス"
+
+#: app/ui/transfer.py:468
+msgid "已连接的设备"
+msgstr "接続済みのデバイス"
+
+#: app/ui/transfer.py:473 app/ui/transfer.py:710
+#, python-brace-format
+msgid "保存到：{path}"
+msgstr "保存先：{path}"
+
+#: app/ui/transfer.py:474
+msgid "更换配对码和密码"
+msgstr "ペアリングコードとパスワードを変更"
+
+#: app/ui/transfer.py:476
+msgid "换一组新的固定配对码和密码，二维码跟着变。已经连上的设备不受影响。"
+msgstr "固定のペアリングコードとパスワードを新しいものに置き換えます。QR コードも一緒に変わります。接続済みのデバイスは影響を受けません。"
+
+#: app/ui/transfer.py:478
+msgid "打开"
+msgstr "開く"
+
+#: app/ui/transfer.py:480
+msgid "编辑"
+msgstr "編集"
+
+#: app/ui/transfer.py:481
+#, python-brace-format
+msgid "本机：{name}"
+msgstr "この端末：{name}"
+
+#: app/ui/transfer.py:482
+msgid "接收到的文件（本次会话已校验）"
+msgstr "受信したファイル（このセッションで検証済み）"
+
+#: app/ui/transfer.py:483
+msgid "选择文件…"
+msgstr "ファイルを選択…"
+
+#: app/ui/transfer.py:484
+msgid "选择文件夹…"
+msgstr "フォルダーを選択…"
+
+#: app/ui/transfer.py:485
+msgid "清空"
+msgstr "クリア"
+
+#: app/ui/transfer.py:486
+msgid "从附近选择…"
+msgstr "近くから選択…"
+
+#: app/ui/transfer.py:487
+msgid "列出广播出来的候选设备，也可以手输地址或粘贴配对串。"
+msgstr "通知されている候補デバイスを一覧表示します。アドレス入力やペアリング文字列の貼り付けもできます。"
+
+#: app/ui/transfer.py:488
+msgid "断开"
+msgstr "切断"
+
+#: app/ui/transfer.py:490
+#, python-brace-format
+msgid "{n} 位配对码"
+msgstr "{n} 桁のペアリングコード"
+
+#: app/ui/transfer.py:492
+#, python-brace-format
+msgid "输入对方屏幕上显示的 {n} 位配对码。本机存过它的密钥时留空即可，用签名重连。"
+msgstr "相手の画面に表示された {n} 桁のコードを入力してください。このマシンに鍵が保存済みなら空欄のままにし、署名で再接続します。"
+
+#: app/ui/transfer.py:494
+msgid "连接密码（可留空）"
+msgstr "接続パスワード（空欄可）"
+
+#: app/ui/transfer.py:497
+#, python-brace-format
+msgid "输入对方屏幕上显示的 {n} 位连接密码。对方是还没有密码的旧版本时留空，这时只用配对码完成首次配对。"
+msgstr ""
+"相手の画面に表示される {n} "
+"桁の接続パスワードを入力します。パスワードを持たない古い版なら空欄にしてください。初回のペアリングはコードだけで行われます。"
+
+#: app/ui/transfer.py:503
+msgid "发送给所选设备"
+msgstr "選択したデバイスに送信"
+
+#: app/ui/transfer.py:590
+msgid "已换成新的配对码和密码，旧二维码作废。已连接的设备不受影响。"
+msgstr "新しいペアリングコードとパスワードに切り替えました。古い QR コードは無効です。接続済みのデバイスは影響を受けません。"
+
+#: app/ui/transfer.py:595
+msgid "配对码要等接收端口打开才有"
+msgstr "ペアリングコードは受信ポートが開いてから表示されます"
+
+#: app/ui/transfer.py:596
+#, python-brace-format
+msgid "配对码：{code}"
+msgstr "ペアリングコード：{code}"
+
+#: app/ui/transfer.py:601
+#, python-brace-format
+msgid "密码：{secret}"
+msgstr "パスワード：{secret}"
+
+#: app/ui/transfer.py:605
+msgid "本机接收端口没有打开。"
+msgstr "この端末は受信用ポートを開いていません。"
+
+#: app/ui/transfer.py:607
+msgid "接收已停止，对方连不进来。"
+msgstr "受信を停止したため、相手は接続できません。"
+
+#: app/ui/transfer.py:608
+#, python-brace-format
+msgid "端口：{port}"
+msgstr "ポート：{port}"
+
+#: app/ui/transfer.py:616
+msgid "发现通道：mDNS 与 UDP 都可用。"
+msgstr "検出チャネル：mDNS と UDP の両方が使えます。"
+
+#: app/ui/transfer.py:617
+msgid "mDNS"
+msgstr "mDNS"
+
+#: app/ui/transfer.py:617
+msgid "UDP 广播"
+msgstr "UDP ブロードキャスト"
+
+#: app/ui/transfer.py:620
+#, python-brace-format
+msgid "发现通道：{which} 都不可用，只能手输地址或粘贴配对串。"
+msgstr "検出チャネル：{which} がすべて使えません。アドレス入力かペアリング文字列の貼り付けだけです。"
+
+#: app/ui/transfer.py:621
+#, python-brace-format
+msgid "发现通道：{which} 不可用，仍可手输地址或粘贴配对串。"
+msgstr "検出チャネル：{which} は使えませんが、アドレス入力やペアリング文字列は使えます。"
+
+#: app/ui/transfer.py:625
+#, python-brace-format
+msgid "这台机器开不了接收端口，但仍能主动发出去：{error}"
+msgstr "この端末は受信用ポートを開けませんが、送信はできます：{error}"
+
+#: app/ui/transfer.py:627
+#, python-brace-format
+msgid "上次有 {n} 个传输没传完，对方接着传就会续上。"
+msgstr "前回 {n} 件の転送が途中で止まりました。相手が続ければ自動的に再開します。"
+
+#: app/ui/transfer.py:658
+msgid "这台设备对别人显示的名字："
+msgstr "他のデバイスに表示されるこの端末の名前："
+
+#: app/ui/transfer.py:706
+#, python-brace-format
+msgid "…共 {n} 个文件"
+msgstr "…計 {n} 個のファイル"
+
+#: app/ui/transfer.py:708
+#, python-brace-format
+msgid "接收来自 {who} 的文件？"
+msgstr "{who} からファイルを受信しますか？"
+
+#: app/ui/transfer.py:709
+#, python-brace-format
+msgid ""
+"对方：{who}\n"
+"\n"
+"{listing}"
+msgstr ""
+"相手：{who}\n"
+"\n"
+"{listing}"
+
+#: app/ui/transfer.py:711
+msgid "接收"
+msgstr "受信"
+
+#: app/ui/transfer.py:712
+msgid "拒绝"
+msgstr "拒否"
+
+#: app/ui/transfer.py:759
+#, python-brace-format
+msgid "正在连接 {name}（{host}）…"
+msgstr "{name}（{host}）に接続中…"
+
+#: app/ui/transfer.py:764
+#, python-brace-format
+msgid "已选择 {name}（{host}）。本机存过它的密钥，留空配对码点连接。"
+msgstr "{name}（{host}）を選択しました。このマシンに鍵があるため、空欄のまま「接続」を押せます。"
+
+#: app/ui/transfer.py:765
+#, python-brace-format
+msgid "已选择 {name}（{host}）。输入它屏幕上的 {n} 位配对码{extra}，再点连接。"
+msgstr "{name}（{host}）を選択しました。相手の画面の{n}桁のコード{extra}を入力して「接続」を押してください。"
+
+#: app/ui/transfer.py:766
+#, python-brace-format
+msgid "和 {m} 位密码"
+msgstr "と{m}桁のパスワード"
+
+#: app/ui/transfer.py:770
+#, python-brace-format
+msgid "一次只连一台，现在连着 {name}。要换设备先点「断开」。"
+msgstr "同時に接続できるのは1台だけで、現在は {name} です。機器を替えるには「切断」を押してください。"
+
+#: app/ui/transfer.py:772
+msgid "自动发现没有运行。点「从附近选择…」手输对方地址。"
+msgstr "自動検出は実行されていません。「近くから選択…」で相手のアドレスを入力してください。"
+
+#: app/ui/transfer.py:775
+msgid "附近暂时没有广播出来的设备。点「从附近选择…」手输地址。"
+msgstr "現在、通知しているデバイスはありません。「近くから選択…」でアドレスを入力してください。"
+
+#: app/ui/transfer.py:776
+#, python-brace-format
+msgid "附近发现 {n} 台设备，点「从附近选择…」连接。"
+msgstr "近くで {n} 台のデバイスを見つけました。「近くから選択…」で接続してください。"
+
+#: app/ui/transfer.py:787
+msgid "（对方连进来，只能收）"
+msgstr "（相手から接続、受信のみ）"
+
+#: app/ui/transfer.py:800
+#, python-brace-format
+msgid "指纹前缀 {fp}。它主动连进来，本机没有可回拨的地址，所以只能收它的文件。要发给它，请由它来连本机。"
+msgstr ""
+"指紋プレフィックス "
+"{fp}。相手から接続してきたため、このマシンには折り返すアドレスがなく、相手のファイルを受信するだけです。送るなら相手から本機に接続してください。"
+
+#: app/ui/transfer.py:804
+#, python-brace-format
+msgid "指纹前缀 {fp}。已配对，会话保留到点断开为止。"
+msgstr "指紋プレフィックス {fp}。ペアリング済みで、切断するまでセッションは維持されます。"
+
+#: app/ui/transfer.py:809
+msgid "还没有已连接的设备。点下面「从附近选择…」挑一台，或手输它的地址。"
+msgstr "まだ接続済みのデバイスはありません。下の「近くから選択…」で選ぶか、アドレスを手入力してください。"
+
+#: app/ui/transfer.py:838
+#, python-brace-format
+msgid "{name} 已连上本机（{ip}），现在只等它发文件过来。"
+msgstr "{name} が本機に接続しました（{ip}）。相手からファイルが送られるのを待っています。"
+
+#: app/ui/transfer.py:861
+#, python-brace-format
+msgid "{name} 已经连着，选文件发送即可。"
+msgstr "{name} は接続済みです。ファイルを選ぶだけで送信できます。"
+
+#: app/ui/transfer.py:877
+#, python-brace-format
+msgid "{addr} 应答了，但不是能配的版本：{why}"
+msgstr "{addr} は応答しましたが、組み合わせできるバージョンではありません：{why}"
+
+#: app/ui/transfer.py:880 app/ui/transfer.py:970
+#, python-brace-format
+msgid "连不上 {addr}：{error}"
+msgstr "{addr} に接続できません：{error}"
+
+#: app/ui/transfer.py:907
+#, python-brace-format
+msgid "一次只连一台。先断开 {name}，再连新设备。"
+msgstr "同時に接続できるのは1台だけです。先に {name} を切断してください。"
+
+#: app/ui/transfer.py:908
+msgid "用上面的配对码和密码连接选中的设备。"
+msgstr "上のペアリングコードとパスワードで選択中のデバイスに接続します。"
+
+#: app/ui/transfer.py:920
+msgid "先在「从附近选择…」里挑一台设备，或手输它的地址。"
+msgstr "まず「近くから選択…」でデバイスを選ぶか、アドレスを手入力してください。"
+
+#: app/ui/transfer.py:925
+#, python-brace-format
+msgid "本机一次只连一台，现在连着 {name}。要先点「断开」再连它。"
+msgstr "本機は同時に1台だけ接続できます。現在は {name} です。「切断」を押してから再接続してください。"
+
+#: app/ui/transfer.py:930
+#, python-brace-format
+msgid "还差对方屏幕上那 {n} 位配对码。"
+msgstr "相手の画面に出ている {n} 桁のペアリングコードが入力されていません。"
+
+#: app/ui/transfer.py:954
+#, python-brace-format
+msgid "配对码或密码不对。请照着对方屏幕上现在的 {n} 位码和 {m} 位密码再输一次。"
+msgstr "ペアリングコードまたはパスワードが違います。相手画面に表示されている {n} 桁のコードと {m} 桁のパスワードをもう一度入力してください。"
+
+#: app/ui/transfer.py:963
+#, python-brace-format
+msgid "它已经连着 {peer}，一次只允许一台。请那边先断开。"
+msgstr "相手はすでに {peer} と接続中です。同時に1台のみです。そちらで先に切断してください。"
+
+#: app/ui/transfer.py:966 app/ui/transfer.py:1158
+#, python-brace-format
+msgid "对方说：{text}"
+msgstr "相手のメッセージ：{text}"
+
+#: app/ui/transfer.py:999
+#, python-brace-format
+msgid "已连接 {name}，指纹前缀 {fp}。核对无误再发。"
+msgstr "{name} に接続しました（指紋プレフィックス {fp}）。確認してから送信してください。"
+
+#: app/ui/transfer.py:1025
+#, python-brace-format
+msgid "已断开 {name}。它的密钥还留在本机，留空配对码就能重连；要彻底撤销请去设置。"
+msgstr "{name} を切断しました。鍵はこのマシンに残るので、空欄なら再接続できます。完全に消すには設定で取り消してください。"
+
+#: app/ui/transfer.py:1056
+msgid "这台设备是连进来的，本机没有可回拨的地址。要发给它，请改由它连接本机。"
+msgstr "このデバイスは相手から接続してきたため、折り返すアドレスがありません。送るなら相手から本機へ接続してください。"
+
+#: app/ui/transfer.py:1065
+msgid "选择要发送的文件夹"
+msgstr "送信するフォルダーを選択"
+
+#: app/ui/transfer.py:1072
+msgid "选择要发送的文件"
+msgstr "送信するファイルを選択"
+
+#: app/ui/transfer.py:1082
+msgid "这些文件不在同一个文件夹下，请分开发送。"
+msgstr "これらのファイルは同じフォルダーにないため、分けて送信してください。"
+
+#: app/ui/transfer.py:1097
+msgid "还没选要发送的内容。"
+msgstr "送信するものが選ばれていません。"
+
+#: app/ui/transfer.py:1102
+#, python-brace-format
+msgid "已选：{name}（整个文件夹，约 {size}）"
+msgstr "選択中：{name}（フォルダー全体、約 {size}）"
+
+#: app/ui/transfer.py:1103
+#, python-brace-format
+msgid "已选 {n} 个文件，共 {size}"
+msgstr "{n} 個のファイルを選択中、合計 {size}"
+
+#: app/ui/transfer.py:1113
+msgid "准备中…"
+msgstr "準備中…"
+
+#: app/ui/transfer.py:1129
+msgid "这台设备已经没有连接会话，请重新连接它。"
+msgstr "このデバイスには接続セッションがありません。再接続してください。"
+
+#: app/ui/transfer.py:1134
+msgid "这里没有可发的文件。"
+msgstr "送信できるファイルがありません。"
+
+#: app/ui/transfer.py:1151
+#, python-brace-format
+msgid "已发给 {name}：{n} 个文件（{size}），对方逐个校验通过。"
+msgstr "{name} に送信しました：{n} ファイル（{size}）、すべて相手で検証済み。"
+
+#: app/ui/transfer.py:1156
+msgid "对方不再认识本机的密钥。选中它，输入它屏幕上新显示的配对码再连接。"
+msgstr "相手はこのマシンの鍵を認識しなくなりました。選択して、相手の画面に出た新しいコードを入力し、再接続してください。"
+
+#: app/ui/transfer.py:1160
+#, python-brace-format
+msgid "有文件已经不在了：{path}"
+msgstr "存在しないファイルがあります：{path}"
+
+#: app/ui/transfer.py:1165
+#, python-brace-format
+msgid "连不上对方，它可能已经退出或换了端口：{error}"
+msgstr "相手に接続できません。終了したかポートが変わった可能性があります：{error}"
+
+#: app/ui/transfer.py:1168
+#, python-brace-format
+msgid "传输中断：{error}"
+msgstr "転送が中断されました：{error}"
+
+#: app/ui/transfer.py:1176
+#, python-brace-format
+msgid "正在发送：{name}"
+msgstr "送信中：{name}"
+
+#: app/ui/transfer.py:1181
+msgid "未开始"
+msgstr "開始されていません"
+
+#: app/ui/transfer.py:1197
+#, python-brace-format
+msgid "已收到 {who} 发来的 {n} 个文件（{size}），逐个校验通过。"
+msgstr "{who} から {n} ファイル（{size}）を受信しました。すべて検証済みです。"
+
+#: app/ui/transfer.py:1207
+#, python-brace-format
+msgid ""
+"来自 {who}\n"
+"双击打开：{path}"
+msgstr ""
+"{who} から\n"
+"ダブルクリックで開く：{path}"
+
+#: app/ui/transfer.py:1210
+msgid "这次还没有收到校验通过的文件；以前收过的都在接收目录里。"
+msgstr "このセッションで検証済みの受信ファイルはまだありません。以前のファイルは受信フォルダにあります。"
+
+#: app/ui/tray.py:28 app/ui/tray.py:60
+msgid "打开主界面"
+msgstr "メイン画面を開く"
+
+#: app/ui/tray.py:29 app/ui/tray.py:61
+msgid "开机自动启动"
+msgstr "ログオン時に自動起動"
+
+#: app/ui/tray.py:52
+msgid "无法开启开机自动启动"
+msgstr "自動起動を有効にできません"
+
+#: app/ui/tray.py:53
+#, python-brace-format
+msgid ""
+"仅打包后的 Windows 版本可以注册开机自启。\n"
+"当前命令：{cmd}"
+msgstr ""
+"パッケージ化した Windows 版のみ、自動起動を登録できます。\n"
+"現在のコマンド：{cmd}"
+
+#: app/ui/tray.py:70
+msgid ""
+"已最小化到托盘，仍在后台运行。\n"
+"双击托盘图标可重新打开。"
+msgstr ""
+"トレイに最小化しました。バックグラウンドで動作を続けています。\n"
+"トレイのアイコンをダブルクリックすると再度開けます。"
+
+#~ msgid "附近的设备"
+#~ msgstr "近くのデバイス"
+
+#~ msgid "（未确认）"
+#~ msgstr "（未確認）"
+
+#~ msgid "没输入配对码，已取消。"
+#~ msgstr "ペアリングコードが入力されず、中止しました。"
+
+#~ msgid "配对码不对，已取消。"
+#~ msgstr "ペアリングコードが違ったため、中止しました。"
+
+#~ msgid "已把 {n} 个文件发给 {name}。"
+#~ msgstr "{n} 個のファイルを {name} に送りました。"
+
+#~ msgid "输入配对码"
+#~ msgstr "ペアリングコードの入力"
+
+#~ msgid "请输入 {name} 上显示的 {n} 位配对码："
+#~ msgstr "{name} に表示されている {n} 桁のペアリングコードを入力してください："
+
+#~ msgid "停止接收"
+#~ msgstr "受信を停止"
+
+#~ msgid "开始接收"
+#~ msgstr "受信を開始"
+
+#~ msgid "打开接收后这里才显示配对码"
+#~ msgstr "受信を開始すると、ここにペアリングコードが表示されます"
+

@@ -11,11 +11,13 @@
     "minimize": "minimize.svg",
     "moon": "moon.svg",
     "restore": "restore.svg",
+    "settings": "settings.svg",
     "sun": "sun.svg"
   },
   "buttons": {
     "app": "logo",
     "lang": "globe",
+    "settings": "settings",
     "theme": { "default": "sun", "dark": "moon" },
     "min": "minimize",
     "max": { "default": "maximize", "maximized": "restore" },

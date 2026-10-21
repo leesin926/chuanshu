@@ -20,11 +20,19 @@ from app.paths import locale_dir
 
 log = logging.getLogger(__name__)
 
-#: Display names for the language menu. A locale becomes selectable as soon as
-#: its .mo exists, so this table only needs entries for languages you add.
+#: Display names for the language menu, each written in its own language (an endonym),
+#: so the list reads the same whichever language is on screen and needs no translation.
+#: A locale becomes selectable as soon as its .mo exists, so this table only needs
+#: entries for languages you add.
 LANGUAGE_NAMES: dict[str, str] = {
     "zh_CN": "简体中文",
     "en": "English",
+    "ja": "日本語",
+    "ko": "한국어",
+    "de": "Deutsch",
+    "fr": "Français",
+    "es": "Español",
+    "ru": "Русский",
 }
 
 _catalog: gettext.NullTranslations = gettext.NullTranslations()
@@ -33,6 +41,17 @@ _catalog: gettext.NullTranslations = gettext.NullTranslations()
 def _(msgid: str) -> str:
     """Translate a single string."""
     return _catalog.gettext(msgid)
+
+
+def N(msgid: str) -> str:
+    """Name a string as translatable without translating it now.
+
+    Widgets that are re-labelled on a language switch have to store the *message id*, not a
+    string already translated in some other language, so the literals handed to those helpers
+    are invisible to a plain ``_()`` call. Wrapping them in ``N()`` shows Babel the string and
+    hands the caller back the same text; ``retranslate()`` does the translating later.
+    """
+    return msgid
 
 
 def _n(singular: str, plural: str, n: int) -> str:

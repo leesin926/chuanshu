@@ -71,6 +71,10 @@ function Step-I18n {
     if ($LASTEXITCODE -ne 0) { throw 'pybabel extract failed' }
     & $pybabel update -D app -i locale/app.pot -d locale
     if ($LASTEXITCODE -ne 0) { throw 'pybabel update failed' }
+    # An empty msgstr compiles into an empty translation, and Python's gettext returns it
+    # instead of the msgid - mirror zh_CN and refuse to build while en has holes.
+    & $Py -X utf8 scripts/i18n_sync.py
+    if ($LASTEXITCODE -ne 0) { throw 'untranslated messages (see scripts/i18n_sync.py)' }
     & $pybabel compile -D app -d locale
     if ($LASTEXITCODE -ne 0) { throw 'pybabel compile failed' }
 }

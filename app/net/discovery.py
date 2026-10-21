@@ -83,6 +83,36 @@ class Peer:
         }
 
 
+def verify_peer(proto: protocol_spec.Protocol, peer: Peer) -> Peer:
+    """Read a peer's full SPKI digest over TLS and fill in what it says about itself.
+
+    The advertised prefix only proves the machine at that address is the one that
+    announced itself. Trust in the sense of spec §3 still needs the pair code both
+    screens show, because an on-LAN attacker that hijacked the announcement would pass
+    this check with its own key. This needs no discovery service, so a hand-typed
+    address is checkable even while this machine is not listening.
+    """
+    conn = http.client.HTTPSConnection(peer.host, peer.port, context=client_context(), timeout=5.0)
+    try:
+        conn.request("GET", "/v1/hello")
+        response = conn.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+        if response.status != 200:
+            raise protocol_spec.ProtocolError(str(body.get("code") or "UNSUPPORTED_PROTOCOL"), body)
+        digest = read_fingerprint(conn.sock, peer.prefix)
+    finally:
+        conn.close()
+    if not proto.supports(int(body.get("protocol_version") or 0)):
+        raise protocol_spec.ProtocolError("UNSUPPORTED_PROTOCOL", {"peer_version": body.get("protocol_version")})
+    peer.fingerprint = digest
+    peer.peer_id = str(body.get("peer_id", peer.peer_id))
+    peer.name = str(body.get("name", peer.name))
+    peer.version = int(body["protocol_version"])
+    peer.port = int(body.get("port", peer.port))
+    log.info("verified %s as %s (%s)", peer.prefix, peer.name, digest[: proto.prefix_chars])
+    return peer
+
+
 class DiscoveryService:
     def __init__(
         self,
@@ -341,43 +371,23 @@ class DiscoveryService:
     # -------------------------------------------------------------------- trust
 
     def verify(self, peer: Peer) -> Peer:
-        """Turn a broadcast into a peer you may pin: read its full SPKI digest over TLS.
-
-        The advertised prefix only proves the machine at that address is the one that
-        announced itself. Trust in the sense of spec §3 still needs the 4-digit code both
-        screens show, because an on-LAN attacker that hijacked the announcement would pass
-        this check with its own key.
-        """
-        conn = http.client.HTTPSConnection(peer.host, peer.port, context=client_context(), timeout=5.0)
-        try:
-            conn.request("GET", "/v1/hello")
-            response = conn.getresponse()
-            body = json.loads(response.read().decode("utf-8"))
-            if response.status != 200:
-                raise protocol_spec.ProtocolError(str(body.get("code") or "UNSUPPORTED_PROTOCOL"), body)
-            digest = read_fingerprint(conn.sock, peer.prefix)
-        finally:
-            conn.close()
-        if not self.proto.supports(int(body.get("protocol_version") or 0)):
-            raise protocol_spec.ProtocolError("UNSUPPORTED_PROTOCOL", {"peer_version": body.get("protocol_version")})
-        peer.fingerprint = digest
-        peer.peer_id = str(body.get("peer_id", peer.peer_id))
-        peer.name = str(body.get("name", peer.name))
-        peer.version = int(body["protocol_version"])
-        peer.port = int(body.get("port", peer.port))
-        log.info("verified %s as %s (%s)", peer.prefix, peer.name, digest[: self.proto.prefix_chars])
+        """Turn a broadcast into a peer you may pin, then tell the roster about it."""
+        verify_peer(self.proto, peer)
         self._notify()
         return peer
 
-    def pairing_qr(self, code: str, host: str = "") -> str:
+    def pairing_qr(self, code: str, host: str = "", passphrase: str = "") -> str:
         """What the receiving screen paints so the other side can skip discovery.
 
-        ``code`` comes from ReceiveService.current_pair_code() and rotates with it, so the
-        picture has to be repainted on the same schedule - the two are one promise, not two.
+        The picture carries the same two secrets the screen shows, because scanning and
+        reading-aloud are the same act of trust: whoever can photograph the QR can already
+        read the code off it. ``k`` is left out when this build has no passphrase, so an
+        older scanner still gets a payload it can parse.
         """
-        return protocol_spec.qr_url(
-            h=host or local_ipv4(), p=str(self.port), v=str(self.proto.version), f=self.identity.fingerprint, c=code
-        )
+        fields = {"h": host or local_ipv4(), "p": str(self.port), "v": str(self.proto.version)}
+        if passphrase:
+            fields["k"] = passphrase
+        return protocol_spec.qr_url(f=self.identity.fingerprint, c=code, **fields)
 
 
 class _MdnsListener:

@@ -3,6 +3,11 @@
 The trust anchor is the certificate's SPKI fingerprint, never peer_id: reinstalling
 the app mints a new peer_id but the same fingerprint only if the key survives, so
 the key file and the peer_id live together and are written atomically.
+
+The pairing material (the code and the passphrase a user reads to the other side) is
+stored next to the key for the same reason: it is only worth as much as the key that
+signs with it, and both have to survive a restart so the QR a peer already scanned
+still means something tomorrow.
 """
 
 from __future__ import annotations
@@ -27,10 +32,19 @@ log = logging.getLogger(__name__)
 _KEY = "peer-key.pem"
 _CERT = "peer-cert.pem"
 _TRUSTED = "trusted.json"
+_PAIRING = "pairing.json"
+
+#: No I/O/0/1: this is read out loud to another person and typed on a phone keypad.
+PASSPHRASE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 
 def new_pair_code(digits: int) -> str:
     return "".join(secrets.choice("0123456789") for _ in range(digits))
+
+
+def new_passphrase(chars: int) -> str:
+    """The second secret. 8 of 32 symbols is far past what the 5-tries lockout can leak."""
+    return "".join(secrets.choice(PASSPHRASE_ALPHABET) for _ in range(chars))
 
 
 def _spki_der(public_key) -> bytes:
@@ -58,11 +72,58 @@ class Identity:
         self.cert = cert
         self._trusted: dict[str, dict] = {}
         self._trusted_path = directory / _TRUSTED
+        self._pairing: dict[str, str] = {}
+        self._pairing_path = directory / _PAIRING
         self.load_trusted()
+        self.load_pairing()
 
     @property
     def fingerprint(self) -> str:
         return fingerprint_of(self.cert)
+
+    # ------------------------------------------------------- pairing material
+
+    @property
+    def pair_code(self) -> str:
+        return self._pairing.get("code", "")
+
+    @property
+    def passphrase(self) -> str:
+        return self._pairing.get("passphrase", "")
+
+    def load_pairing(self) -> None:
+        try:
+            stored = json.loads(self._pairing_path.read_text(encoding="utf-8-sig"))
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError):
+            log.exception("pairing.json unreadable, reminting: %s", self._pairing_path)
+            return
+        if isinstance(stored, dict) and stored.get("code") and stored.get("passphrase"):
+            self._pairing = {k: str(v) for k, v in stored.items() if k in ("code", "passphrase", "rotated")}
+
+    def ensure_pairing(self, code_digits: int, passphrase_chars: int) -> None:
+        """Give this device its fixed code and passphrase, minting them on first run.
+
+        Called by whoever is about to display or check them, because only that peer knows
+        the lengths the contract asks for; the key itself has no opinion on the format.
+        """
+        want = (self._pairing.get("code") or "") and (self._pairing.get("passphrase") or "")
+        if want:
+            return
+        self.rotate_pairing(code_digits, passphrase_chars)
+
+    def rotate_pairing(self, code_digits: int, passphrase_chars: int) -> tuple[str, str]:
+        """Replace both secrets with fresh ones. Pins and sessions are untouched: this
+        only changes what a *stranger* has to get right before it can pin us."""
+        self._pairing = {
+            "code": new_pair_code(code_digits),
+            "passphrase": new_passphrase(passphrase_chars),
+            "rotated": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
+        }
+        _atomic(self._pairing_path, json.dumps(self._pairing, ensure_ascii=False, indent=2))
+        log.info("rotated pairing material (code and passphrase)")
+        return self._pairing["code"], self._pairing["passphrase"]
 
     def raw_public_key(self) -> bytes:
         """The 32-byte Ed25519 key, as it travels inside a pair request."""
@@ -87,26 +148,67 @@ class Identity:
         _atomic(self._trusted_path, json.dumps(self._trusted, ensure_ascii=False, indent=2))
 
     def is_trusted(self, fingerprint: str) -> bool:
-        return fingerprint in self._trusted
+        """Whether this number belongs to a pinned device - as its identity key, or as the
+        certificate that device serves. A peer dialled by its TLS leaf is still the machine
+        this end paired with (spec §3), so both numbers open the same door."""
+        if fingerprint in self._trusted:
+            return True
+        return any(str(entry.get("tls_fingerprint") or "") == fingerprint for entry in self._trusted.values())
 
     def trusted_entry(self, fingerprint: str) -> dict | None:
         return self._trusted.get(fingerprint)
 
-    def trust(self, fingerprint: str, peer_id: str, name: str, public_key: str = "") -> None:
-        """Pin a peer by key fingerprint; peer_id is metadata, never the anchor."""
-        self._trusted[fingerprint] = {"peer_id": peer_id, "name": name, "public_key": public_key}
+    def trust(self, fingerprint: str, peer_id: str, name: str, public_key: str = "", tls_fingerprint: str = "") -> None:
+        """Pin a peer by key fingerprint; peer_id is metadata, never the anchor.
+
+        ``tls_fingerprint`` is only for a peer whose served certificate is signed by a different key
+        than the identity that just signed for it (spec §3). It is what lets this end recognise the
+        device it dialled and the device that dialled in as one machine instead of two.
+        """
+        entry: dict = {"peer_id": peer_id, "name": name, "public_key": public_key}
+        if tls_fingerprint:
+            entry["tls_fingerprint"] = tls_fingerprint
+        self._trusted[fingerprint] = entry
         self.save_trusted()
         log.info("pinned peer %s (%s)", name, fingerprint[:12])
 
-    def remember_peer(self, fingerprint: str, peer_id: str, name: str) -> None:
+    def remember_peer(self, fingerprint: str, peer_id: str, name: str, tls_fingerprint: str = "") -> None:
         """Refresh metadata for an already pinned key after its peer_id changed."""
         entry = self._trusted.get(fingerprint)
-        if entry is not None and (entry.get("peer_id") != peer_id or entry.get("name") != name):
-            entry.update({"peer_id": peer_id, "name": name})
+        if entry is None:
+            return
+        before = dict(entry)
+        if tls_fingerprint:
+            entry["tls_fingerprint"] = tls_fingerprint
+        entry.update({"peer_id": peer_id, "name": name})
+        if entry != before:
             self.save_trusted()
+
+    def same_peer(self, a: str, b: str) -> bool:
+        """Two fingerprints, one device: a peer is pinned by its identity key but dialled by the
+        certificate it serves, and only a device whose §3 declaration says they belong together
+        has two different numbers here."""
+        if not a or not b:
+            return False
+        if a == b:
+            return True
+        for key, entry in self._trusted.items():
+            leaf = str(entry.get("tls_fingerprint") or "")
+            if leaf and ((key == a and leaf == b) or (key == b and leaf == a)):
+                return True
+        return False
 
     def pinned_fingerprints(self) -> list[str]:
         return sorted(self._trusted)
+
+    def untrust(self, fingerprint: str) -> bool:
+        """Forget one pinned key. That device has to be paired again from scratch."""
+        gone = self._trusted.pop(fingerprint, None)
+        if gone is None:
+            return False
+        self.save_trusted()
+        log.info("unpinned peer %s (%s)", gone.get("name", "?"), fingerprint[:12])
+        return True
 
     # ------------------------------------------------------------- TLS
 
@@ -194,7 +296,7 @@ def read_fingerprint(conn: ssl.SSLSocket, advertised_prefix: str = "") -> str:
 
     A prefix is all mDNS and the UDP announce carry (spec §2), so this can only reject a
     wrong-address collision - it is not authentication. Real trust arrives with the
-    4-digit code that both screens show at the same time (spec §3).
+    pair code that both screens show at the same time (spec §3).
     """
     digest = _peer_fingerprint(conn)
     if advertised_prefix and not digest.startswith(advertised_prefix):

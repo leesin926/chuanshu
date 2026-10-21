@@ -6,7 +6,7 @@ looks asymmetric:
 * the *connecting* peer authenticates this server with the SPKI fingerprint that
   came out of the QR code;
 * this server authenticates the connecting peer with an Ed25519 signature over a
-  nonce, and on first contact additionally with the 4-digit code (TOFU).
+  nonce, and on first contact additionally with the one-time pair code (TOFU).
 
 The UI plugs a decision callback into ``OfferHandler``; blocking inside it is
 intended, it is what makes an offer's long-poll honest.
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
 import logging
 import re
@@ -46,7 +47,16 @@ _CODE_MAX_FAILS = 5
 #: How much of an unconsumed request body an error reply is allowed to swallow.
 _MAX_ERROR_DRAIN = 65536
 
-OfferHandler = Callable[[dict, str], bool]
+OfferHandler = Callable[[dict, str, str], bool]
+#: Fires once an offer has been verified chunk-for-chunk: who sent it, and which files this
+#: machine can now vouch for. Only the UI's answer can say a file was *received* - a directory
+#: listing cannot tell a finished file from one whose tail is still on the wire.
+ReceivedHandler = Callable[[str, list[dict]], None]
+#: Fires on every accepted pair, so the roster can show a device that dialled *us*. Without
+#: this the list only ever holds peers this machine dialled, which is the wrong half of the
+#: story: the phone sending files to a PC never appears on that PC.
+#: (fingerprint, peer_id, name, client ip)
+PairedHandler = Callable[[str, str, str, str], None]
 
 
 def _digest(data: bytes) -> str:
@@ -83,6 +93,8 @@ class OfferState:
     files: list[dict]
     proto: protocol_spec.Protocol
     received: dict[str, dict[int, str]] = field(default_factory=dict)
+    #: The name this machine's pin list gives the sender, not what the manifest called itself.
+    who: str = ""
     created: float = field(default_factory=time.time)
 
     def chunk_count(self, file: dict) -> int:
@@ -106,6 +118,7 @@ class OfferState:
     def persist(self) -> None:
         body = {
             "offer_id": self.offer_id,
+            "who": self.who,
             "files": self.files,
             "received": {
                 fid: {str(index): digest for index, digest in chunks.items()}
@@ -136,6 +149,7 @@ class OfferState:
             files=files,
             proto=proto,
             received=received,
+            who=str(body.get("who", "")),
         )
 
 
@@ -246,19 +260,26 @@ class ReceiveService:
         host: str = "",
         port: int = 0,
         root: Path | None = None,
+        on_received: ReceivedHandler | None = None,
+        on_paired: PairedHandler | None = None,
     ) -> None:
         self.identity = identity
         self.device_name = device_name
         self.handler = handler
+        self.on_received = on_received
+        self.on_paired = on_paired
         self.proto = protocol_spec.load()
         self.root = Path(root or receive_root())
         self._offers: dict[str, OfferState] = {}
         self._tokens: dict[str, str] = {}
         self._seen_nonces: dict[str, float] = {}
         self._code_failures: dict[str, list[float]] = {}
-        self._pair_code = ""
-        self._pair_code_expiry = 0.0
-        # RLock: handle_pair takes it and then rotates the code through the same lock.
+        # Only used when the contract says the code lapses (pair_code_static=false).
+        self._ephemeral: tuple[str, float] = ("", 0.0)
+        # Whose session this device is committed to, set by the UI when it dials out.
+        self._held_by: str = ""
+        self.identity.ensure_pairing(self.proto.pair_code_digits, self.proto.passphrase_chars)
+        # RLock: handle_pair takes it and then reads the session slots through the same lock.
         self._lock = threading.RLock()
         self._http = _Server((host, port), self)
         self._thread = threading.Thread(target=self._http.serve_forever, name="chuanshu-serve", daemon=True)
@@ -297,11 +318,54 @@ class ReceiveService:
     # --------------------------------------------------------------- pairing
 
     def current_pair_code(self) -> str:
+        """What a stranger has to read off this screen to get in.
+
+        With ``pair_code_static`` this is the code the device minted on first run and keeps
+        until the user rotates it by hand - which is what lets the pairing QR be printed and
+        stay true. A build without the flag falls back to one code per ``pair_code_ttl_s``.
+        """
+        if self.proto.pair_code_static:
+            return self.identity.pair_code
         with self._lock:
-            if not self._pair_code or time.time() > self._pair_code_expiry:
-                self._pair_code = new_pair_code(self.proto.pair_code_digits)
-                self._pair_code_expiry = time.time() + self.proto.pair_code_ttl_s
-            return self._pair_code
+            if not self._ephemeral[0] or time.time() > self._ephemeral[1]:
+                self._ephemeral = (
+                    new_pair_code(self.proto.pair_code_digits),
+                    time.time() + self.proto.pair_code_ttl_s,
+                )
+            return self._ephemeral[0]
+
+    def passphrase(self) -> str:
+        """The second secret, or "" on a build whose contract has none."""
+        return self.identity.passphrase if self.proto.passphrase_chars else ""
+
+    def active_peers(self) -> list[str]:
+        """Fingerprints holding the open session slot, inbound or dialled by us."""
+        with self._lock:
+            return sorted({fp for fp in (*self._tokens, self._held_by) if fp})
+
+    def release(self, fingerprint: str) -> bool:
+        """Take a peer's session token away, freeing the slot for the next device.
+
+        Revoking it here rather than waiting for the socket to close is what makes 断开 mean
+        something on the receiving side too: without it an inbound peer would keep sending
+        chunks against a token the user believes is gone.
+        """
+        with self._lock:
+            gone = self._tokens.pop(fingerprint, None)
+        if gone is None:
+            return False
+        log.info("released the session of %s", fingerprint[:12])
+        return True
+
+    def hold_slot_for(self, fingerprint: str) -> None:
+        """Tell the receiver which peer this machine already talks to.
+
+        One peer at a time is a promise about the device, not about the direction: a PC that
+        dialled out itself has no inbound token to count, so without this a stranger could still
+        pair beside the session the user already sees on screen.
+        """
+        with self._lock:
+            self._held_by = fingerprint or ""
 
     def _prune(self) -> None:
         now = time.time()
@@ -323,6 +387,9 @@ class ReceiveService:
             declared = str(body.get("public_key", ""))
             signature = str(body.get("signature", ""))
             code = str(body.get("code", ""))
+            declared_leaf = str(body.get("tls_fingerprint") or "")
+            if declared_leaf and not protocol_spec.is_fingerprint(declared_leaf):
+                raise protocol_spec.ProtocolError("NOT_PAIRED", {"reason": "tls_fingerprint is not a full SPKI digest"})
             version = int(body.get("protocol_version") or 0)
             if not self.proto.supports(version):
                 raise protocol_spec.ProtocolError("UNSUPPORTED_PROTOCOL", {"peer_version": version})
@@ -335,7 +402,7 @@ class ReceiveService:
             except ValueError:
                 raise protocol_spec.ProtocolError("NOT_PAIRED", {"reason": "public key is not base64 raw ed25519"})
 
-            message = f"pair|{peer_id}|{nonce}".encode("utf-8")
+            message = protocol_spec.pair_message(peer_id, nonce, declared_leaf)
             fingerprint = fingerprint_of_public_key(key)
             pinned = self._pinned_key(fingerprint)
             if pinned is not None and _raw(pinned) != _raw(key):
@@ -347,6 +414,23 @@ class ReceiveService:
             except (InvalidSignature, ValueError):
                 raise protocol_spec.ProtocolError("NOT_PAIRED", {"reason": "signature does not match the key"})
 
+            # Only now, with the key proven to own its own claim, is it safe to say anything
+            # about who else is connected. The slot counts a peer this side dialled too, so the
+            # promise does not depend on which end of the cable clicked first. A platform whose
+            # TLS leaf is not its identity key shows up under two numbers here, so the comparison
+            # has to be "same device", not "same hex".
+            occupied = [fp for fp in (*self._tokens, self._held_by)
+                        if fp and not self.identity.same_peer(fp, fingerprint)]
+            if occupied:
+                holder = self.identity.trusted_entry(occupied[0]) or {}
+                raise protocol_spec.ProtocolError(
+                    "PEER_BUSY",
+                    {
+                        "reason": "one peer at a time",
+                        "peer": str(holder.get("name") or "") or occupied[0][: self.proto.prefix_chars],
+                    },
+                )
+
             if pinned is None:
                 failures = self._code_failures.setdefault(client_ip, [])
                 if len(failures) >= _CODE_MAX_FAILS:
@@ -354,15 +438,22 @@ class ReceiveService:
                 if code != self.current_pair_code():
                     failures.append(time.time())
                     raise protocol_spec.ProtocolError("BAD_PAIR_CODE")
-                self.identity.trust(fingerprint, peer_id, name, declared)
+                if "secret" in body and not hmac.compare_digest(str(body.get("secret") or ""), self.passphrase()):
+                    # A wrong passphrase is the same mistake as a wrong code as far as the
+                    # sender is concerned, and a single error code keeps both builds honest.
+                    failures.append(time.time())
+                    raise protocol_spec.ProtocolError("BAD_PAIR_CODE", {"reason": "passphrase"})
+                self.identity.trust(fingerprint, peer_id, name, declared, declared_leaf)
                 log.info("pinned new peer %s (%s)", name or "?", fingerprint[:12])
             else:
                 # Known key: the signature alone is enough, no code round trip.
-                self.identity.remember_peer(fingerprint, peer_id, name)
+                self.identity.remember_peer(fingerprint, peer_id, name, declared_leaf)
 
             self._seen_nonces[nonce] = time.time()
             token = secrets.token_hex(32)
             self._tokens[fingerprint] = token
+            if self.on_paired is not None:
+                self.on_paired(fingerprint, peer_id, name, client_ip)
             return {
                 "token": token,
                 "peer_id": self.identity.peer_id,
@@ -373,7 +464,20 @@ class ReceiveService:
             }
 
     def token_valid(self, token: str) -> bool:
-        return bool(token) and token in self._tokens.values()
+        if not token:
+            return False
+        with self._lock:
+            return token in set(self._tokens.values())
+
+    def caller_fingerprint(self, token: str) -> str:
+        """Which pinned key this session token belongs to."""
+        with self._lock:
+            # handle_pair writes the map from another request thread, so take a snapshot.
+            pairs = list(self._tokens.items())
+        for fingerprint, value in pairs:
+            if value == token:
+                return fingerprint
+        return ""
 
     def handle_hello(self) -> dict:
         return {
@@ -390,7 +494,7 @@ class ReceiveService:
 
     # ------------------------------------------------------------- transfers
 
-    def handle_offer(self, body: dict) -> dict:
+    def handle_offer(self, body: dict, caller: str) -> dict:
         version = int(body.get("protocol_version") or 0)
         if not self.proto.supports(version):
             raise protocol_spec.ProtocolError("UNSUPPORTED_PROTOCOL", {"peer_version": version})
@@ -405,12 +509,16 @@ class ReceiveService:
             return restored.payload()
 
         targets = {str(f["id"]): sanitize_relpath(str(f["relpath"]), self.proto) for f in files}
-        if not self.handler(body, str(body.get("from", {}).get("name", ""))):
+        entry = self.identity.trusted_entry(caller) if caller else None
+        # A peer may call itself anything inside the manifest, so the name the user sees
+        # comes from the pin list; caller's fingerprint prefix is the only real anchor.
+        who = str((entry or {}).get("name") or "")
+        if not self.handler(body, who, caller):
             raise protocol_spec.ProtocolError("DECLINED")
 
         directory = self.root / offer_id
         directory.mkdir(parents=True, exist_ok=True)
-        state = OfferState(offer_id=offer_id, directory=directory, files=files, proto=self.proto)
+        state = OfferState(offer_id=offer_id, directory=directory, files=files, proto=self.proto, who=who)
         for entry in files:
             target = self._target(state, targets[str(entry["id"])])
             _prepare(target, int(entry["size"]))
@@ -460,13 +568,18 @@ class ReceiveService:
         if state is None:
             raise protocol_spec.ProtocolError("OFFER_UNKNOWN", {"offer_id": offer_id})
         results = []
+        landed: list[dict] = []
         for file in state.files:
             missing = state.missing(file)
             target = self._target(state, sanitize_relpath(str(file["relpath"]), self.proto))
             ok = not missing and _digest_file(target) == str(file["sha256"])
             results.append({"id": file["id"], "ok": ok, "missing": missing, "path": str(target) if ok else None})
-            if not ok:
+            if ok:
+                landed.append({"relpath": str(file["relpath"]), "size": int(file["size"]), "path": str(target)})
+            else:
                 log.warning("finalize rejected %s: %s", file["relpath"], "missing chunks" if missing else "digest mismatch")
+        if landed and self.on_received is not None:
+            self.on_received(state.who, landed)
         return {"offer_id": offer_id, "verified": results}
 
     def handle_abort(self, offer_id: str) -> dict:
@@ -499,7 +612,7 @@ class ReceiveService:
         if not self.token_valid(token):
             raise protocol_spec.ProtocolError("NOT_PAIRED")
         if method == "POST" and parts == ["v1", "offer"]:
-            request._reply(200, self.handle_offer(request._json_body()))
+            request._reply(200, self.handle_offer(request._json_body(), self.caller_fingerprint(token)))
             return
         if method == "DELETE" and parts[:2] == ["v1", "offer"] and len(parts) == 3:
             request._reply(200, self.handle_abort(parts[2]))
@@ -513,10 +626,14 @@ class ReceiveService:
                 request._reply(200, self.handle_finalize(offer_id))
                 return
             if method == "PUT" and parts[3] == "chunk" and len(parts) == 6:
+                body = request._raw_body()
+                # A sender that had to hide the zero bytes says so; the digest it signed is over these bytes.
+                if request.headers.get(protocol_spec.CHUNK_ESCAPE_HEADER, "") == protocol_spec.CHUNK_ESCAPE_VALUE:
+                    body = protocol_spec.unescape_chunk(body)
                 request._reply(
                     200,
                     self.handle_chunk(
-                        offer_id, parts[4], int(parts[5]), request._raw_body(), request.headers.get("X-Sha256", "")
+                        offer_id, parts[4], int(parts[5]), body, request.headers.get("X-Sha256", "")
                     ),
                 )
                 return

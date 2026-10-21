@@ -6,18 +6,23 @@ import json
 import logging
 from pathlib import Path
 
+from app import paths
 from app.paths import user_data_dir
 
 log = logging.getLogger(__name__)
+
+#: Values stored in settings.json for the question "what happens when you close the window".
+CLOSE_ASK, CLOSE_TRAY, CLOSE_QUIT = "ask", "tray", "quit"
 
 DEFAULTS: dict = {
     # "auto" follows the system locale; otherwise a locale code such as "en".
     "language": "auto",
     # "auto" follows the Windows app theme; otherwise "light" or "dark".
     "theme": "auto",
-    # What the close button does: "ask" prompts, "tray" hides, "quit" exits.
-    "on_close": "ask",
+    "on_close": CLOSE_ASK,
     "autostart": False,
+    # Empty means <data dir>/received; set it to move incoming files.
+    "receive_dir": "",
     "window": {"width": 720, "height": 480},
 }
 
@@ -38,6 +43,7 @@ class Settings:
     def set(self, key: str, value) -> None:
         self._data[key] = value
         self.save()
+        self._apply()
 
     def load(self) -> None:
         try:
@@ -50,6 +56,15 @@ class Settings:
             return
         if isinstance(stored, dict):
             self._data.update(stored)
+        self._apply()
+
+    def _apply(self) -> None:
+        """Push the values that are read deep inside the app into the modules owning them.
+
+        Doing it here means every entry point - main.py, a selftest, a hand-built Settings -
+        gets the same filesystem, instead of only the one that remembered to ask.
+        """
+        paths.set_receive_root(self._data.get("receive_dir") or None)
 
     def save(self) -> None:
         try:

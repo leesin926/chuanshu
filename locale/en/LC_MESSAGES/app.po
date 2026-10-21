@@ -3,7 +3,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: ChuanShu 0.1.0\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-19 15:08+0800\n"
+"POT-Creation-Date: 2026-10-21 03:18+0800\n"
 "PO-Revision-Date: 2026-10-19 00:00+0800\n"
 "Last-Translator: \n"
 "Language: en\n"
@@ -80,122 +80,819 @@ msgstr "The receiver does not have enough free space."
 msgid "对方正在处理另一个传输"
 msgstr "The other side is busy with another transfer."
 
-#: app/ui/main_window.py:183
+#: app/ui/main_window.py:179 app/ui/settings_dialog.py:192
 msgid "跟随系统"
 msgstr "Follow system"
 
-#: app/ui/main_window.py:183
+#: app/ui/main_window.py:179 app/ui/settings_dialog.py:192
 msgid "浅色"
 msgstr "Light"
 
-#: app/ui/main_window.py:183
+#: app/ui/main_window.py:179 app/ui/settings_dialog.py:192
 msgid "深色"
 msgstr "Dark"
 
-#: app/ui/main_window.py:199 app/ui/main_window.py:325
+#: app/ui/main_window.py:195 app/ui/main_window.py:336
 #, python-brace-format
 msgid "外观：{name}"
 msgstr "Theme: {name}"
 
-#: app/ui/main_window.py:272
+#: app/ui/main_window.py:280
 #, python-brace-format
 msgid "关闭 {app}"
 msgstr "Close {app}"
 
-#: app/ui/main_window.py:273
+#: app/ui/main_window.py:281
 msgid "窗口关闭后，希望退出程序还是留在托盘后台运行？"
 msgstr "Quit the program, or keep running in the tray?"
 
-#: app/ui/main_window.py:277
+#: app/ui/main_window.py:285 app/ui/settings_dialog.py:200
 msgid "最小化到托盘"
 msgstr "Minimize to tray"
 
-#: app/ui/main_window.py:279
+#: app/ui/main_window.py:287
 msgid "退出程序"
 msgstr "Quit"
 
-#: app/ui/main_window.py:282
+#: app/ui/main_window.py:290 app/ui/transfer.py:148
 msgid "取消"
 msgstr "Cancel"
 
-#: app/ui/main_window.py:284
+#: app/ui/main_window.py:292
 msgid "记住我的选择"
 msgstr "Remember my choice"
 
-#: app/ui/main_window.py:323 app/ui/title_bar.py:82
+#: app/ui/main_window.py:333 app/ui/title_bar.py:83
 msgid "应用菜单"
 msgstr "App menu"
 
-#: app/ui/main_window.py:324 app/ui/title_bar.py:83
+#: app/ui/main_window.py:334 app/ui/title_bar.py:84
 msgid "语言"
 msgstr "Language"
 
-#: app/ui/main_window.py:326 app/ui/title_bar.py:86
+#: app/ui/main_window.py:335 app/ui/settings_dialog.py:430
+#: app/ui/title_bar.py:85
+msgid "设置"
+msgstr "Settings"
+
+#: app/ui/main_window.py:337 app/ui/title_bar.py:88
 msgid "最小化"
 msgstr "Minimize"
 
-#: app/ui/main_window.py:327 app/ui/title_bar.py:88
+#: app/ui/main_window.py:338 app/ui/settings_dialog.py:95
+#: app/ui/title_bar.py:90
 msgid "关闭"
 msgstr "Close"
 
-#: app/ui/main_window.py:331
+#: app/ui/main_window.py:342
 msgid "隐藏到托盘"
 msgstr "Hide to tray"
 
-#: app/ui/main_window.py:332 app/ui/tray.py:31 app/ui/tray.py:62
+#: app/ui/main_window.py:343 app/ui/tray.py:31 app/ui/tray.py:62
 #, python-brace-format
 msgid "退出 {app}"
 msgstr "Quit {app}"
 
-#: app/ui/main_window.py:333 app/ui/main_window.py:365
+#: app/ui/main_window.py:344 app/ui/main_window.py:365
 #, python-brace-format
 msgid "关于 {app}"
 msgstr "About {app}"
 
-#: app/ui/main_window.py:337
-msgid "桌面工具骨架"
-msgstr "Desktop Tool Skeleton"
-
-#: app/ui/main_window.py:339
-msgid ""
-"这是一个包含国际化、日志、异常捕获与打包流程的 PySide6 起点工程。\n"
-"标题栏的语言图标切界面语言、外观图标切深浅主题，最左侧的图标是应用菜单；选择都会持久化到用户目录。"
-msgstr ""
-"A PySide6 starting point with internationalization, logging, crash "
-"capture and\n"
-"packaging. In the title bar, the globe icon switches the UI language, the"
-" sun/moon\n"
-"icon switches between light and dark, and the leftmost icon is the app "
-"menu; all\n"
-"choices are saved per user."
-
-#: app/ui/main_window.py:345
+#: app/ui/main_window.py:352
 #, python-brace-format
 msgid "当前语言：{lang}    日志：{path}"
 msgstr "Language: {lang}    Log: {path}"
-
-#: app/ui/main_window.py:356
-#, python-brace-format
-msgid "已点击 {n} 次"
-msgid_plural "已点击 {n} 次"
-msgstr[0] "{n} click"
-msgstr[1] "{n} clicks"
 
 #: app/ui/main_window.py:366
 msgid "Qt"
 msgstr "Qt"
 
-#: app/ui/title_bar.py:84
+#: app/ui/settings_dialog.py:197
+msgid "开机时自动启动"
+msgstr "Start with Windows"
+
+#: app/ui/settings_dialog.py:200
+msgid "每次询问"
+msgstr "Ask each time"
+
+#: app/ui/settings_dialog.py:200
+msgid "直接退出"
+msgstr "Quit directly"
+
+#: app/ui/settings_dialog.py:204
+msgid "常规"
+msgstr "General"
+
+#: app/ui/settings_dialog.py:205 app/ui/transfer.py:658
+msgid "设备名"
+msgstr "Device name"
+
+#: app/ui/settings_dialog.py:206
+msgid "这个名称会出现在附近设备的名单里，改完立即生效。"
+msgstr "This is the name other devices see in their list; it applies right away."
+
+#: app/ui/settings_dialog.py:207
+msgid "界面语言"
+msgstr "Interface language"
+
+#: app/ui/settings_dialog.py:208 app/ui/title_bar.py:86
 msgid "外观"
 msgstr "Theme"
 
-#: app/ui/title_bar.py:87 app/ui/title_bar.py:147
+#: app/ui/settings_dialog.py:210
+msgid "关闭窗口时"
+msgstr "When the window closes"
+
+#: app/ui/settings_dialog.py:217
+msgid "浏览…"
+msgstr "Browse..."
+
+#: app/ui/settings_dialog.py:220
+msgid "恢复默认"
+msgstr "Reset to default"
+
+#: app/ui/settings_dialog.py:235 app/ui/transfer.py:479
+msgid "打开接收目录"
+msgstr "Open receive folder"
+
+#: app/ui/settings_dialog.py:237
+msgid "传输"
+msgstr "Transfer"
+
+#: app/ui/settings_dialog.py:238
+msgid "接收目录"
+msgstr "Receive folder"
+
+#: app/ui/settings_dialog.py:239
+msgid "对方发来的文件按每一次传输建一个子文件夹。"
+msgstr "Each transfer from a peer gets its own subfolder there."
+
+#: app/ui/settings_dialog.py:241
+msgid "端口"
+msgstr "Port"
+
+#: app/ui/settings_dialog.py:242
+msgid "分块"
+msgstr "Chunk size"
+
+#: app/ui/settings_dialog.py:243
+msgid "配对码"
+msgstr "Pairing code"
+
+#: app/ui/settings_dialog.py:245
+msgid "上面这几项由 protocol/protocol.json 冻结，手机端按同一份契约校验，改了就配不上对。"
+msgstr ""
+"The values above are frozen in protocol/protocol.json and the phone app "
+"checks the same contract, so changing one breaks pairing."
+
+#: app/ui/settings_dialog.py:254
+msgid "撤销这台设备"
+msgstr "Forget this device"
+
+#: app/ui/settings_dialog.py:256
+msgid "已配对设备"
+msgstr "Paired devices"
+
+#: app/ui/settings_dialog.py:258
+msgid "配对成功过的设备记在这里，下次传文件不再问配对码。怀疑对方换过密钥就撤销它。"
+msgstr ""
+"Devices that paired successfully stay on this list, so the next transfer "
+"asks for no code. Remove one if you think its key was replaced."
+
+#: app/ui/settings_dialog.py:274
+msgid "打开日志目录"
+msgstr "Open log folder"
+
+#: app/ui/settings_dialog.py:276
+msgid "关于"
+msgstr "About"
+
+#: app/ui/settings_dialog.py:277
+msgid "版本"
+msgstr "Version"
+
+#: app/ui/settings_dialog.py:279
+msgid "界面库"
+msgstr "UI toolkit"
+
+#: app/ui/settings_dialog.py:280
+msgid "协议"
+msgstr "Protocol"
+
+#: app/ui/settings_dialog.py:281
+msgid "数据目录"
+msgstr "Data folder"
+
+#: app/ui/settings_dialog.py:282
+msgid "日志"
+msgstr "Logs"
+
+#: app/ui/settings_dialog.py:308
+#, python-brace-format
+msgid "局域网端口 {port}，发现端口 {discovery}"
+msgstr "LAN port {port}, discovery port {discovery}"
+
+#: app/ui/settings_dialog.py:311
+#, python-brace-format
+msgid "每块 {size} 字节，最多 {n} 块并行"
+msgstr "{size} bytes per chunk, up to {n} at a time"
+
+#: app/ui/settings_dialog.py:316
+#, python-brace-format
+msgid "{digits} 位数字，固定不换；只有点主页面的「更换配对码和密码」才会换一组"
+msgstr ""
+"{digits} digits, fixed; only “Change code and password” on the main page "
+"mints a new pair"
+
+#: app/ui/settings_dialog.py:318
+#, python-brace-format
+msgid "{digits} 位数字，{ttl} 秒后换一个"
+msgstr "{digits} digits, replaced after {ttl} seconds"
+
+#: app/ui/settings_dialog.py:323
+#, python-brace-format
+msgid "契约版本 v{version}（{name}）"
+msgstr "Contract v{version} ({name})"
+
+#: app/ui/settings_dialog.py:353
+msgid "未知设备"
+msgstr "Unknown device"
+
+#: app/ui/settings_dialog.py:355
+#, python-brace-format
+msgid "指纹 {fp}"
+msgstr "Fingerprint {fp}"
+
+#: app/ui/settings_dialog.py:371
+#, python-brace-format
+msgid "设备名已改成 {name}"
+msgstr "Device name is now {name}"
+
+#: app/ui/settings_dialog.py:391
+msgid "选择接收目录"
+msgstr "Choose the receive folder"
+
+#: app/ui/settings_dialog.py:415
+msgid "这台设备已经不在名单里了。"
+msgstr "That device is no longer on the list."
+
+#: app/ui/settings_dialog.py:422
+#, python-brace-format
+msgid "已撤销 {name}，它已从已连接的设备里移出，下次传文件要重新配对。"
+msgstr ""
+"Revoked {name}; it left the connected list and has to pair again before "
+"any transfer."
+
+#: app/ui/settings_dialog.py:435
+msgid "这台设备对别人显示的名字"
+msgstr "The name other devices see for this one"
+
+#: app/ui/settings_dialog.py:436
+msgid "只改这个程序的界面文字"
+msgstr "Changes only this program's text"
+
+#: app/ui/settings_dialog.py:438
+msgid "只有打包好的 Windows 版本能改开机自启。"
+msgstr "Only the packaged Windows build can register autostart."
+
+#: app/ui/settings_dialog.py:440
+msgid "登录 Windows 后自动运行，并留在托盘"
+msgstr "Run automatically after signing in to Windows and stay in the tray"
+
+#: app/ui/settings_dialog.py:442
+msgid "换一个存放收到文件的文件夹"
+msgstr "Pick another folder for received files"
+
+#: app/ui/settings_dialog.py:443
+msgid "回到应用数据目录下的 received"
+msgstr "Back to received inside the app data folder"
+
+#: app/ui/settings_dialog.py:444
+msgid "忘记这台设备的密钥，下次传文件要重新输配对码"
+msgstr "Forget this device's key; the pairing code will be asked for again"
+
+#: app/ui/title_bar.py:89 app/ui/title_bar.py:151
 msgid "最大化"
 msgstr "Maximize"
 
-#: app/ui/title_bar.py:147
+#: app/ui/title_bar.py:151
 msgid "还原"
 msgstr "Restore"
+
+#: app/ui/transfer.py:120
+msgid "连接设备"
+msgstr "Connect a device"
+
+#: app/ui/transfer.py:147 app/ui/transfer.py:501
+msgid "连接"
+msgstr "Connect"
+
+#: app/ui/transfer.py:158
+msgid "下面是广播出来的候选设备。选中一台，回到主界面填它的配对码和密码，再点连接。"
+msgstr ""
+"These are the devices that announced themselves. Pick one, type its "
+"pairing code and password on the main page, then press Connect."
+
+#: app/ui/transfer.py:159
+msgid "手输地址…"
+msgstr "Type an address…"
+
+#: app/ui/transfer.py:160
+msgid "没在局域网里广播出来的设备，可以输入它的地址，或粘贴 chuanshu:// 配对串。"
+msgstr ""
+"For a device that never showed up on the LAN, type its address or paste "
+"its chuanshu:// pairing string."
+
+#: app/ui/transfer.py:161
+msgid "刷新"
+msgstr "Refresh"
+
+#: app/ui/transfer.py:170
+msgid "（已连接）"
+msgstr " (connected)"
+
+#: app/ui/transfer.py:173 app/ui/transfer.py:174
+msgid "手动添加"
+msgstr "typed in"
+
+#: app/ui/transfer.py:174
+#, python-brace-format
+msgid "发现于 {via}；指纹前缀 {fp}"
+msgstr "Found via {via}; fingerprint prefix {fp}"
+
+#: app/ui/transfer.py:179
+msgid "没找到设备。手输对方地址，或粘贴它的配对串。"
+msgstr "No devices found. Type its address, or paste its pairing string."
+
+#: app/ui/transfer.py:184
+msgid "手动添加设备"
+msgstr "Add a device by address"
+
+#: app/ui/transfer.py:184
+#, python-brace-format
+msgid "输入对方地址（{example}）或配对串："
+msgstr "Type the address ({example}) or paste the pairing string:"
+
+#: app/ui/transfer.py:194
+#, python-brace-format
+msgid "已确认 {name}，指纹前缀 {fp}。选中它点连接。"
+msgstr "Reached {name}, fingerprint prefix {fp}. Select it and press Connect."
+
+#: app/ui/transfer.py:201
+msgid "先选中一台设备，再点连接。"
+msgstr "Select a device first, then press Connect."
+
+#: app/ui/transfer.py:321 app/ui/transfer.py:504
+msgid "让对方扫这个码，就能带着配对码和密码连过来。"
+msgstr ""
+"The other side scans this and connects with the pairing code and password"
+" in hand."
+
+#: app/ui/transfer.py:467
+msgid "我的设备"
+msgstr "My device"
+
+#: app/ui/transfer.py:468
+msgid "已连接的设备"
+msgstr "Connected devices"
+
+#: app/ui/transfer.py:473 app/ui/transfer.py:710
+#, python-brace-format
+msgid "保存到：{path}"
+msgstr "Saves to: {path}"
+
+#: app/ui/transfer.py:474
+msgid "更换配对码和密码"
+msgstr "Change code and password"
+
+#: app/ui/transfer.py:476
+msgid "换一组新的固定配对码和密码，二维码跟着变。已经连上的设备不受影响。"
+msgstr ""
+"Mints a new fixed pairing code and password; the QR changes with them. A "
+"device already connected is not affected."
+
+#: app/ui/transfer.py:478
+msgid "打开"
+msgstr "Open"
+
+#: app/ui/transfer.py:480
+msgid "编辑"
+msgstr "Edit"
+
+#: app/ui/transfer.py:481
+#, python-brace-format
+msgid "本机：{name}"
+msgstr "This device: {name}"
+
+#: app/ui/transfer.py:482
+msgid "接收到的文件（本次会话已校验）"
+msgstr "Received files (verified this session)"
+
+#: app/ui/transfer.py:483
+msgid "选择文件…"
+msgstr "Choose files…"
+
+#: app/ui/transfer.py:484
+msgid "选择文件夹…"
+msgstr "Choose folder…"
+
+#: app/ui/transfer.py:485
+msgid "清空"
+msgstr "Clear"
+
+#: app/ui/transfer.py:486
+msgid "从附近选择…"
+msgstr "Pick from nearby…"
+
+#: app/ui/transfer.py:487
+msgid "列出广播出来的候选设备，也可以手输地址或粘贴配对串。"
+msgstr ""
+"Lists the devices that announced themselves; you can also type an address"
+" or paste a pairing string."
+
+#: app/ui/transfer.py:488
+msgid "断开"
+msgstr "Disconnect"
+
+#: app/ui/transfer.py:490
+#, python-brace-format
+msgid "{n} 位配对码"
+msgstr "{n}-digit pairing code"
+
+#: app/ui/transfer.py:492
+#, python-brace-format
+msgid "输入对方屏幕上显示的 {n} 位配对码。本机存过它的密钥时留空即可，用签名重连。"
+msgstr ""
+"Type the {n}-digit code shown on the other screen. Leave it empty if this"
+" machine already has its key; the signature reconnects."
+
+#: app/ui/transfer.py:494
+msgid "连接密码（可留空）"
+msgstr "Password (optional)"
+
+#: app/ui/transfer.py:497
+#, python-brace-format
+msgid "输入对方屏幕上显示的 {n} 位连接密码。对方是还没有密码的旧版本时留空，这时只用配对码完成首次配对。"
+msgstr ""
+"Type the {n}-character password shown on the other screen. Leave it empty"
+" for a build that has no password yet; the first pairing then rests on "
+"the code alone."
+
+#: app/ui/transfer.py:503
+msgid "发送给所选设备"
+msgstr "Send to the selected device"
+
+#: app/ui/transfer.py:590
+msgid "已换成新的配对码和密码，旧二维码作废。已连接的设备不受影响。"
+msgstr ""
+"New pairing code and password are in force; the old QR no longer works. "
+"Connected devices are unaffected."
+
+#: app/ui/transfer.py:595
+msgid "配对码要等接收端口打开才有"
+msgstr "The pairing code appears once the receiving port is open"
+
+#: app/ui/transfer.py:596
+#, python-brace-format
+msgid "配对码：{code}"
+msgstr "Pairing code: {code}"
+
+#: app/ui/transfer.py:601
+#, python-brace-format
+msgid "密码：{secret}"
+msgstr "Password: {secret}"
+
+#: app/ui/transfer.py:605
+msgid "本机接收端口没有打开。"
+msgstr "This machine is not listening on a receive port."
+
+#: app/ui/transfer.py:607
+msgid "接收已停止，对方连不进来。"
+msgstr "Receiving is off, so nobody can connect."
+
+#: app/ui/transfer.py:608
+#, python-brace-format
+msgid "端口：{port}"
+msgstr "Port: {port}"
+
+#: app/ui/transfer.py:616
+msgid "发现通道：mDNS 与 UDP 都可用。"
+msgstr "Discovery: mDNS and UDP are both working."
+
+#: app/ui/transfer.py:617
+msgid "mDNS"
+msgstr "mDNS"
+
+#: app/ui/transfer.py:617
+msgid "UDP 广播"
+msgstr "UDP broadcast"
+
+#: app/ui/transfer.py:620
+#, python-brace-format
+msgid "发现通道：{which} 都不可用，只能手输地址或粘贴配对串。"
+msgstr ""
+"Discovery: {which} are both unavailable, so type an address or paste a "
+"pairing string."
+
+#: app/ui/transfer.py:621
+#, python-brace-format
+msgid "发现通道：{which} 不可用，仍可手输地址或粘贴配对串。"
+msgstr ""
+"Discovery: {which} is unavailable; you can still type an address or paste"
+" a pairing string."
+
+#: app/ui/transfer.py:625
+#, python-brace-format
+msgid "这台机器开不了接收端口，但仍能主动发出去：{error}"
+msgstr "This machine cannot open a receive port, but can still send: {error}"
+
+#: app/ui/transfer.py:627
+#, python-brace-format
+msgid "上次有 {n} 个传输没传完，对方接着传就会续上。"
+msgstr ""
+"{n} transfer(s) stopped halfway last time; the sender resumes them by "
+"itself."
+
+#: app/ui/transfer.py:658
+msgid "这台设备对别人显示的名字："
+msgstr "The name other devices see for this one:"
+
+#: app/ui/transfer.py:706
+#, python-brace-format
+msgid "…共 {n} 个文件"
+msgstr "…{n} files in total"
+
+#: app/ui/transfer.py:708
+#, python-brace-format
+msgid "接收来自 {who} 的文件？"
+msgstr "Accept files from {who}?"
+
+#: app/ui/transfer.py:709
+#, python-brace-format
+msgid ""
+"对方：{who}\n"
+"\n"
+"{listing}"
+msgstr ""
+"From: {who}\n"
+"\n"
+"{listing}"
+
+#: app/ui/transfer.py:711
+msgid "接收"
+msgstr "Accept"
+
+#: app/ui/transfer.py:712
+msgid "拒绝"
+msgstr "Decline"
+
+#: app/ui/transfer.py:759
+#, python-brace-format
+msgid "正在连接 {name}（{host}）…"
+msgstr "Connecting to {name} ({host})…"
+
+#: app/ui/transfer.py:764
+#, python-brace-format
+msgid "已选择 {name}（{host}）。本机存过它的密钥，留空配对码点连接。"
+msgstr ""
+"Selected {name} ({host}). This machine has its key, so connect with an "
+"empty code."
+
+#: app/ui/transfer.py:765
+#, python-brace-format
+msgid "已选择 {name}（{host}）。输入它屏幕上的 {n} 位配对码{extra}，再点连接。"
+msgstr ""
+"Selected {name} ({host}). Type the {n}-digit code{extra} on its screen, "
+"then press Connect."
+
+#: app/ui/transfer.py:766
+#, python-brace-format
+msgid "和 {m} 位密码"
+msgstr " and its {m}-character password"
+
+#: app/ui/transfer.py:770
+#, python-brace-format
+msgid "一次只连一台，现在连着 {name}。要换设备先点「断开」。"
+msgstr ""
+"One device at a time; {name} holds the connection. Press Disconnect "
+"before switching."
+
+#: app/ui/transfer.py:772
+msgid "自动发现没有运行。点「从附近选择…」手输对方地址。"
+msgstr ""
+"Auto-discovery is not running. Use \"Pick from nearby…\" to type its "
+"address."
+
+#: app/ui/transfer.py:775
+msgid "附近暂时没有广播出来的设备。点「从附近选择…」手输地址。"
+msgstr ""
+"Nothing is announcing itself right now. Use \"Pick from nearby…\" to type"
+" an address."
+
+#: app/ui/transfer.py:776
+#, python-brace-format
+msgid "附近发现 {n} 台设备，点「从附近选择…」连接。"
+msgstr "{n} device(s) nearby. Use \"Pick from nearby…\" to connect."
+
+#: app/ui/transfer.py:787
+msgid "（对方连进来，只能收）"
+msgstr "(dialed in, receive only)"
+
+#: app/ui/transfer.py:800
+#, python-brace-format
+msgid "指纹前缀 {fp}。它主动连进来，本机没有可回拨的地址，所以只能收它的文件。要发给它，请由它来连本机。"
+msgstr ""
+"Fingerprint prefix {fp}. It dialed us, and this machine has no address to"
+" call back on, so only its files can arrive. To send to it, let it "
+"connect here."
+
+#: app/ui/transfer.py:804
+#, python-brace-format
+msgid "指纹前缀 {fp}。已配对，会话保留到点断开为止。"
+msgstr ""
+"Fingerprint prefix {fp}. Paired; the session lasts until you press "
+"Disconnect."
+
+#: app/ui/transfer.py:809
+msgid "还没有已连接的设备。点下面「从附近选择…」挑一台，或手输它的地址。"
+msgstr ""
+"No connected devices yet. Press \"Pick from nearby…\" below, or type a "
+"device's address."
+
+#: app/ui/transfer.py:838
+#, python-brace-format
+msgid "{name} 已连上本机（{ip}），现在只等它发文件过来。"
+msgstr "{name} connected to this machine from {ip}; waiting for it to send files."
+
+#: app/ui/transfer.py:861
+#, python-brace-format
+msgid "{name} 已经连着，选文件发送即可。"
+msgstr "{name} is already connected - just pick files and send."
+
+#: app/ui/transfer.py:877
+#, python-brace-format
+msgid "{addr} 应答了，但不是能配的版本：{why}"
+msgstr "{addr} answered, but not on a compatible version: {why}"
+
+#: app/ui/transfer.py:880 app/ui/transfer.py:970
+#, python-brace-format
+msgid "连不上 {addr}：{error}"
+msgstr "Cannot reach {addr}: {error}"
+
+#: app/ui/transfer.py:907
+#, python-brace-format
+msgid "一次只连一台。先断开 {name}，再连新设备。"
+msgstr "One device at a time. Disconnect {name} before connecting another."
+
+#: app/ui/transfer.py:908
+msgid "用上面的配对码和密码连接选中的设备。"
+msgstr "Connects the selected device with the code and password above."
+
+#: app/ui/transfer.py:920
+msgid "先在「从附近选择…」里挑一台设备，或手输它的地址。"
+msgstr "Choose a device with \"Pick from nearby…\" first, or type its address."
+
+#: app/ui/transfer.py:925
+#, python-brace-format
+msgid "本机一次只连一台，现在连着 {name}。要先点「断开」再连它。"
+msgstr ""
+"This machine keeps one connection at a time; {name} holds it. Press "
+"Disconnect first."
+
+#: app/ui/transfer.py:930
+#, python-brace-format
+msgid "还差对方屏幕上那 {n} 位配对码。"
+msgstr "The {n}-digit code on the other screen is still missing."
+
+#: app/ui/transfer.py:954
+#, python-brace-format
+msgid "配对码或密码不对。请照着对方屏幕上现在的 {n} 位码和 {m} 位密码再输一次。"
+msgstr ""
+"That pairing code or password is wrong. Retype the {n}-digit code and "
+"{m}-character password now on the other screen."
+
+#: app/ui/transfer.py:963
+#, python-brace-format
+msgid "它已经连着 {peer}，一次只允许一台。请那边先断开。"
+msgstr ""
+"It is already connected to {peer}; only one peer is allowed. Disconnect "
+"on that side first."
+
+#: app/ui/transfer.py:966 app/ui/transfer.py:1158
+#, python-brace-format
+msgid "对方说：{text}"
+msgstr "The other side said: {text}"
+
+#: app/ui/transfer.py:999
+#, python-brace-format
+msgid "已连接 {name}，指纹前缀 {fp}。核对无误再发。"
+msgstr "Connected to {name}, fingerprint prefix {fp}. Check it before sending."
+
+#: app/ui/transfer.py:1025
+#, python-brace-format
+msgid "已断开 {name}。它的密钥还留在本机，留空配对码就能重连；要彻底撤销请去设置。"
+msgstr ""
+"Disconnected {name}. Its key stays on this machine, so an empty code "
+"reconnects it; revoke it in Settings to forget it."
+
+#: app/ui/transfer.py:1056
+msgid "这台设备是连进来的，本机没有可回拨的地址。要发给它，请改由它连接本机。"
+msgstr ""
+"This device dialed in, so there is no address to call back. To send to "
+"it, have it connect to this machine instead."
+
+#: app/ui/transfer.py:1065
+msgid "选择要发送的文件夹"
+msgstr "Choose a folder to send"
+
+#: app/ui/transfer.py:1072
+msgid "选择要发送的文件"
+msgstr "Choose files to send"
+
+#: app/ui/transfer.py:1082
+msgid "这些文件不在同一个文件夹下，请分开发送。"
+msgstr "These files share no parent folder, so please send them separately."
+
+#: app/ui/transfer.py:1097
+msgid "还没选要发送的内容。"
+msgstr "Nothing selected to send yet."
+
+#: app/ui/transfer.py:1102
+#, python-brace-format
+msgid "已选：{name}（整个文件夹，约 {size}）"
+msgstr "Selected: {name} (whole folder, about {size})"
+
+#: app/ui/transfer.py:1103
+#, python-brace-format
+msgid "已选 {n} 个文件，共 {size}"
+msgstr "Selected {n} files, {size} in total"
+
+#: app/ui/transfer.py:1113
+msgid "准备中…"
+msgstr "Preparing…"
+
+#: app/ui/transfer.py:1129
+msgid "这台设备已经没有连接会话，请重新连接它。"
+msgstr "That device has no live session any more. Connect it again."
+
+#: app/ui/transfer.py:1134
+msgid "这里没有可发的文件。"
+msgstr "There is nothing to send here."
+
+#: app/ui/transfer.py:1151
+#, python-brace-format
+msgid "已发给 {name}：{n} 个文件（{size}），对方逐个校验通过。"
+msgstr "Sent to {name}: {n} file(s), {size}, every one verified by the peer."
+
+#: app/ui/transfer.py:1156
+msgid "对方不再认识本机的密钥。选中它，输入它屏幕上新显示的配对码再连接。"
+msgstr ""
+"The peer no longer recognises this machine's key. Select it, type the new"
+" code on its screen and connect."
+
+#: app/ui/transfer.py:1160
+#, python-brace-format
+msgid "有文件已经不在了：{path}"
+msgstr "A file is no longer there: {path}"
+
+#: app/ui/transfer.py:1165
+#, python-brace-format
+msgid "连不上对方，它可能已经退出或换了端口：{error}"
+msgstr "Cannot reach that device - it may have quit or moved ports: {error}"
+
+#: app/ui/transfer.py:1168
+#, python-brace-format
+msgid "传输中断：{error}"
+msgstr "The transfer was interrupted: {error}"
+
+#: app/ui/transfer.py:1176
+#, python-brace-format
+msgid "正在发送：{name}"
+msgstr "Sending: {name}"
+
+#: app/ui/transfer.py:1181
+msgid "未开始"
+msgstr "Not started"
+
+#: app/ui/transfer.py:1197
+#, python-brace-format
+msgid "已收到 {who} 发来的 {n} 个文件（{size}），逐个校验通过。"
+msgstr "Received {n} file(s) from {who} ({size}), every one verified."
+
+#: app/ui/transfer.py:1207
+#, python-brace-format
+msgid ""
+"来自 {who}\n"
+"双击打开：{path}"
+msgstr ""
+"From {who}\n"
+"Double-click to open: {path}"
+
+#: app/ui/transfer.py:1210
+msgid "这次还没有收到校验通过的文件；以前收过的都在接收目录里。"
+msgstr ""
+"Nothing verified has arrived this session; earlier files are still in the"
+" receive folder."
 
 #: app/ui/tray.py:28 app/ui/tray.py:60
 msgid "打开主界面"
@@ -228,4 +925,69 @@ msgstr ""
 
 #~ msgid "菜单"
 #~ msgstr "Menu"
+
+#~ msgid "桌面工具骨架"
+#~ msgstr "Desktop Tool Skeleton"
+
+#~ msgid ""
+#~ "这是一个包含国际化、日志、异常捕获与打包流程的 PySide6 起点工程。\n"
+#~ "标题栏的语言图标切界面语言、外观图标切深浅主题，最左侧的图标是应用菜单；选择都会持久化到用户目录。"
+#~ msgstr ""
+#~ "A PySide6 starting point with "
+#~ "internationalization, logging, crash capture "
+#~ "and\n"
+#~ "packaging. In the title bar, the "
+#~ "globe icon switches the UI language, "
+#~ "the sun/moon\n"
+#~ "icon switches between light and dark,"
+#~ " and the leftmost icon is the "
+#~ "app menu; all\n"
+#~ "choices are saved per user."
+
+#~ msgid "已点击 {n} 次"
+#~ msgid_plural "已点击 {n} 次"
+#~ msgstr[0] "{n} click"
+#~ msgstr[1] "{n} clicks"
+
+#~ msgid "没找到设备。可以扫对方的码，或手输地址。"
+#~ msgstr "No devices found. Scan the other side's code, or type its address."
+
+#~ msgid "改名"
+#~ msgstr "Rename"
+
+#~ msgid "本机：{name}    端口：{port}"
+#~ msgstr "This device: {name}    Port: {port}"
+
+#~ msgid "接收已停止，先重新开始才能看到设备。"
+#~ msgstr "Receiving is off - turn it back on to see devices."
+
+#~ msgid "附近的设备"
+#~ msgstr "Devices nearby"
+
+#~ msgid "（未确认）"
+#~ msgstr " (not verified)"
+
+#~ msgid "没输入配对码，已取消。"
+#~ msgstr "No pairing code entered, so it was cancelled."
+
+#~ msgid "配对码不对，已取消。"
+#~ msgstr "Wrong pairing code, so it was cancelled."
+
+#~ msgid "已把 {n} 个文件发给 {name}。"
+#~ msgstr "Sent {n} file(s) to {name}."
+
+#~ msgid "输入配对码"
+#~ msgstr "Enter the pairing code"
+
+#~ msgid "请输入 {name} 上显示的 {n} 位配对码："
+#~ msgstr "Type the {n}-digit code shown on {name}:"
+
+#~ msgid "停止接收"
+#~ msgstr "Stop receiving"
+
+#~ msgid "开始接收"
+#~ msgstr "Start receiving"
+
+#~ msgid "打开接收后这里才显示配对码"
+#~ msgstr "The pairing code appears here once receiving is on."
 

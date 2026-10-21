@@ -14,10 +14,12 @@ from __future__ import annotations
 import base64
 import hashlib
 import http.client
+import io
 import json
 import logging
 import mimetypes
 import secrets
+import time
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -28,16 +30,56 @@ from app.net.identity import Identity, client_context, verify_pinned
 
 log = logging.getLogger(__name__)
 
+#: Largest TLS record body a peer is asked to swallow. See _connect: the Harmony TLS server hands a
+#: record to the app only up to about 8 KiB and dies on a 16 KiB one, which is what every mainstream
+#: stack writes when given a whole chunk at once.
+MAX_TLS_RECORD_PLAINTEXT = 4096
+
+#: Milliseconds to wait between TLS records when a body is larger than one pipe can drain. A Harmony
+#: receiver measured on this ladder: at 0-10 ms per 4 KiB record a 4 MiB body arrives with the declared
+#: byte count and different content every time (12/12, `.probe/records.py`), from 15 ms up it arrives
+#: byte-identical (6/6, `.probe/pace.py`); record count does not matter, only rate, and 8 KiB records kill
+#: the connection outright. Full speed is worse than a wrong digest there: the receiving process dies with
+#: it (`.probe/crashlog.py`), so the pace has to come from the peer's own declaration before the first big
+#: body - the ladder below is the fallback for a peer that never declared anything and then complained.
+PACE_MS_LADDER = (0, 15, 40)
+
+#: Optional `GET /v1/hello` field: how slowly this peer wants a big body written, in milliseconds per
+#: 4 KiB TLS record (spec §4). Absent or 0 means "write it as fast as you can".
+PACE_FIELD = "chunk_pace_ms"
+
 #: relpath, chunk index, total chunks in this offer
 Progress = Callable[[str, int, int], None]
 
 
 class PairNeeded(RuntimeError):
-    """The peer does not know our key yet, so its 4-digit code has to be entered."""
+    """The peer does not know our key yet, so its one-time pair code has to be entered."""
 
     def __init__(self, reason: str = "peer does not recognise our key") -> None:
         super().__init__(reason)
         self.reason = reason
+
+
+class _Paced:
+    """A body http.client reads one record at a time, with a pause between reads.
+
+    ``send()`` pulls a file-like body a ``blocksize`` piece at a time and each piece becomes its own TLS
+    record, which is the only way to keep records under the size a Harmony peer survives. A pause has to
+    ride on that same seam: sleeping here spaces the records themselves, which is what an undrainable pipe
+    needs. A bytes body would go out in one ``sendall`` and one oversized record.
+    """
+
+    def __init__(self, data: bytes, ms: float) -> None:
+        self.data = data
+        self.ms = ms / 1000.0
+        self.at = 0
+
+    def read(self, size: int) -> bytes:
+        if self.ms:
+            time.sleep(self.ms)
+        piece = self.data[self.at:self.at + size]
+        self.at += len(piece)
+        return piece
 
 
 @dataclass
@@ -76,7 +118,6 @@ def plan(paths: Iterable[Path], base: Path | None = None) -> list[OutgoingFile]:
     relpath is derived here rather than taken from any display string, so the
     receiver reproduces the directory layout the user actually picked.
     """
-    root = base or Path.home()
     items: list[OutgoingFile] = []
     for path in paths:
         if not path.exists():
@@ -115,13 +156,23 @@ class PeerConnection:
         self.token = ""
         self.peer: dict = {}
         self.offer_id = ""
+        self.pace_ms = PACE_MS_LADDER[0]
+        self.hello_read = False
         self._conn: http.client.HTTPSConnection | None = None
 
     # ------------------------------------------------------------- transport
 
     def _connect(self) -> http.client.HTTPSConnection:
         self.close()
-        conn = http.client.HTTPSConnection(self.host, self.port, context=client_context(), timeout=60)
+        # The receiver may hold POST /v1/offer open while its user decides. Timing out
+        # before it answers would resend the offer and ask that person twice, so the socket
+        # has to outlive the whole decision window.
+        conn = http.client.HTTPSConnection(
+            self.host, self.port, context=client_context(), timeout=self.proto.offer_wait_timeout_s + 15
+        )
+        # One TLS record per 4 KiB of body, see _once. A Harmony peer's TLS server dies outright on a
+        # record over 8 KiB, and every mainstream stack happily writes 16 KiB ones.
+        conn.blocksize = MAX_TLS_RECORD_PLAINTEXT
         conn.connect()
         verify_pinned(conn.sock, self.fingerprint)
         self._conn = conn
@@ -132,20 +183,31 @@ class PeerConnection:
             self._conn.close()
             self._conn = None
 
-    def _once(self, method: str, path: str, body: bytes, headers: dict) -> tuple[int, dict, bytes]:
+    def _once(self, method: str, path: str, body: bytes, headers: dict, pace_ms: int = 0) -> tuple[int, dict, bytes]:
         merged = dict(headers)
         if self.token:
             merged.setdefault("X-Chuanshu-Auth", self.token)
         merged["Content-Length"] = str(len(body))
         for attempt in (0, 1):
-            conn = self._conn if self._conn is not None else self._connect()
+            # A fresh connection per request, hung up as soon as the reply is read. A Harmony peer
+            # serves one request per connection and then closes it, so reusing a keep-alive socket
+            # writes into a connection that is already being torn down: those bytes are then
+            # reported against the *next* connection, where they land ahead of that request's own
+            # header and poison its parser - the trace showed a chunk's body fragment arriving as
+            # the first packet of the connection carrying the PUT that sent it.
+            conn = self._connect()
             try:
-                conn.request(method, path, body=body, headers=merged)
+                # A readable body, not the bytes themselves: http.client hands a bytes body to one
+                # sendall, which OpenSSL turns into 16 KiB records, and a 16 KiB record is enough to
+                # kill a Harmony peer. Read in blocksize pieces and each piece becomes its own record,
+                # and when the pipe has proven it cannot drain that, one record per `pace_ms`.
+                writer = io.BytesIO(body) if not pace_ms else _Paced(body, pace_ms)
+                conn.request(method, path, body=writer if body else None, headers=merged)
                 response = conn.getresponse()
                 raw = response.read()
-            except (http.client.HTTPException, OSError):
-                # A keep-alive connection dies quietly between transfers; one retry.
-                self._conn = None
+            except (http.client.HTTPException, OSError) as exc:
+                log.warning("%s %s 第%d次没走通：%s", method, path, attempt + 1, exc)
+                self.close()
                 if attempt:
                     raise
                 continue
@@ -156,16 +218,19 @@ class PeerConnection:
                     payload = loaded if isinstance(loaded, dict) else {"code": "UNSUPPORTED_PROTOCOL"}
                 except (UnicodeDecodeError, ValueError):
                     payload = {"code": "UNSUPPORTED_PROTOCOL", "detail": {"reason": "reply was not JSON"}}
-            return response.status, payload, raw
+            status = response.status
+            self.close()
+            return status, payload, raw
         raise http.client.HTTPException(f"{method} {path} failed twice")
 
-    def _request(self, method: str, path: str, json_body: dict | None = None, raw_body: bytes = b"", headers: dict | None = None) -> tuple[int, dict]:
+    def _request(self, method: str, path: str, json_body: dict | None = None, raw_body: bytes = b"",
+                 headers: dict | None = None, pace_ms: int = 0) -> tuple[int, dict]:
         body = raw_body
         merged = dict(headers or {})
         if json_body is not None:
             body = json.dumps(json_body, ensure_ascii=False).encode("utf-8")
             merged["Content-Type"] = "application/json"
-        status, payload, _ = self._once(method, path, body, merged)
+        status, payload, _ = self._once(method, path, body, merged, pace_ms)
         return status, payload
 
     def _call(self, method: str, path: str, json_body: dict | None = None, raw_body: bytes = b"", headers: dict | None = None) -> dict:
@@ -184,43 +249,87 @@ class PeerConnection:
     # ---------------------------------------------------------------- pairing
 
     def hello(self) -> dict:
+        """Read the peer's own answer, including how slowly it wants big bodies written.
+
+        Re-read every time: a fixed pairing code, a restart, a different app on the same fingerprint all
+        make an earlier answer stale, and the pace a peer declares is one of the things it decides for
+        itself. A transport failure here is its own error, the same as any other first request.
+        """
         status, payload = self._request("GET", "/v1/hello")
         if status != 200:
             raise protocol_spec.ProtocolError(str(payload.get("code")), payload.get("detail"))
         if not self.proto.supports(int(payload.get("protocol_version") or 0)):
             raise protocol_spec.ProtocolError("UNSUPPORTED_PROTOCOL", {"peer_version": payload.get("protocol_version")})
         self.peer = payload
+        self.hello_read = True
+        self.learn_pace()
         return payload
 
-    def pair(self, code: str = "") -> dict:
+    def learn_pace(self) -> None:
+        """Take the pace this peer asked for, and never hand it back.
+
+        A full-speed 4 MiB body does not only arrive wrong on a Harmony receiver, it takes the receiving
+        process down with it, so the floor has to be read before the first big body rather than learned
+        from the wreckage of one.
+        """
+        declared = int(self.peer.get(PACE_FIELD) or 0)
+        if declared > self.pace_ms:
+            log.info("peer asks for %d ms per TLS record, pacing this transfer accordingly", declared)
+            self.pace_ms = declared
+
+    def pair(self, code: str = "", secret: str = "", tls_fingerprint: str = "") -> dict:
+        """Redeem a pair code, and a passphrase when the user typed one.
+
+        An empty ``secret`` is left off the wire rather than sent blank: a peer that predates
+        the passphrase reads a missing key as "this sender has no passphrase to offer" and
+        accepts on the code alone, while an empty one would look like a wrong guess.
+        ``tls_fingerprint`` follows the same rule - it is this device's served leaf certificate,
+        and is only declared when that leaf is not signed by the identity key (spec §3).
+        """
         nonce = secrets.token_hex(16)
-        message = f"pair|{self.identity.peer_id}|{nonce}".encode("utf-8")
-        status, payload = self._request(
-            "POST",
-            "/v1/pair",
-            json_body={
-                "peer_id": self.identity.peer_id,
-                "name": self.device_name,
-                "protocol_version": self.proto.version,
-                "nonce": nonce,
-                "public_key": base64.b64encode(self.identity.raw_public_key()).decode(),
-                "signature": base64.b64encode(self.identity.key.sign(message)).decode(),
-                "code": code,
-            },
-        )
+        message = protocol_spec.pair_message(self.identity.peer_id, nonce, tls_fingerprint)
+        request = {
+            "peer_id": self.identity.peer_id,
+            "name": self.device_name,
+            "protocol_version": self.proto.version,
+            "nonce": nonce,
+            "public_key": base64.b64encode(self.identity.raw_public_key()).decode(),
+            "signature": base64.b64encode(self.identity.key.sign(message)).decode(),
+            "code": code,
+        }
+        if secret:
+            request["secret"] = secret
+        if tls_fingerprint:
+            request["tls_fingerprint"] = tls_fingerprint
+        status, payload = self._request("POST", "/v1/pair", json_body=request)
         if status == 403 and payload.get("code") == "BAD_PAIR_CODE":
             raise PairNeeded()
         if status != 200:
             raise protocol_spec.ProtocolError(str(payload.get("code") or "NOT_PAIRED"), payload.get("detail"))
         self.token = str(payload["token"])
         self.peer = payload
-        self.identity.trust(str(payload["fingerprint"]), str(payload["peer_id"]), str(payload.get("name", "")))
+        # Two numbers for one device: this end pinned the certificate it got out of TLS, the
+        # signature names an identity key. Recording both is what stops a peer whose leaf is
+        # not its identity from being trusted under one key and dialled under another.
+        peer_identity = str(payload["fingerprint"])
+        self.identity.trust(peer_identity, str(payload["peer_id"]), str(payload.get("name", "")),
+                            tls_fingerprint="" if peer_identity == self.fingerprint else self.fingerprint)
         log.info("paired with %s (resumed=%s)", payload.get("name"), payload.get("resumed"))
         return payload
 
     # --------------------------------------------------------------- transfer
 
     def offer(self, files: list[OutgoingFile]) -> dict:
+        """Send the manifest and come back with the peer's answer.
+
+        A peer that can hold a socket open answers this POST itself, and the first reply is the decision.
+        A Harmony peer cannot: its TLS server frees the session of a connection that is only waiting about
+        a tenth of a second after the request lands, with no disconnect reaching the app, so the answer
+        would have to be written onto a session that is gone (`.probe/death.py`, and `SSL is null` in the
+        phone's own trace). That end answers `accepted: false` straight away and the decision is read from
+        the next POST of the same manifest, which the receiver already treats as one delivery rather than
+        a second one.
+        """
         manifest = {
             "offer_id": secrets.token_hex(8),
             "protocol_version": self.proto.version,
@@ -228,11 +337,24 @@ class PeerConnection:
             "from": {"peer_id": self.identity.peer_id, "name": self.device_name},
             "files": [f.manifest() for f in files],
         }
-        state = self._call("POST", "/v1/offer", json_body=manifest)
         self.offer_id = str(manifest["offer_id"])
         self._manifest = manifest
-        log.info("offer %s accepted (%d files)", self.offer_id[:8], len(files))
-        return {"manifest": manifest, "state": state}
+        deadline = time.monotonic() + self.proto.offer_wait_timeout_s
+        while True:
+            status, payload = self._request("POST", "/v1/offer", json_body=manifest)
+            if status == 403 and payload.get("code") == "NOT_PAIRED" and self.identity.is_trusted(self.fingerprint):
+                # The peer restarted while somebody was deciding; the pin survives, so re-pair quietly.
+                self.token = ""
+                self.pair()
+                continue
+            if status >= 400:
+                raise protocol_spec.ProtocolError(str(payload.get("code") or "UNSUPPORTED_PROTOCOL"), payload.get("detail"))
+            if payload.get("accepted") is not False:
+                log.info("offer %s accepted (%d files)", self.offer_id[:8], len(files))
+                return {"manifest": manifest, "state": payload}
+            if time.monotonic() >= deadline:
+                raise protocol_spec.ProtocolError("DECLINED", {"reason": "no decision in time"})
+            time.sleep(1.0)
 
     def state(self) -> dict:
         return self._call("GET", f"/v1/offer/{self.offer_id}/state")
@@ -269,6 +391,10 @@ class PeerConnection:
         """Push what the receiver still needs, verify, and re-push once if it complains."""
         if not self.offer_id:
             raise RuntimeError("call offer() before send()")
+        if not self.hello_read:
+            # The peer's own pace declaration is worth one more request if the caller went straight to
+            # pairing: a body written too fast is not merely rejected by a Harmony receiver.
+            self.hello()
         self.push_missing(files, self.state(), progress, retries)
         result = self.finalize()
         broken = [v for v in result["verified"] if not v["ok"]]
@@ -290,10 +416,10 @@ class PeerConnection:
             raise protocol_spec.ProtocolError("FILE_DIGEST_MISMATCH", {"files": [v["id"] for v in still]})
         return result
 
-    def transfer(self, files: list[OutgoingFile], code: str = "", progress: Progress | None = None) -> dict:
+    def transfer(self, files: list[OutgoingFile], code: str = "", progress: Progress | None = None, secret: str = "") -> dict:
         self.hello()
         if not self.identity.is_trusted(self.fingerprint):
-            self.pair(code)
+            self.pair(code, secret)
         else:
             self.pair()
         offered = self.offer(files)
@@ -309,7 +435,19 @@ class PeerConnection:
         path = f"/v1/offer/{self.offer_id}/chunk/{file.id}/{index}"
         for attempt in range(retries):
             data = _read_chunk(file, index, self.proto.chunk_size)
-            status, payload = self._request("PUT", path, raw_body=data, headers={"X-Sha256": _digest(data)})
+            body, escaped = protocol_spec.escape_chunk(data)
+            headers = {"X-Sha256": _digest(data)}
+            if escaped:
+                headers[protocol_spec.CHUNK_ESCAPE_HEADER] = escaped
+            try:
+                status, payload = self._request("PUT", path, raw_body=body, headers=headers, pace_ms=self.pace_ms)
+            except (http.client.HTTPException, OSError) as exc:
+                # A body that dies on the way in is the same complaint as a wrong digest, only louder: the
+                # pipe could not carry it at this rate. Slowing down is the one repair that does not need
+                # the peer's help, so spend a rung of the ladder before giving up on the chunk.
+                if not self._slow_pipe(f"{type(exc).__name__}: {exc}"):
+                    raise
+                continue
             if status == 200:
                 if progress is not None:
                     progress(file.relpath, index, total)
@@ -320,5 +458,21 @@ class PeerConnection:
                 continue
             if payload.get("code") == "CHUNK_DIGEST_MISMATCH" and attempt + 1 < retries:
                 log.warning("chunk %d of %s rejected, resending (attempt %d)", index, file.relpath, attempt + 1)
+                self._slow_pipe("every byte counted, different content")
                 continue
             raise protocol_spec.ProtocolError(str(payload.get("code") or "CHUNK_DIGEST_MISMATCH"), payload.get("detail"))
+
+    def _slow_pipe(self, reason: str) -> bool:
+        """Hand the next attempt a rung of the pacing ladder; False when there is no rung left.
+
+        The pace is learned for the rest of this peer, not for one chunk: a pipe that could not drain a
+        4 MiB body at full speed has not become faster because that body was written again.
+        """
+        try:
+            rung = next(ms for ms in PACE_MS_LADDER if ms > self.pace_ms)
+        except StopIteration:
+            log.warning("chunk rejected (%s) with the pipe already paced at %d ms", reason, self.pace_ms)
+            return False
+        self.pace_ms = rung
+        log.warning("chunk rejected (%s): pacing to %d ms per TLS record for the rest of this peer", reason, self.pace_ms)
+        return True

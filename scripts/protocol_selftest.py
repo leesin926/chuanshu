@@ -125,8 +125,8 @@ def phase_in_process(proto: protocol_spec.Protocol, workspace: Path) -> None:
     receiver = load_or_create(workspace / "receiver-id")
     accepted: list[str] = []
 
-    def decide(manifest: dict, who: str) -> bool:
-        accepted.append(who)
+    def decide(manifest: dict, who: str, caller: str) -> bool:
+        accepted.append((who, caller))
         return True
 
     service = ReceiveService(receiver, "Phone-Simulator", decide, host="127.0.0.1", port=0, root=workspace / "inproc-received")
@@ -138,22 +138,52 @@ def phase_in_process(proto: protocol_spec.Protocol, workspace: Path) -> None:
 
         wrong = PeerConnection(sender, "PC-Sender", "127.0.0.1", service.port, receiver.fingerprint)
         try:
-            wrong.pair("0000" if service.current_pair_code() != "0000" else "0001")
+            current = service.current_pair_code()
+            wrong.pair(("1" if current[0] != "1" else "2") + current[1:])
             check("wrong pair code rejected", False, "pairing succeeded with a bogus code")
         except PairNeeded:
             check("wrong pair code rejected", True)
         except protocol_spec.ProtocolError as error:
             check("wrong pair code rejected", error.code == "BAD_PAIR_CODE", error.code)
 
-        paired = conn.pair(service.current_pair_code())
+        # The code is read off the screen, the password typed; getting one right and the other
+        # wrong must not be a way in. The refusal arrives as PairNeeded rather than a labelled
+        # BAD_PAIR_CODE because the sender turns any failed pair into that one prompt on purpose -
+        # a wrong password is not a different kind of mistake to a stranger than a wrong code is.
+        bogus = PeerConnection(sender, "PC-Sender", "127.0.0.1", service.port, receiver.fingerprint)
+        try:
+            bogus.pair(service.current_pair_code(), "!" * proto.passphrase_chars)
+            check("right code with a wrong password rejected", False, "pairing succeeded with a bogus password")
+        except PairNeeded:
+            check("right code with a wrong password rejected", True)
+        except protocol_spec.ProtocolError as error:
+            check("right code with a wrong password rejected", error.code == "BAD_PAIR_CODE", error.code)
+
+        paired = conn.pair(service.current_pair_code(), service.passphrase())
         check("pair issues a session token", len(paired["token"]) >= 32 and paired["resumed"] is False, paired["resumed"])
         check("receiver pinned the sender key", receiver.is_trusted(sender.fingerprint), sender.fingerprint[:12])
         check("sender pinned the receiver cert", sender.is_trusted(receiver.fingerprint), receiver.fingerprint[:12])
+
+        # One device, one peer: a stranger with the right code and the right password is still
+        # turned away while this session holds the slot.
+        second = PeerConnection(load_or_create(workspace / "second-id"), "PC-Second", "127.0.0.1", service.port, receiver.fingerprint)
+        second.hello()
+        try:
+            second.pair(service.current_pair_code(), service.passphrase())
+            check("a second device refused while one is connected", False, "two peers paired at once")
+        except protocol_spec.ProtocolError as error:
+            check("a second device refused while one is connected",
+                  error.code == "PEER_BUSY" and (error.detail or {}).get("reason") == "one peer at a time",
+                  f"{error.code} {error.detail}")
+        check("the refusal did not pin the stranger", not receiver.is_trusted(second.fingerprint), second.fingerprint[:12])
 
         files = plan(corpus, base=workspace / "corpus")
         check("plan covers 3 files with posix relpaths", len(files) == 3 and all("\\" not in f.relpath for f in files), [f.relpath for f in files])
         offered = conn.offer(files)
         check("offer accepted with all chunks missing", all(e["missing"] for e in offered["state"]["files"]))
+        # `who` is the name frozen in the receiver's pin list at pairing time, not whatever
+        # this manifest happens to claim now.
+        check("offer handler is told who actually called", accepted[0] == ("PC-Sender", sender.fingerprint), accepted[0])
         big = next(f for f in files if f.relpath.endswith("IMG_大文件.bin"))
         check("multi-chunk file needs 2 chunks", len(next(e for e in offered["state"]["files"] if e["id"] == big.id)["missing"]) == 2)
 
@@ -206,7 +236,7 @@ def phase_in_process(proto: protocol_spec.Protocol, workspace: Path) -> None:
                 got, actual = "", error.code
             check(f"sanitize {relpath!r} -> {expected or 'accepted'}", actual == expected, got or actual)
 
-        declined = ReceiveService(receiver, "Declining-Phone", lambda m, who: False, host="127.0.0.1", port=0, root=workspace / "declined-received")
+        declined = ReceiveService(receiver, "Declining-Phone", lambda m, who, caller: False, host="127.0.0.1", port=0, root=workspace / "declined-received")
         declined.start()
         try:
             loser = PeerConnection(sender, "PC-Sender", "127.0.0.1", declined.port, receiver.fingerprint)
@@ -266,7 +296,7 @@ def phase_discovery(proto: protocol_spec.Protocol, workspace: Path) -> None:
     b_id = load_or_create(workspace / "disc-b")
 
     def make_receiver(identity: object, name: str, root: str):
-        service = ReceiveService(identity, name, lambda manifest, who: True, host="0.0.0.0", port=0, root=workspace / root)
+        service = ReceiveService(identity, name, lambda manifest, who, caller: True, host="0.0.0.0", port=0, root=workspace / root)
         service.start()
         return service
 
@@ -329,8 +359,18 @@ def phase_discovery(proto: protocol_spec.Protocol, workspace: Path) -> None:
             fields == {"h": "127.0.0.1", "p": str(b_svc.port), "v": str(proto.version), "f": b_id.fingerprint, "c": code},
             fields,
         )
+        # The password half rides along only when this build has one: a QR without it is a
+        # legacy promise, and the reader must not invent an empty key for it.
+        with_pass = protocol_spec.parse_qr(b.pairing_qr(code, host="127.0.0.1", passphrase=b_svc.passphrase()))
+        check("qr carries the password when there is one", with_pass.get("k") == b_svc.passphrase(), with_pass)
+        check("qr without a password has no empty k", "k" not in fields and "k" not in protocol_spec.parse_qr(
+            b.pairing_qr(code, host="127.0.0.1", passphrase="")), with_pass.keys())
         expect_error("qr with an unsupported version is refused", "UNSUPPORTED_PROTOCOL", lambda: protocol_spec.parse_qr(url.replace(f"v={proto.version}", "v=99")))
         expect_error("qr without a fingerprint is refused", "UNSUPPORTED_PROTOCOL", lambda: protocol_spec.parse_qr("chuanshu://p?h=127.0.0.1&p=43720&v=1"))
+        truncated = protocol_spec.qr_url(h="127.0.0.1", p=str(b_svc.port), v=str(proto.version), f=b_id.fingerprint[:60], c=code)
+        expect_error("qr with a truncated fingerprint is refused", "UNSUPPORTED_PROTOCOL", lambda: protocol_spec.parse_qr(truncated))
+        junk_fp = protocol_spec.qr_url(h="127.0.0.1", p=str(b_svc.port), v=str(proto.version), f="z" * 64, c=code)
+        expect_error("qr with a non-hex fingerprint is refused", "UNSUPPORTED_PROTOCOL", lambda: protocol_spec.parse_qr(junk_fp))
     finally:
         b.stop()
         a.stop()

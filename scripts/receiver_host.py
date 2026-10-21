@@ -28,7 +28,7 @@ def main() -> int:
     args = ap.parse_args()
 
     identity = load_or_create(args.identity)
-    decide = (lambda manifest, who: False) if args.decline else (lambda manifest, who: True)
+    decide = (lambda manifest, who, caller: False) if args.decline else (lambda manifest, who, caller: True)
     service = ReceiveService(
         identity,
         args.name,
