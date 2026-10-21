@@ -1,0 +1,164 @@
+<template>
+	<!-- 和旧的那一版一样，根节点必须是限高滚动容器：鸿蒙上页面容器按内容撑开，只给 flex:1 或只给
+	     height:100% 都滚不动，两个一起给才等于视口高度。 -->
+	<scroll-view class="page" scroll-y="true">
+		<view class="card">
+			<view class="head">
+				<text class="h">连接状态</text>
+				<text class="badge" v-if="s.mocked">对端是模拟的</text>
+			</view>
+			<text class="hero" :class="s.connected ? 'stateOk' : 'stateWait'">{{ headline }}</text>
+			<text class="sub">{{ s.sessionLabel }}</text>
+			<text class="sub" :class="s.netClass">{{ s.netLabel }}</text>
+			<text class="sub mt8">{{ s.pinnedLabel }}</text>
+			<view class="row mt8 wrap">
+				<button class="primary col1" @click="goSend">发送文件</button>
+				<button class="mini" @click="goDetail">传输详情</button>
+			</view>
+		</view>
+
+		<!-- 有人在等这台设备点头，这件事必须出现在打开应用就能看到的地方，而不是藏在某个列表页里。 -->
+		<view class="card" v-if="s.recvAsk != ''">
+			<view class="head">
+				<text class="h">有一个传输在等你决定</text>
+				<text class="badge">等你决定</text>
+			</view>
+			<text class="note mt8">{{ s.recvAsk }}</text>
+			<view class="row mt8 wrap">
+				<button class="mini" @click="accept">接受</button>
+				<button class="mini" @click="refuse">拒绝</button>
+				<button class="mini" @click="goFiles">去看收到的文件</button>
+			</view>
+		</view>
+
+		<view class="card">
+			<view class="head">
+				<text class="h">对端</text>
+				<text class="badge" v-if="s.connected">已连接</text>
+			</view>
+			<view class="row mt8 wrap">
+				<!-- #ifndef WEB -->
+				<button class="mini" @click="scan" :disabled="s.connecting || s.connected">扫码连接</button>
+				<!-- #endif -->
+				<button class="mini" @click="showPaste">{{ s.pasteLabel }}</button>
+				<button class="mini" @click="eraseTarget" v-if="s.targetLabel != ''">清除对端</button>
+				<!-- #ifndef WEB -->
+				<button class="mini" @click="dropPin" v-if="s.pinnedFp != '' && !s.connected">解除固定</button>
+				<!-- #endif -->
+			</view>
+			<view class="row mt8" v-if="s.showPaste">
+				<input class="input col1" v-model="s.pairText" placeholder="粘贴 PC 上二维码的内容 chuanshu://p?…" />
+				<button class="mini" @click="paste">解析</button>
+			</view>
+			<view class="row mt8">
+				<input class="input col1" v-model="s.code" :maxlength="s.codeDigits" :placeholder="s.codeHint" />
+				<input class="input col1" v-model="s.secret" :maxlength="s.passChars" :placeholder="s.passHint" />
+			</view>
+			<view class="row mt8 wrap">
+				<button class="mini" @click="connect" :disabled="s.connecting || s.connected">{{ s.connectLabel }}</button>
+				<button class="mini" @click="disconnect" v-if="s.connected">断开</button>
+			</view>
+			<text class="sub mt8" v-if="s.targetLabel != ''">{{ s.targetLabel }}</text>
+			<button class="mini mt8" @click="showAdvanced">{{ s.advancedLabel }}</button>
+			<view class="row mt8" v-if="s.showAdvanced">
+				<input class="input col1" v-model="s.host" placeholder="地址，如 192.168.1.12" />
+				<input class="input col2" v-model="s.port" type="number" placeholder="端口" />
+			</view>
+			<text class="note mt8" v-if="s.showAdvanced">地址和端口通常来自扫码。手输时本机没有可预先核对的指纹，只建议在信任的网络里用。密码留空等于只按配对码握手：对端已经设过密码时会被拒。</text>
+		</view>
+
+		<view class="card">
+			<text class="h">本机</text>
+			<text class="big">{{ s.selfName }}</text>
+			<text class="sub">peer_id {{ s.selfId }}</text>
+			<text class="sub">指纹 {{ s.selfFpShort }}</text>
+			<text class="note" v-if="s.note != ''">{{ s.note }}</text>
+			<view class="row mt8 wrap">
+				<button class="mini" @click="goMe">本机配对信息</button>
+				<button class="mini" @click="goFiles">收到的文件</button>
+			</view>
+		</view>
+	</scroll-view>
+</template>
+
+<script setup lang="uts">
+	import { s, initSession, refreshReceive, onPaste, onConnect, onDisconnect, clearTarget, togglePaste, toggleAdvanced, unpin, onRecvAccept, onRecvRefuse } from '@/store/session.uts'
+	// #ifndef WEB
+	import { onScan } from '@/store/session.uts'
+	// #endif
+
+	initSession()
+
+	const headline = computed((): string => {
+		if (s.connecting) {
+			return '正在连接对端…'
+		}
+		return s.connected ? '已连上对端，可以发送了' : '还没有连上对端'
+	})
+
+	/** The store's ticker is the fallback, not the source of truth: a suspended app freezes it, so the
+	 *  screen is re-read every time the user comes back to this tab. */
+	onShow(() => {
+		refreshReceive()
+	})
+
+	/* 模板只能点本页自己的函数：只被模板引用的 store 动作会被摇树丢掉，Kotlin 那头报“找不到名称
+	   invoke”。下面这一层薄壳既是那份引用，也是这一页允许用户做的事的清单。 */
+	function accept() {
+		onRecvAccept()
+	}
+
+	function refuse() {
+		onRecvRefuse()
+	}
+
+	// #ifndef WEB
+	function scan() {
+		onScan()
+	}
+	// #endif
+
+	function paste() {
+		onPaste()
+	}
+
+	function connect() {
+		onConnect()
+	}
+
+	function disconnect() {
+		onDisconnect()
+	}
+
+	function eraseTarget() {
+		clearTarget()
+	}
+
+	function showPaste() {
+		togglePaste()
+	}
+
+	function showAdvanced() {
+		toggleAdvanced()
+	}
+
+	function dropPin() {
+		unpin()
+	}
+
+	function goSend() {
+		uni.navigateTo({ url: '/pages/send/send' })
+	}
+
+	function goDetail() {
+		uni.navigateTo({ url: '/pages/detail/detail' })
+	}
+
+	function goFiles() {
+		uni.switchTab({ url: '/pages/files/files' })
+	}
+
+	function goMe() {
+		uni.switchTab({ url: '/pages/me/me' })
+	}
+</script>

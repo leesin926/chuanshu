@@ -1,0 +1,94 @@
+<template>
+	<scroll-view class="page" scroll-y="true">
+		<view class="card">
+			<view class="head">
+				<text class="h">收到的文件</text>
+				<text class="badge" v-if="s.recvAsk != ''">等你决定</text>
+			</view>
+			<text class="note mt8" v-if="s.recvAsk != ''">{{ s.recvAsk }}</text>
+			<view class="row mt8 wrap" v-if="s.recvAsk != ''">
+				<button class="mini" @click="accept">接受</button>
+				<button class="mini" @click="refuse">拒绝</button>
+			</view>
+			<text class="sub mt8" v-if="s.recvNames.length == 0">还没有收到文件。对端要用下面这组配对码连上本机，才能把文件发进来。</text>
+			<view class="filerow" v-for="(n, i) in s.recvNames" :key="i">
+				<view class="col1">
+					<text class="fname">{{ n }}</text>
+					<text class="fsize">{{ s.recvMeta[i] }}</text>
+					<text class="fstate" :class="s.recvStateClass[i]">{{ s.recvStates[i] }}</text>
+				</view>
+			</view>
+			<view class="divider"></view>
+			<text class="sub">{{ s.recvSummary }}</text>
+			<text class="sub">{{ s.recvPeers }}</text>
+			<button class="mini mt8" @click="refresh">刷新</button>
+		</view>
+
+		<view class="card">
+			<text class="h">本机接收设置</text>
+			<text class="big">配对码 {{ s.recvCodeText }}</text>
+			<text class="big">密码 {{ s.recvPassText }}</text>
+			<text class="sub">{{ s.recvCodeLeft }}</text>
+			<!-- #ifdef APP-ANDROID || APP-HARMONY -->
+			<text class="sub mt8" :class="s.recvListenClass">{{ s.recvListen }}</text>
+			<text class="sub" v-for="(a, i) in s.recvAddrs" :key="i">本机地址 {{ a }}</text>
+			<!-- #endif -->
+			<text class="note mt8" v-if="s.recvNote != ''">{{ s.recvNote }}</text>
+			<view class="row mt8 wrap">
+				<button class="mini" @click="goMe">复制配对信息 / 监听开关</button>
+				<button class="mini" @click="goDetail">传输详情</button>
+			</view>
+		</view>
+
+		<view class="card">
+			<text class="h">待发送</text>
+			<text class="sub mt8" v-if="s.names.length == 0">还没有选好要发的文件。</text>
+			<view class="filerow" v-for="(n, i) in s.names" :key="i">
+				<view class="col1">
+					<text class="fname">{{ n }}</text>
+					<text class="fsize">{{ s.meta[i] }}</text>
+					<text class="fstate" :class="s.stateClass[i]">{{ s.states[i] }}</text>
+				</view>
+			</view>
+			<view class="row mt8 wrap">
+				<button class="mini" @click="goSend">{{ s.running ? '传输中，点进去看' : '去发送文件' }}</button>
+			</view>
+			<text class="sub mt8">{{ s.progressLabel }}</text>
+		</view>
+	</scroll-view>
+</template>
+
+<script setup lang="uts">
+	import { s, initSession, refreshReceive, onRecvAccept, onRecvRefuse } from '@/store/session.uts'
+
+	initSession()
+
+	onShow(() => {
+		refreshReceive()
+	})
+
+	/* 模板只点本页的函数：只被模板引用的 store 动作会被摇树丢掉，编译报“找不到名称 invoke”。 */
+	function accept() {
+		onRecvAccept()
+	}
+
+	function refuse() {
+		onRecvRefuse()
+	}
+
+	function refresh() {
+		refreshReceive()
+	}
+
+	function goMe() {
+		uni.switchTab({ url: '/pages/me/me' })
+	}
+
+	function goSend() {
+		uni.navigateTo({ url: '/pages/send/send' })
+	}
+
+	function goDetail() {
+		uni.navigateTo({ url: '/pages/detail/detail' })
+	}
+</script>

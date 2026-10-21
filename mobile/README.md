@@ -17,7 +17,14 @@ shared/protocol/SOURCE.json     来源戳：仓库、commit、protocol_version�
 scripts/check_protocol.py       校验 vendored 副本没被手改 + 契约自身没跑偏
 chuanshu/                       uni-app x 工程（AppID __UNI__8DB2EF6，目标 APP-ANDROID）
 chuanshu/uni_modules/cs-identity/   UTS 插件：能力探针、手搓自签 X.509、回路 TLS 自检
-chuanshu/pages/index/index.uvue     三个按钮的探针界面，真机上点
+chuanshu/store/session.uts            跨页共用的会话：连接、发送、接收、日志都在这一份状态里
+chuanshu/pages/home/home.uvue         首页：连接状态 + 连对端（扫码/粘贴/配对码）
+chuanshu/pages/files/files.uvue       文件页：收到的文件与待发送的清单
+chuanshu/pages/me/me.uvue             我的页：本机身份、配对信息、监听开关、探针入口
+chuanshu/pages/send/send.uvue         发送文件页：选文件、发送、进度
+chuanshu/pages/detail/detail.uvue     传输详情页：两个方向的任务 + 日志
+chuanshu/pages/probe/probe.uvue       三个按钮的平台能力探针，真机上点
+chuanshu/static/tabbar/               tabBar 图标，由 mobile/scripts/gen_tabbar.py 画
 ```
 
 ```powershell
@@ -32,12 +39,16 @@ python scripts/check_protocol.py
 
 ```powershell
 & "F:\HBuilderX\cli.exe" compile app-android --project chuanshu --uni_module cs-identity
+& "F:\HBuilderX\cli.exe" launch app-android --project E:\wowo3\mobile\chuanshu --compile true
+& "F:\HBuilderX\cli.exe" launch app-harmony --project E:\wowo3\mobile\chuanshu --compile true --buildType debug
 & "F:\HBuilderX\cli.exe" pack --project chuanshu --platform android --precheck true
 ```
 
-第一条把插件编到 Kotlin 字节码；第二条只做打包前的配置预校验，**不会**提交云打包、不扣费。
-`--file` 只能指 `.uts`，整包编译（含 `.uvue`）要么真机 `launch`，要么 `pack --iscustom true`
-走云打包出自定义基座——后者会用你的 DCloud 账号，别顺手跑。
+第一条把插件编到 Kotlin 字节码；第二条和第三条编译**整个应用**（`.uvue` 页面一起），不需要接设备，
+鸿蒙那条还会顺带把 hap 签好名。`--file` 只能指 `.uts`，所以别拿它验页面。**两条 launch 都以退出码
+0 结束，无论成败**：只认日志里的 `编译成功` / `kotlin编译失败` / `运行包制作成功`。
+第四条只做打包前的配置预校验，**不会**提交云打包、不扣费。真正出安装包要 `pack --iscustom true`，
+那一步用你的 DCloud 账号，别顺手跑。
 
 ## 两端共用同一套验收
 

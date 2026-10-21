@@ -1,0 +1,81 @@
+<template>
+	<scroll-view class="page" scroll-y="true">
+		<view class="card">
+			<view class="head">
+				<text class="h">这台设备发出去的任务</text>
+				<text class="badge" v-if="s.running">传输中</text>
+			</view>
+			<view class="bar mt8">
+				<view class="fill" :style="{ width: s.fillWidth }"></view>
+			</view>
+			<text class="sub mt8">{{ s.progressLabel }}</text>
+			<text class="sub mt8" v-if="s.names.length == 0">这一轮还没有发过文件。</text>
+			<view class="filerow" v-for="(n, i) in s.names" :key="i">
+				<view class="col1">
+					<text class="fname">{{ n }}</text>
+					<text class="fsize">{{ s.meta[i] }}</text>
+					<text class="fstate" :class="s.stateClass[i]">{{ s.states[i] }}</text>
+				</view>
+			</view>
+			<view class="row mt8 wrap">
+				<button class="mini" @click="goSend">回发送页</button>
+			</view>
+		</view>
+
+		<view class="card">
+			<view class="head">
+				<text class="h">这台设备收到的任务</text>
+				<text class="badge" v-if="s.recvAsk != ''">等你决定</text>
+			</view>
+			<text class="note mt8" v-if="s.recvAsk != ''">{{ s.recvAsk }}</text>
+			<view class="row mt8 wrap" v-if="s.recvAsk != ''">
+				<button class="mini" @click="accept">接受</button>
+				<button class="mini" @click="refuse">拒绝</button>
+			</view>
+			<text class="sub mt8" v-if="s.recvNames.length == 0">还没有收到文件。</text>
+			<view class="filerow" v-for="(n, i) in s.recvNames" :key="i">
+				<view class="col1">
+					<text class="fname">{{ n }}</text>
+					<text class="fsize">{{ s.recvMeta[i] }}</text>
+					<text class="fstate" :class="s.recvStateClass[i]">{{ s.recvStates[i] }}</text>
+				</view>
+			</view>
+			<view class="divider"></view>
+			<text class="sub">{{ s.recvSummary }}</text>
+			<text class="sub">{{ s.recvPeers }}</text>
+		</view>
+
+		<view class="card">
+			<view class="head">
+				<text class="h">日志</text>
+				<text class="sub">{{ s.lines.length }} 条</text>
+			</view>
+			<scroll-view class="log mt8" :scroll-top="s.scrollTop" scroll-y="true">
+				<text class="logline" v-for="(l, i) in s.lines" :key="i">{{ l }}</text>
+			</scroll-view>
+		</view>
+	</scroll-view>
+</template>
+
+<script setup lang="uts">
+	import { s, initSession, refreshReceive, onRecvAccept, onRecvRefuse } from '@/store/session.uts'
+
+	initSession()
+
+	onShow(() => {
+		refreshReceive()
+	})
+
+	/* 模板只点本页的函数：只被模板引用的 store 动作会被摇树丢掉，编译报“找不到名称 invoke”。 */
+	function accept() {
+		onRecvAccept()
+	}
+
+	function refuse() {
+		onRecvRefuse()
+	}
+
+	function goSend() {
+		uni.navigateTo({ url: '/pages/send/send' })
+	}
+</script>

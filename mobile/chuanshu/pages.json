@@ -1,9 +1,35 @@
 {
 	"pages": [ //pages数组中第一项表示应用启动页，参考：https://doc.dcloud.net.cn/uni-app-x/collocation/pagesjson.html
 		{
-			"path": "pages/index/index",
+			"path": "pages/home/home",
 			"style": {
-				"navigationBarTitleText": "传书 · 发送"
+				"navigationBarTitleText": "传书 · 首页"
+			}
+		},
+		{
+			"path": "pages/files/files",
+			"style": {
+				"navigationBarTitleText": "传书 · 文件"
+			}
+		},
+		{
+			"path": "pages/me/me",
+			"style": {
+				"navigationBarTitleText": "传书 · 我的"
+			}
+		},
+		{
+			// 发送和详情都不在 tabBar 里：一个是动作，一个是某个动作的过程，用户从首页或文件页点进去，
+			// 看完用导航条返回，而不是把它们当成常驻的第三、第四个分类。
+			"path": "pages/send/send",
+			"style": {
+				"navigationBarTitleText": "传书 · 发送文件"
+			}
+		},
+		{
+			"path": "pages/detail/detail",
+			"style": {
+				"navigationBarTitleText": "传书 · 传输详情"
 			}
 		},
 		{
@@ -18,6 +44,34 @@
 		"navigationBarTitleText": "传书",
 		"navigationBarBackgroundColor": "#F8F8F8",
 		"backgroundColor": "#F8F8F8"
+	},
+	/* tabBar 在鸿蒙上要 4.61+ 才支持，且不支持 iconfont / midButton / backgroundImage；图标只能是
+	   本地 png（81x81、40KB 以内），由 mobile/scripts/gen_tabbar.py 画出来。 */
+	"tabBar": {
+		"color": "#8a9099",
+		"selectedColor": "#1456f0",
+		"backgroundColor": "#ffffff",
+		"borderStyle": "black",
+		"list": [
+			{
+				"pagePath": "pages/home/home",
+				"text": "首页",
+				"iconPath": "static/tabbar/home.png",
+				"selectedIconPath": "static/tabbar/home-on.png"
+			},
+			{
+				"pagePath": "pages/files/files",
+				"text": "文件",
+				"iconPath": "static/tabbar/files.png",
+				"selectedIconPath": "static/tabbar/files-on.png"
+			},
+			{
+				"pagePath": "pages/me/me",
+				"text": "我的",
+				"iconPath": "static/tabbar/me.png",
+				"selectedIconPath": "static/tabbar/me-on.png"
+			}
+		]
 	},
 	"uniIdRouter": {}
 }

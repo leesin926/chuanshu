@@ -40,12 +40,190 @@
 </script>
 
 <style>
-	/*每个页面公共css */
-	.uni-row {
-		flex-direction: row;
+	/* 每个页面公共 css。放在这里而不是各页的 style 块里，是因为五个页面用的是同一套卡片和字级：
+	   一个类在两个页面里长得不一样，用户读出来就是两个产品。 */
+	.page {
+		flex-direction: column;
+		/*  Both, because neither alone bounds the scroll-view on Harmony: the page container is
+		    sized by its content, so `100%` resolves to that content and nothing scrolls, and `flex: 1`
+		    has no definite parent height to grow into. Together they give the scroll-view the viewport. */
+		flex: 1;
+		height: 100%;
+		padding: 12px;
+		background-color: #f2f3f5;
 	}
 
-	.uni-column {
+	.card {
 		flex-direction: column;
+		background-color: #ffffff;
+		border-radius: 10px;
+		padding: 12px;
+		margin-bottom: 12px;
+	}
+
+	.head {
+		flex-direction: row;
+		justify-content: space-between;
+		align-items: center;
+	}
+
+	.h {
+		font-size: 14px;
+		font-weight: bold;
+		color: #1f2329;
+	}
+
+	.badge {
+		font-size: 11px;
+		color: #d46b08;
+		background-color: #fff7e8;
+		border-radius: 4px;
+		padding: 2px 6px;
+	}
+
+	.big {
+		margin-top: 6px;
+		font-size: 15px;
+		color: #1f2329;
+	}
+
+	/* 首页顶部那一行是用户打开应用第一眼要读的答案（连上了没有），所以比 .big 更重。 */
+	.hero {
+		margin-top: 6px;
+		font-size: 18px;
+		font-weight: bold;
+		color: #1f2329;
+	}
+
+	.divider {
+		height: 1px;
+		background-color: #eceef1;
+		margin-top: 10px;
+	}
+
+	.sub {
+		margin-top: 4px;
+		font-size: 12px;
+		color: #8a9099;
+	}
+
+	.note {
+		margin-top: 6px;
+		font-size: 12px;
+		color: #6b7280;
+		line-height: 18px;
+	}
+
+	.row {
+		flex-direction: row;
+		align-items: center;
+	}
+
+	.wrap {
+		flex-wrap: wrap;
+	}
+
+	.mt8 {
+		margin-top: 8px;
+	}
+
+	.col1 {
+		flex: 1;
+		flex-direction: column;
+	}
+
+	.col2 {
+		width: 80px;
+		flex-direction: column;
+	}
+
+	.input {
+		height: 38px;
+		font-size: 13px;
+		background-color: #f5f6f8;
+		border-radius: 6px;
+		padding: 0 8px;
+		margin-right: 8px;
+	}
+
+	.filerow {
+		flex-direction: row;
+		align-items: center;
+		margin-top: 8px;
+	}
+
+	.fname {
+		font-size: 13px;
+		color: #1f2329;
+	}
+
+	.fsize {
+		font-size: 11px;
+		color: #8a9099;
+		margin-top: 2px;
+	}
+
+	.fstate {
+		font-size: 11px;
+		margin-top: 2px;
+	}
+
+	.stateWait {
+		color: #8a9099;
+	}
+
+	.stateRun {
+		color: #1456f0;
+	}
+
+	.stateOk {
+		color: #2e9b57;
+	}
+
+	.stateBad {
+		color: #d4380d;
+	}
+
+	.mini {
+		font-size: 12px;
+		background-color: #f0f2f5;
+		color: #1f2329;
+		border-radius: 6px;
+		padding: 4px 10px;
+		margin: 0 4px 4px 0;
+	}
+
+	.primary {
+		font-size: 15px;
+		background-color: #1456f0;
+		color: #ffffff;
+		border-radius: 8px;
+	}
+
+	.bar {
+		height: 8px;
+		background-color: #eef0f3;
+		border-radius: 4px;
+		width: 240px;
+		overflow: hidden;
+	}
+
+	.fill {
+		height: 8px;
+		background-color: #1456f0;
+		border-radius: 4px;
+	}
+
+	.log {
+		height: 240px;
+		background-color: #f7f8fa;
+		border-radius: 6px;
+		padding: 8px;
+	}
+
+	.logline {
+		font-size: 12px;
+		color: #41474f;
+		line-height: 19px;
 	}
 </style>

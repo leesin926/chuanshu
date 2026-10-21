@@ -1,0 +1,202 @@
+<template>
+	<scroll-view class="page" scroll-y="true">
+		<view class="card">
+			<view class="head">
+				<text class="h">本机</text>
+				<text class="badge" v-if="s.mocked">对端是模拟的</text>
+			</view>
+			<text class="big">{{ s.selfName }}</text>
+			<text class="sub">peer_id {{ s.selfId }}</text>
+			<text class="sub">指纹 {{ s.selfFpShort }}</text>
+			<text class="note" v-if="s.note != ''">{{ s.note }}</text>
+			<view class="row mt8 wrap">
+				<button class="mini" @click="openProbe">平台能力探针</button>
+				<button class="mini" @click="goDetail">传输详情</button>
+			</view>
+		</view>
+
+		<view class="card">
+			<text class="h">本机配对信息</text>
+			<text class="big">配对码 {{ s.recvCodeText }}</text>
+			<text class="big">密码 {{ s.recvPassText }}</text>
+			<text class="sub">{{ s.recvCodeLeft }}</text>
+			<view class="row mt8 wrap">
+				<button class="mini" @click="copyPair">复制配对信息</button>
+				<button class="mini" @click="rotatePair">更换配对码和密码</button>
+			</view>
+			<!-- #ifdef APP-ANDROID || APP-HARMONY -->
+			<text class="sub mt8" :class="s.recvListenClass">{{ s.recvListen }}</text>
+			<text class="sub" v-for="(a, i) in s.recvAddrs" :key="i">本机地址 {{ a }}</text>
+			<view class="row mt8 wrap">
+				<button class="mini" @click="startListen" v-if="!s.recvListening">开始监听</button>
+				<button class="mini" @click="stopListen" v-else>停止监听</button>
+			</view>
+			<!-- #endif -->
+			<text class="note mt8" v-if="s.recvNote != ''">{{ s.recvNote }}</text>
+			<text class="note mt8">配对码固定不变，只有点「更换配对码和密码」才会换一组；已经固定过的对端不受影响。</text>
+		</view>
+
+		<view class="card">
+			<text class="h">当前对端</text>
+			<text class="sub mt8">{{ s.sessionLabel }}</text>
+			<text class="sub">{{ s.pinnedLabel }}</text>
+			<text class="sub" :class="s.netClass">{{ s.netLabel }}</text>
+			<view class="row mt8 wrap">
+				<button class="mini" @click="goHome">去首页连接</button>
+				<button class="mini" @click="disconnect" v-if="s.connected">断开</button>
+			</view>
+		</view>
+
+		<!-- #ifdef WEB -->
+		<view class="card">
+			<text class="h">演示 PC 端</text>
+			<view class="row mt8 wrap">
+				<button class="mini" @click="fillDemo">填入演示配对码</button>
+				<button class="mini" @click="mockScan">模拟扫码结果</button>
+				<button class="mini" @click="expireToken">会话失效</button>
+				<button class="mini" @click="mockRestart">模拟重启</button>
+				<button class="mini" @click="dropPin">解除固定</button>
+			</view>
+			<text class="sub mt8">故障注入：当前 {{ s.faultLabel }}</text>
+			<view class="row mt8 wrap">
+				<button class="mini" @click="fault('')">正常</button>
+				<button class="mini" @click="fault('BAD_PAIR_CODE')">配对码</button>
+				<button class="mini" @click="fault('DECLINED')">拒收</button>
+				<button class="mini" @click="fault('CHUNK_DIGEST_MISMATCH')">分块</button>
+				<button class="mini" @click="fault('FILE_DIGEST_MISMATCH')">整文件</button>
+			</view>
+		</view>
+
+		<view class="card">
+			<text class="h">演示 PC → 本机（接收方向）</text>
+			<text class="sub mt8">这一端在浏览器里没法真的监听 43720，所以让同页面的 PC 角色走同一套发送状态机，把请求直接交给接收内核。</text>
+			<view class="row mt8 wrap">
+				<button class="mini" @click="pcGood">PC 配对（配对码对）</button>
+				<button class="mini" @click="pcWrong">PC 配对（配对码错）</button>
+				<button class="mini" @click="pcResume">PC 重连（配对码留空）</button>
+				<button class="mini" @click="pcSendFiles">PC 发两个文件</button>
+				<button class="mini" @click="pcDrop" v-if="s.pcIn">PC 断开</button>
+			</view>
+			<text class="sub mt8">发送端故障：{{ s.sendFaultLabel }}　接收端故障：{{ s.recvFaultLabel }}</text>
+			<view class="row mt8 wrap">
+				<button class="mini" @click="sendFault('')">发送正常</button>
+				<button class="mini" @click="sendFault('BAD_CHUNK')">发坏一块</button>
+				<button class="mini" @click="sendFault('BAD_FILE')">发坏整文件</button>
+				<button class="mini" @click="recvFault('')">接收正常</button>
+				<button class="mini" @click="recvFault('STORAGE_FULL')">空间不足</button>
+				<button class="mini" @click="recvFault('WRITE_FAIL')">写入失败</button>
+			</view>
+			<button class="mini mt8" @click="recvSelfCheck">接收内核自检</button>
+		</view>
+		<!-- #endif -->
+	</scroll-view>
+</template>
+
+<script setup lang="uts">
+	import { s, initSession, refreshReceive, copyPairing, onRotatePairing, onDisconnect } from '@/store/session.uts'
+	// #ifdef APP-ANDROID || APP-HARMONY
+	import { onRecvListen, onRecvListenStop } from '@/store/session.uts'
+	// #endif
+	// #ifdef WEB
+	import { loadDemo, pasteDemoQr, expireDemoToken, restartDemo, unpin, setFault, pcPairGood, pcPairWrong, pcPairResume, pcSend, pcBreak, pickSendFault, pickRecvFault, runRecvSelf } from '@/store/session.uts'
+	// #endif
+
+	initSession()
+
+	onShow(() => {
+		refreshReceive()
+	})
+
+	/* 模板只点本页的函数：只被模板引用的 store 动作会被摇树丢掉，编译报“找不到名称 invoke”。 */
+	function copyPair() {
+		copyPairing()
+	}
+
+	function rotatePair() {
+		onRotatePairing()
+	}
+
+	function disconnect() {
+		onDisconnect()
+	}
+
+	// #ifdef APP-ANDROID || APP-HARMONY
+	function startListen() {
+		onRecvListen()
+	}
+
+	function stopListen() {
+		onRecvListenStop()
+	}
+	// #endif
+
+	// #ifdef WEB
+	function fillDemo() {
+		loadDemo()
+	}
+
+	function mockScan() {
+		pasteDemoQr()
+	}
+
+	function expireToken() {
+		expireDemoToken()
+	}
+
+	function mockRestart() {
+		restartDemo()
+	}
+
+	function dropPin() {
+		unpin()
+	}
+
+	function fault(kind: string) {
+		setFault(kind)
+	}
+
+	function pcGood() {
+		pcPairGood()
+	}
+
+	function pcWrong() {
+		pcPairWrong()
+	}
+
+	function pcResume() {
+		pcPairResume()
+	}
+
+	function pcSendFiles() {
+		pcSend()
+	}
+
+	function pcDrop() {
+		pcBreak()
+	}
+
+	function sendFault(kind: string) {
+		pickSendFault(kind)
+	}
+
+	function recvFault(kind: string) {
+		pickRecvFault(kind)
+	}
+
+	function recvSelfCheck() {
+		runRecvSelf()
+	}
+	// #endif
+
+	function openProbe() {
+		uni.navigateTo({ url: '/pages/probe/probe' })
+	}
+
+	function goHome() {
+		uni.switchTab({ url: '/pages/home/home' })
+	}
+
+	function goDetail() {
+		uni.navigateTo({ url: '/pages/detail/detail' })
+	}
+</script>

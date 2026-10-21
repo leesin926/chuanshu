@@ -1,0 +1,78 @@
+<template>
+	<scroll-view class="page" scroll-y="true">
+		<view class="card">
+			<view class="head">
+				<text class="h">发给谁</text>
+				<text class="badge" v-if="s.connected">已连接</text>
+			</view>
+			<text class="sub mt8">{{ s.sessionLabel }}</text>
+			<text class="sub" :class="s.netClass">{{ s.netLabel }}</text>
+			<view class="row mt8 wrap">
+				<button class="mini" @click="goHome" v-if="!s.connected">去首页连接对端</button>
+				<button class="mini" @click="goDetail">{{ s.running ? '传输中，看详情' : '传输详情' }}</button>
+			</view>
+		</view>
+
+		<view class="card">
+			<view class="head">
+				<text class="h">待发送</text>
+				<view class="row">
+					<button class="mini" @click="pickFiles">选择文件</button>
+					<button class="mini" v-if="s.names.length > 0" @click="clearAll">清空</button>
+				</view>
+			</view>
+			<text class="sub mt8" v-if="s.names.length == 0">还没有选择文件。一次最多选 20 个，选好以后按下面的顺序一个个发过去。</text>
+			<view class="filerow" v-for="(n, i) in s.names" :key="i">
+				<view class="col1">
+					<text class="fname">{{ n }}</text>
+					<text class="fsize">{{ s.meta[i] }}</text>
+					<text class="fstate" :class="s.stateClass[i]">{{ s.states[i] }}</text>
+				</view>
+				<button class="mini" @click="dropFile(i)" :disabled="s.running">移除</button>
+			</view>
+			<view class="divider"></view>
+			<text class="sub">共 {{ s.names.length }} 个文件</text>
+		</view>
+
+		<view class="card">
+			<button class="primary" :disabled="s.running || !s.canSend" @click="sendNow">{{ s.sendLabel }}</button>
+			<text class="sub mt8" v-if="!s.connected && !s.running">先连上对端才能发送。</text>
+			<text class="sub mt8" v-else-if="s.connected && s.names.length == 0 && !s.running">先选择文件。</text>
+			<view class="bar mt8">
+				<view class="fill" :style="{ width: s.fillWidth }"></view>
+			</view>
+			<text class="sub mt8">{{ s.progressLabel }}</text>
+		</view>
+	</scroll-view>
+</template>
+
+<script setup lang="uts">
+	import { s, initSession, choose, clearFiles, removeFile, onSend } from '@/store/session.uts'
+
+	initSession()
+
+	/* 模板只点本页的函数：只被模板引用的 store 动作会被摇树丢掉，编译报“找不到名称 invoke”。 */
+	function pickFiles() {
+		choose()
+	}
+
+	function clearAll() {
+		clearFiles()
+	}
+
+	function dropFile(at: number) {
+		removeFile(at)
+	}
+
+	function sendNow() {
+		onSend()
+	}
+
+	function goHome() {
+		uni.switchTab({ url: '/pages/home/home' })
+	}
+
+	function goDetail() {
+		uni.navigateTo({ url: '/pages/detail/detail' })
+	}
+</script>
