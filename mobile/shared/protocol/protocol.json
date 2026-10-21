@@ -28,15 +28,18 @@
     "chunk_size": 4194304,
     "max_parallel_chunks": 2,
     "offer_wait_timeout_s": 60,
-    "pair_code_ttl_s": 60,
-    "pair_code_digits": 4,
+    "pair_code_ttl_s": 120,
+    "pair_code_digits": 6,
+    "pair_code_static": true,
+    "passphrase_chars": 8,
     "resume": true,
     "hash": "sha256",
     "tls": {
       "min_version": "TLSv1.2",
       "certificate": "self-signed Ed25519, CN=peer_id, 10 years",
       "trust": "SPKI SHA-256 fingerprint pinned at first pairing"
-    }
+    },
+    "note": "pair_code_static is spec §3: the code minted on first run stays until the user rotates it by hand, which is what lets the pairing QR be printed. pair_code_ttl_s only bounds a build that ignores the flag."
   },
   "endpoints": [
     {

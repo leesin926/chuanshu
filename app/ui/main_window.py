@@ -8,27 +8,37 @@ from PySide6.QtCore import QEvent, QPoint, QRect, Qt, qVersion
 from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QMainWindow,
     QMessageBox,
     QSystemTrayIcon,
     QMenu,
+    QPushButton,
     QVBoxLayout,
+    QHBoxLayout,
     QWidget,
 )
 
 from app import autostart, icons
 from app.config import CLOSE_ASK, CLOSE_QUIT, CLOSE_TRAY, Settings
-from app.i18n import LanguageManager, _
+from app.i18n import LanguageManager, N, _
 from app.logging_setup import log_file
 from app.meta import COPYRIGHT, VERSION, display_name
 from app.ui import theme
-from app.ui.settings_dialog import SettingsDialog
+from app.ui.settings_dialog import SettingsPage
 from app.ui.title_bar import EdgeResizeFilter, TitleBar, apply_rounded_corners
 from app.ui.transfer import TransferPanel
 from app.ui.tray import TrayIcon
 
 log = logging.getLogger(__name__)
+
+#: Rail order, and the msgid each button carries. The four pages are the whole window; the
+#: gear on the caption is only ever a shortcut to the last one. N() because Babel only reads
+#: literals out of a call, and these reach _() as the tuple's second element.
+NAV_ITEMS = (("transfer", N("传输")), ("devices", N("设备")), ("files", N("文件")), ("settings", N("设置")))
+#: Which entry of NAV_ITEMS is the settings page, and so which stack index it occupies.
+PAGE_SETTINGS = 3
 
 
 class MainWindow(QMainWindow):
@@ -39,8 +49,8 @@ class MainWindow(QMainWindow):
         #: False while the window is only hidden to the tray; the real quit sets it.
         self._quitting = False
         self._restore_rect = None
-        #: Built on the first click of the gear button, then reused so it keeps its section.
-        self.settings_window: SettingsDialog | None = None
+        #: Built on the first click of the gear button or the rail, then kept as a page.
+        self.settings_page: SettingsPage | None = None
         #: Property read by TitleBar/EdgeResizeFilter; kept in sync with Qt's state.
         self.is_maximized = False
 
@@ -90,13 +100,61 @@ class MainWindow(QMainWindow):
         self.apply_theme(self.settings.get("theme", "auto"), save=False)
         self.retranslate()
 
-    def _build_body(self) -> QVBoxLayout:
-        body = QVBoxLayout()
+    def _build_body(self) -> QHBoxLayout:
+        """The rail and the page it selects, side by side inside the window's margins.
+
+        设置 became a page rather than a window because everything on it already took effect the
+        moment it was typed; a second frame would promise a cancel button that cannot exist.
+        """
+        body = QHBoxLayout()
         body.setContentsMargins(18, 14, 18, 12)
-        body.setSpacing(8)
+        body.setSpacing(12)
         self.panel = TransferPanel(self.settings, self)
+        body.addWidget(self._build_nav())
         body.addWidget(self.panel, 1)
         return body
+
+    def _build_nav(self) -> QWidget:
+        nav = QWidget(self)
+        nav.setObjectName("Nav")
+        self.nav = nav
+        layout = QVBoxLayout(nav)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(4)
+        group = QButtonGroup(self)
+        group.setExclusive(True)
+        self.nav_buttons: dict[str, QPushButton] = {}
+        for page, (key, msgid) in enumerate(NAV_ITEMS):
+            button = QPushButton(nav)
+            button.setObjectName("NavButton")
+            button.setCheckable(True)
+            # Text arrives with the first retranslate(); the accessible name is set now so the
+            # very first picture of the window already answers "what is this button".
+            button.setAccessibleName(_(msgid))
+            button.clicked.connect(lambda _checked=False, target=page: self.show_page(target))
+            group.addButton(button)
+            layout.addWidget(button)
+            self.nav_buttons[key] = button
+        self.nav_buttons["transfer"].setChecked(True)
+        layout.addStretch(1)
+        return nav
+
+    def _fit_nav(self) -> None:
+        """Give the rail the width its widest caption needs; no language may lose a tail."""
+        need = max(button.sizeHint().width() for button in self.nav_buttons.values())
+        self.nav.setFixedWidth(max(76, need + 4))
+
+    def show_page(self, page: int) -> None:
+        """One place that knows a rail position is a stack index."""
+        if page == PAGE_SETTINGS and self.settings_page is None:
+            self.open_settings()
+            return
+        self.panel.show_page(page)
+        self._sync_nav(page)
+
+    def _sync_nav(self, page: int) -> None:
+        for index, (key, _msgid) in enumerate(NAV_ITEMS):
+            self.nav_buttons[key].setChecked(index == page)
 
     def _build_popups(self) -> None:
         """Three icon buttons on the title bar, each popping its own menu."""
@@ -240,21 +298,25 @@ class MainWindow(QMainWindow):
         self.activateWindow()
 
     def hide_to_tray(self) -> None:
-        # A settings window left on the desktop above a hidden app is a loose end.
-        if self.settings_window is not None and self.settings_window.isVisible():
-            self.settings_window.close()
         self.hide()
         if QSystemTrayIcon.isSystemTrayAvailable():
             self.tray.notify_background(self.brand())
 
     def open_settings(self) -> None:
-        """The gear button. Non-modal on purpose: receiving keeps working while it is open."""
-        if self.settings_window is None:
-            self.settings_window = SettingsDialog(self, self.settings, self.languages, self.panel)
-        self.settings_window.reload()
-        self.settings_window.show()
-        self.settings_window.raise_()
-        self.settings_window.activateWindow()
+        """The gear button and the rail's 设置, which land on the same page.
+
+        Non-modal on purpose, as the window used to be: receiving keeps working while the user
+        is on this page, and nothing here waits for an OK that would never arrive.
+        """
+        if self.settings_page is None:
+            self.settings_page = SettingsPage(self, self.settings, self.languages, self.panel)
+            index = self.panel.add_page(self.settings_page)
+            if index != PAGE_SETTINGS:
+                log.error("the settings page landed at index %s instead of %s", index, PAGE_SETTINGS)
+            self.panel.fit_pages()
+        self.settings_page.reload()
+        self.panel.show_page(PAGE_SETTINGS)
+        self._sync_nav(PAGE_SETTINGS)
 
     def on_autostart_toggled(self, checked: bool) -> None:
         applied = autostart.set_enabled(checked)
@@ -346,8 +408,18 @@ class MainWindow(QMainWindow):
         for action in self.theme_group.actions():
             action.setText(labels[action.data()])
         self.panel.retranslate()
-        if self.settings_window is not None:
-            self.settings_window.retranslate()
+        for key, msgid in NAV_ITEMS:
+            caption = _(msgid)
+            button = self.nav_buttons[key]
+            button.setText(caption)
+            button.setAccessibleName(caption)
+            button.setToolTip(caption)
+        self._fit_nav()
+        if self.settings_page is not None:
+            self.settings_page.retranslate()
+        # After the last caption is written: a page's height demand is a function of the words
+        # in it, so this is the moment the number is finally true for this language.
+        self.panel.fit_pages()
         self.status.showMessage(
             _("当前语言：{lang}    日志：{path}").format(
                 lang=self.languages.display_name(self.languages.current), path=log_file()

@@ -107,9 +107,10 @@ class Identity:
 
         Called by whoever is about to display or check them, because only that peer knows
         the lengths the contract asks for; the key itself has no opinion on the format.
+        Material of a different length is reminted rather than kept: a code shorter or longer
+        than the contract says is one the peer's input box will refuse to accept.
         """
-        want = (self._pairing.get("code") or "") and (self._pairing.get("passphrase") or "")
-        if want:
+        if len(self._pairing.get("code") or "") == code_digits and len(self._pairing.get("passphrase") or "") == passphrase_chars:
             return
         self.rotate_pairing(code_digits, passphrase_chars)
 

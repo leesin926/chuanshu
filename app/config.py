@@ -23,7 +23,9 @@ DEFAULTS: dict = {
     "autostart": False,
     # Empty means <data dir>/received; set it to move incoming files.
     "receive_dir": "",
-    "window": {"width": 720, "height": 480},
+    # The size the four-page design is drawn for. A saved window is clamped up to the layout's
+    # own minimum when the window opens, so this is a starting size, not a floor.
+    "window": {"width": 1080, "height": 680},
 }
 
 

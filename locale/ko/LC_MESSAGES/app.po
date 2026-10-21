@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: ChuanShu 0.1.0\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2026-10-21 03:18+0800\n"
+"POT-Creation-Date: 2026-10-22 01:59+0800\n"
 "PO-Revision-Date: 2026-10-19 20:00+0800\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: ko\n"
@@ -82,288 +82,294 @@ msgstr "받는 쪽의 저장 공간이 부족합니다."
 msgid "对方正在处理另一个传输"
 msgstr "상대가 다른 전송을 처리 중입니다."
 
-#: app/ui/main_window.py:179 app/ui/settings_dialog.py:192
+#: app/ui/main_window.py:39 app/ui/settings_dialog.py:54
+#: app/ui/settings_dialog.py:231 app/ui/transfer.py:691
+msgid "传输"
+msgstr "전송"
+
+#: app/ui/main_window.py:39
+msgid "设备"
+msgstr "기기"
+
+#: app/ui/main_window.py:39 app/ui/transfer.py:692 app/ui/transfer.py:704
+msgid "文件"
+msgstr "파일"
+
+#: app/ui/main_window.py:39 app/ui/main_window.py:397 app/ui/title_bar.py:85
+msgid "设置"
+msgstr "설정"
+
+#: app/ui/main_window.py:237 app/ui/settings_dialog.py:186
 msgid "跟随系统"
 msgstr "시스템 설정 따르기"
 
-#: app/ui/main_window.py:179 app/ui/settings_dialog.py:192
+#: app/ui/main_window.py:237 app/ui/settings_dialog.py:186
 msgid "浅色"
 msgstr "밝게"
 
-#: app/ui/main_window.py:179 app/ui/settings_dialog.py:192
+#: app/ui/main_window.py:237 app/ui/settings_dialog.py:186
 msgid "深色"
 msgstr "어둡게"
 
-#: app/ui/main_window.py:195 app/ui/main_window.py:336
+#: app/ui/main_window.py:253 app/ui/main_window.py:398
 #, python-brace-format
 msgid "外观：{name}"
 msgstr "외관: {name}"
 
-#: app/ui/main_window.py:280
+#: app/ui/main_window.py:342
 #, python-brace-format
 msgid "关闭 {app}"
 msgstr "{app} 닫기"
 
-#: app/ui/main_window.py:281
+#: app/ui/main_window.py:343
 msgid "窗口关闭后，希望退出程序还是留在托盘后台运行？"
 msgstr "창을 닫은 뒤 프로그램을 끝낼까요, 트레이에서 계속 둘까요?"
 
-#: app/ui/main_window.py:285 app/ui/settings_dialog.py:200
+#: app/ui/main_window.py:347 app/ui/settings_dialog.py:194
 msgid "最小化到托盘"
 msgstr "트레이로 최소화"
 
-#: app/ui/main_window.py:287
+#: app/ui/main_window.py:349
 msgid "退出程序"
 msgstr "프로그램 종료"
 
-#: app/ui/main_window.py:290 app/ui/transfer.py:148
+#: app/ui/main_window.py:352 app/ui/transfer.py:189 app/ui/transfer.py:744
+#: app/ui/transfer.py:1445
 msgid "取消"
 msgstr "취소"
 
-#: app/ui/main_window.py:292
+#: app/ui/main_window.py:354
 msgid "记住我的选择"
 msgstr "선택 기억"
 
-#: app/ui/main_window.py:333 app/ui/title_bar.py:83
+#: app/ui/main_window.py:395 app/ui/title_bar.py:83
 msgid "应用菜单"
 msgstr "앱 메뉴"
 
-#: app/ui/main_window.py:334 app/ui/title_bar.py:84
+#: app/ui/main_window.py:396 app/ui/title_bar.py:84
 msgid "语言"
 msgstr "언어"
 
-#: app/ui/main_window.py:335 app/ui/settings_dialog.py:430
-#: app/ui/title_bar.py:85
-msgid "设置"
-msgstr "설정"
-
-#: app/ui/main_window.py:337 app/ui/title_bar.py:88
+#: app/ui/main_window.py:399 app/ui/title_bar.py:88
 msgid "最小化"
 msgstr "최소화"
 
-#: app/ui/main_window.py:338 app/ui/settings_dialog.py:95
-#: app/ui/title_bar.py:90
+#: app/ui/main_window.py:400 app/ui/title_bar.py:90
 msgid "关闭"
 msgstr "닫기"
 
-#: app/ui/main_window.py:342
+#: app/ui/main_window.py:404
 msgid "隐藏到托盘"
 msgstr "트레이로 숨기기"
 
-#: app/ui/main_window.py:343 app/ui/tray.py:31 app/ui/tray.py:62
+#: app/ui/main_window.py:405 app/ui/tray.py:31 app/ui/tray.py:62
 #, python-brace-format
 msgid "退出 {app}"
 msgstr "{app} 종료"
 
-#: app/ui/main_window.py:344 app/ui/main_window.py:365
+#: app/ui/main_window.py:406 app/ui/main_window.py:437
 #, python-brace-format
 msgid "关于 {app}"
 msgstr "{app} 정보"
 
-#: app/ui/main_window.py:352
+#: app/ui/main_window.py:424
 #, python-brace-format
 msgid "当前语言：{lang}    日志：{path}"
 msgstr "현재 언어: {lang}    로그: {path}"
 
-#: app/ui/main_window.py:366
+#: app/ui/main_window.py:438
 msgid "Qt"
 msgstr "Qt"
 
-#: app/ui/settings_dialog.py:197
-msgid "开机时自动启动"
-msgstr "Windows 시작 시 자동 실행"
-
-#: app/ui/settings_dialog.py:200
-msgid "每次询问"
-msgstr "매번 묻기"
-
-#: app/ui/settings_dialog.py:200
-msgid "直接退出"
-msgstr "바로 종료"
-
-#: app/ui/settings_dialog.py:204
+#: app/ui/settings_dialog.py:54 app/ui/settings_dialog.py:198
 msgid "常规"
 msgstr "일반"
 
-#: app/ui/settings_dialog.py:205 app/ui/transfer.py:658
-msgid "设备名"
-msgstr "기기 이름"
-
-#: app/ui/settings_dialog.py:206
-msgid "这个名称会出现在附近设备的名单里，改完立即生效。"
-msgstr "이 이름은 다른 기기의 목록에 표시되며, 변경 즉시 적용됩니다."
-
-#: app/ui/settings_dialog.py:207
-msgid "界面语言"
-msgstr "인터페이스 언어"
-
-#: app/ui/settings_dialog.py:208 app/ui/title_bar.py:86
-msgid "外观"
-msgstr "외관"
-
-#: app/ui/settings_dialog.py:210
-msgid "关闭窗口时"
-msgstr "창을 닫을 때"
-
-#: app/ui/settings_dialog.py:217
-msgid "浏览…"
-msgstr "찾기..."
-
-#: app/ui/settings_dialog.py:220
-msgid "恢复默认"
-msgstr "기본값으로 복원"
-
-#: app/ui/settings_dialog.py:235 app/ui/transfer.py:479
-msgid "打开接收目录"
-msgstr "받는 폴더 열기"
-
-#: app/ui/settings_dialog.py:237
-msgid "传输"
-msgstr "전송"
-
-#: app/ui/settings_dialog.py:238
-msgid "接收目录"
-msgstr "받는 폴더"
-
-#: app/ui/settings_dialog.py:239
-msgid "对方发来的文件按每一次传输建一个子文件夹。"
-msgstr "상대방이 보낸 파일은 전송마다 개별 하위 폴더에 저장됩니다."
-
-#: app/ui/settings_dialog.py:241
-msgid "端口"
-msgstr "포트"
-
-#: app/ui/settings_dialog.py:242
-msgid "分块"
-msgstr "조각 크기"
-
-#: app/ui/settings_dialog.py:243
-msgid "配对码"
-msgstr "페어링 코드"
-
-#: app/ui/settings_dialog.py:245
-msgid "上面这几项由 protocol/protocol.json 冻结，手机端按同一份契约校验，改了就配不上对。"
-msgstr ""
-"위의 값은 protocol/protocol.json에 고정되어 있으며 모바일 앱도 같은 계약으로 검증합니다. 바꾸면 페어링이 "
-"실패합니다."
-
-#: app/ui/settings_dialog.py:254
-msgid "撤销这台设备"
-msgstr "이 기기 삭제"
-
-#: app/ui/settings_dialog.py:256
+#: app/ui/settings_dialog.py:54 app/ui/settings_dialog.py:250
 msgid "已配对设备"
 msgstr "페어링된 기기"
 
-#: app/ui/settings_dialog.py:258
-msgid "配对成功过的设备记在这里，下次传文件不再问配对码。怀疑对方换过密钥就撤销它。"
-msgstr "페어링에 성공한 기기가 여기에 기록되어 다음 전송부터 코드를 묻지 않습니다. 상대의 키가 바뀐 것 같다면 삭제하세요."
-
-#: app/ui/settings_dialog.py:274
-msgid "打开日志目录"
-msgstr "로그 폴더 열기"
-
-#: app/ui/settings_dialog.py:276
+#: app/ui/settings_dialog.py:54 app/ui/settings_dialog.py:270
 msgid "关于"
 msgstr "정보"
 
-#: app/ui/settings_dialog.py:277
+#: app/ui/settings_dialog.py:191
+msgid "开机时自动启动"
+msgstr "Windows 시작 시 자동 실행"
+
+#: app/ui/settings_dialog.py:194
+msgid "每次询问"
+msgstr "매번 묻기"
+
+#: app/ui/settings_dialog.py:194
+msgid "直接退出"
+msgstr "바로 종료"
+
+#: app/ui/settings_dialog.py:199 app/ui/transfer.py:897
+msgid "设备名"
+msgstr "기기 이름"
+
+#: app/ui/settings_dialog.py:200
+msgid "这个名称会出现在附近设备的名单里，改完立即生效。"
+msgstr "이 이름은 다른 기기의 목록에 표시되며, 변경 즉시 적용됩니다."
+
+#: app/ui/settings_dialog.py:201
+msgid "界面语言"
+msgstr "인터페이스 언어"
+
+#: app/ui/settings_dialog.py:202 app/ui/title_bar.py:86
+msgid "外观"
+msgstr "외관"
+
+#: app/ui/settings_dialog.py:204
+msgid "关闭窗口时"
+msgstr "창을 닫을 때"
+
+#: app/ui/settings_dialog.py:211
+msgid "浏览…"
+msgstr "찾기..."
+
+#: app/ui/settings_dialog.py:214
+msgid "恢复默认"
+msgstr "기본값으로 복원"
+
+#: app/ui/settings_dialog.py:229 app/ui/transfer.py:703 app/ui/transfer.py:715
+msgid "打开接收目录"
+msgstr "받는 폴더 열기"
+
+#: app/ui/settings_dialog.py:232
+msgid "接收目录"
+msgstr "받는 폴더"
+
+#: app/ui/settings_dialog.py:233
+msgid "对方发来的文件按每一次传输建一个子文件夹。"
+msgstr "상대방이 보낸 파일은 전송마다 개별 하위 폴더에 저장됩니다."
+
+#: app/ui/settings_dialog.py:235
+msgid "端口"
+msgstr "포트"
+
+#: app/ui/settings_dialog.py:236
+msgid "分块"
+msgstr "조각 크기"
+
+#: app/ui/settings_dialog.py:237
+msgid "配对码"
+msgstr "페어링 코드"
+
+#: app/ui/settings_dialog.py:239
+msgid "上面这几项由 protocol/protocol.json 冻结，手机端按同一份契约校验，改了就配不上对。"
+msgstr "위의 값은 protocol/protocol.json에 고정되어 있으며 모바일 앱도 같은 계약으로 검증합니다. 바꾸면 페어링이 실패합니다."
+
+#: app/ui/settings_dialog.py:248
+msgid "撤销这台设备"
+msgstr "이 기기 삭제"
+
+#: app/ui/settings_dialog.py:252
+msgid "配对成功过的设备记在这里，下次传文件不再问配对码。怀疑对方换过密钥就撤销它。"
+msgstr "페어링에 성공한 기기가 여기에 기록되어 다음 전송부터 코드를 묻지 않습니다. 상대의 키가 바뀐 것 같다면 삭제하세요."
+
+#: app/ui/settings_dialog.py:268
+msgid "打开日志目录"
+msgstr "로그 폴더 열기"
+
+#: app/ui/settings_dialog.py:271
 msgid "版本"
 msgstr "버전"
 
-#: app/ui/settings_dialog.py:279
+#: app/ui/settings_dialog.py:273
 msgid "界面库"
 msgstr "UI 라이브러리"
 
-#: app/ui/settings_dialog.py:280
+#: app/ui/settings_dialog.py:274
 msgid "协议"
 msgstr "프로토콜"
 
-#: app/ui/settings_dialog.py:281
+#: app/ui/settings_dialog.py:275
 msgid "数据目录"
 msgstr "데이터 폴더"
 
-#: app/ui/settings_dialog.py:282
+#: app/ui/settings_dialog.py:276
 msgid "日志"
 msgstr "로그"
 
-#: app/ui/settings_dialog.py:308
+#: app/ui/settings_dialog.py:302
 #, python-brace-format
 msgid "局域网端口 {port}，发现端口 {discovery}"
 msgstr "LAN 포트 {port}, 검색 포트 {discovery}"
 
-#: app/ui/settings_dialog.py:311
+#: app/ui/settings_dialog.py:305
 #, python-brace-format
 msgid "每块 {size} 字节，最多 {n} 块并行"
 msgstr "블록당 {size} 바이트, 최대 {n}개 동시"
 
-#: app/ui/settings_dialog.py:316
+#: app/ui/settings_dialog.py:310
 #, python-brace-format
 msgid "{digits} 位数字，固定不换；只有点主页面的「更换配对码和密码」才会换一组"
 msgstr "{digits}자리, 고정. 메인 화면의 '코드 및 비밀번호 변경'을 눌러야 새 조로 바뀝니다"
 
-#: app/ui/settings_dialog.py:318
+#: app/ui/settings_dialog.py:312
 #, python-brace-format
 msgid "{digits} 位数字，{ttl} 秒后换一个"
 msgstr "{digits}자리, {ttl}초마다 새 코드로"
 
-#: app/ui/settings_dialog.py:323
+#: app/ui/settings_dialog.py:317
 #, python-brace-format
 msgid "契约版本 v{version}（{name}）"
 msgstr "계약 버전 v{version}({name})"
 
-#: app/ui/settings_dialog.py:353
+#: app/ui/settings_dialog.py:347
 msgid "未知设备"
 msgstr "알 수 없는 기기"
 
-#: app/ui/settings_dialog.py:355
+#: app/ui/settings_dialog.py:349
 #, python-brace-format
 msgid "指纹 {fp}"
 msgstr "지문 {fp}"
 
-#: app/ui/settings_dialog.py:371
+#: app/ui/settings_dialog.py:365
 #, python-brace-format
 msgid "设备名已改成 {name}"
 msgstr "기기 이름을 {name}(으)로 바꿨습니다"
 
-#: app/ui/settings_dialog.py:391
+#: app/ui/settings_dialog.py:385
 msgid "选择接收目录"
 msgstr "받는 폴더 선택"
 
-#: app/ui/settings_dialog.py:415
+#: app/ui/settings_dialog.py:409
 msgid "这台设备已经不在名单里了。"
 msgstr "그 기기는 더 이상 목록에 없습니다."
 
-#: app/ui/settings_dialog.py:422
+#: app/ui/settings_dialog.py:416
 #, python-brace-format
 msgid "已撤销 {name}，它已从已连接的设备里移出，下次传文件要重新配对。"
 msgstr "{name}을(를) 취소했습니다. 연결된 목록에서 제거되었으며 다음 전송 시 다시 페어링해야 합니다."
 
-#: app/ui/settings_dialog.py:435
+#: app/ui/settings_dialog.py:428
 msgid "这台设备对别人显示的名字"
 msgstr "다른 기기에 보이는 이 기기의 이름"
 
-#: app/ui/settings_dialog.py:436
+#: app/ui/settings_dialog.py:429
 msgid "只改这个程序的界面文字"
 msgstr "이 프로그램의 화면 글자만 바꿉니다"
 
-#: app/ui/settings_dialog.py:438
+#: app/ui/settings_dialog.py:431
 msgid "只有打包好的 Windows 版本能改开机自启。"
 msgstr "패키지화된 Windows 버전만 자동 시작을 등록할 수 있습니다."
 
-#: app/ui/settings_dialog.py:440
+#: app/ui/settings_dialog.py:433
 msgid "登录 Windows 后自动运行，并留在托盘"
 msgstr "Windows 로그인 후 자동으로 실행되고 트레이에 남습니다"
 
-#: app/ui/settings_dialog.py:442
+#: app/ui/settings_dialog.py:435
 msgid "换一个存放收到文件的文件夹"
 msgstr "받은 파일을 저장할 다른 폴더를 선택합니다"
 
-#: app/ui/settings_dialog.py:443
+#: app/ui/settings_dialog.py:436
 msgid "回到应用数据目录下的 received"
 msgstr "앱 데이터 폴더의 received로 돌아갑니다"
 
-#: app/ui/settings_dialog.py:444
+#: app/ui/settings_dialog.py:437
 msgid "忘记这台设备的密钥，下次传文件要重新输配对码"
 msgstr "이 기기의 키를 잊습니다. 다음 전송에서는 페어링 코드를 다시 입력합니다"
 
@@ -375,232 +381,268 @@ msgstr "최대화"
 msgid "还原"
 msgstr "복원"
 
-#: app/ui/transfer.py:120
+#: app/ui/transfer.py:161
 msgid "连接设备"
 msgstr "기기 연결"
 
-#: app/ui/transfer.py:147 app/ui/transfer.py:501
+#: app/ui/transfer.py:188 app/ui/transfer.py:737
 msgid "连接"
 msgstr "연결"
 
-#: app/ui/transfer.py:158
+#: app/ui/transfer.py:199
 msgid "下面是广播出来的候选设备。选中一台，回到主界面填它的配对码和密码，再点连接。"
 msgstr "아래는 브로드캐스트로 알린 후보 기기입니다. 하나를 고른 뒤 메인 화면에서 페어링 코드와 비밀번호를 입력하고 [연결]을 누르세요."
 
-#: app/ui/transfer.py:159
+#: app/ui/transfer.py:200
 msgid "手输地址…"
 msgstr "주소 입력…"
 
-#: app/ui/transfer.py:160
+#: app/ui/transfer.py:201
 msgid "没在局域网里广播出来的设备，可以输入它的地址，或粘贴 chuanshu:// 配对串。"
 msgstr "LAN에 알리지 않은 기기는 주소를 입력하거나 chuanshu:// 페어링 문자열을 붙여넣으세요."
 
-#: app/ui/transfer.py:161
+#: app/ui/transfer.py:202
 msgid "刷新"
 msgstr "새로고침"
 
-#: app/ui/transfer.py:170
+#: app/ui/transfer.py:211
 msgid "（已连接）"
 msgstr "(연결됨)"
 
-#: app/ui/transfer.py:173 app/ui/transfer.py:174
+#: app/ui/transfer.py:214 app/ui/transfer.py:215
 msgid "手动添加"
 msgstr "직접 추가"
 
-#: app/ui/transfer.py:174
+#: app/ui/transfer.py:215
 #, python-brace-format
 msgid "发现于 {via}；指纹前缀 {fp}"
 msgstr "{via}(으)로 발견; 지문 앞부분 {fp}"
 
-#: app/ui/transfer.py:179
+#: app/ui/transfer.py:220
 msgid "没找到设备。手输对方地址，或粘贴它的配对串。"
 msgstr "기기가 없습니다. 주소를 입력하거나 페어링 문자열을 붙여넣으세요."
 
-#: app/ui/transfer.py:184
+#: app/ui/transfer.py:225
 msgid "手动添加设备"
 msgstr "주소로 기기 추가"
 
-#: app/ui/transfer.py:184
+#: app/ui/transfer.py:225
 #, python-brace-format
 msgid "输入对方地址（{example}）或配对串："
 msgstr "상대 주소({example}) 또는 페어링 문자열:"
 
-#: app/ui/transfer.py:194
+#: app/ui/transfer.py:235
 #, python-brace-format
 msgid "已确认 {name}，指纹前缀 {fp}。选中它点连接。"
 msgstr "{name} 확인됨(지문 접두사 {fp}). 선택한 뒤 [연결]을 누르세요."
 
-#: app/ui/transfer.py:201
+#: app/ui/transfer.py:242
 msgid "先选中一台设备，再点连接。"
 msgstr "먼저 기기를 선택한 뒤 [연결]을 누르세요."
 
-#: app/ui/transfer.py:321 app/ui/transfer.py:504
+#: app/ui/transfer.py:513 app/ui/transfer.py:740
 msgid "让对方扫这个码，就能带着配对码和密码连过来。"
 msgstr "상대가 이 코드를 스캔하면 페어링 코드와 비밀번호를 가지고 연결됩니다."
 
-#: app/ui/transfer.py:467
+#: app/ui/transfer.py:693
 msgid "我的设备"
 msgstr "내 기기"
 
-#: app/ui/transfer.py:468
+#: app/ui/transfer.py:694
 msgid "已连接的设备"
 msgstr "연결된 기기"
 
-#: app/ui/transfer.py:473 app/ui/transfer.py:710
+#: app/ui/transfer.py:695
+msgid "把文件或文件夹拖到这里"
+msgstr "파일 또는 폴더를 여기로 끌어다 놓으세요"
+
+#: app/ui/transfer.py:697
+msgid "也可以点下面的按钮挑选。对方要先接受，文件才会落到它的接收目录。"
+msgstr "아래 단추로 선택할 수도 있습니다. 상대가 수락해야 파일이 상대의 수신 폴더에 저장됩니다."
+
+#: app/ui/transfer.py:699
+msgid "本次会话的传输"
+msgstr "이번 세션의 전송"
+
+#: app/ui/transfer.py:700
+msgid "全部"
+msgstr "전체"
+
+#: app/ui/transfer.py:701
+msgid "今天"
+msgstr "오늘"
+
+#: app/ui/transfer.py:702
+msgid "近 7 天"
+msgstr "최근 7일"
+
+#: app/ui/transfer.py:704
+msgid "大小"
+msgstr "크기"
+
+#: app/ui/transfer.py:704
+msgid "时间"
+msgstr "시간"
+
+#: app/ui/transfer.py:704
+msgid "来源设备"
+msgstr "보낸 기기"
+
+#: app/ui/transfer.py:709 app/ui/transfer.py:949
 #, python-brace-format
 msgid "保存到：{path}"
 msgstr "저장 위치: {path}"
 
-#: app/ui/transfer.py:474
+#: app/ui/transfer.py:710
 msgid "更换配对码和密码"
 msgstr "코드 및 비밀번호 변경"
 
-#: app/ui/transfer.py:476
+#: app/ui/transfer.py:712
 msgid "换一组新的固定配对码和密码，二维码跟着变。已经连上的设备不受影响。"
 msgstr "고정 페어링 코드와 비밀번호를 새로 바꿉니다. QR 코드도 함께 바뀌며, 이미 연결된 기기는 영향받지 않습니다."
 
-#: app/ui/transfer.py:478
+#: app/ui/transfer.py:714
 msgid "打开"
 msgstr "열기"
 
-#: app/ui/transfer.py:480
+#: app/ui/transfer.py:716
 msgid "编辑"
 msgstr "편집"
 
-#: app/ui/transfer.py:481
+#: app/ui/transfer.py:717
 #, python-brace-format
 msgid "本机：{name}"
 msgstr "이 기기: {name}"
 
-#: app/ui/transfer.py:482
-msgid "接收到的文件（本次会话已校验）"
-msgstr "받은 파일(이 세션에서 검증됨)"
+#: app/ui/transfer.py:718
+msgid "收到的文件都校验通过、已经落盘。记录存在本机，重启也还在。"
+msgstr "받은 파일은 모두 검증을 통과해 저장되었습니다. 목록은 이 기기에 저장되어 다시 시작해도 남아 있습니다."
 
-#: app/ui/transfer.py:483
+#: app/ui/transfer.py:719
 msgid "选择文件…"
 msgstr "파일 선택…"
 
-#: app/ui/transfer.py:484
+#: app/ui/transfer.py:720
 msgid "选择文件夹…"
 msgstr "폴더 선택…"
 
-#: app/ui/transfer.py:485
+#: app/ui/transfer.py:721
 msgid "清空"
 msgstr "지우기"
 
-#: app/ui/transfer.py:486
+#: app/ui/transfer.py:722
 msgid "从附近选择…"
 msgstr "근처에서 선택…"
 
-#: app/ui/transfer.py:487
+#: app/ui/transfer.py:723
 msgid "列出广播出来的候选设备，也可以手输地址或粘贴配对串。"
 msgstr "알린 후보 기기를 나열합니다. 주소를 입력하거나 페어링 문자열을 붙여넣을 수도 있습니다."
 
-#: app/ui/transfer.py:488
+#: app/ui/transfer.py:724
 msgid "断开"
 msgstr "연결 해제"
 
-#: app/ui/transfer.py:490
+#: app/ui/transfer.py:726
 #, python-brace-format
 msgid "{n} 位配对码"
 msgstr "{n}자리 페어링 코드"
 
-#: app/ui/transfer.py:492
+#: app/ui/transfer.py:728
 #, python-brace-format
 msgid "输入对方屏幕上显示的 {n} 位配对码。本机存过它的密钥时留空即可，用签名重连。"
 msgstr "상대 화면에 표시된 {n}자리 코드를 입력하세요. 이 기기에 키가 저장되어 있으면 비운 뒤 서명으로 재연결합니다."
 
-#: app/ui/transfer.py:494
+#: app/ui/transfer.py:730
 msgid "连接密码（可留空）"
 msgstr "연결 비밀번호(선택 사항)"
 
-#: app/ui/transfer.py:497
+#: app/ui/transfer.py:733
 #, python-brace-format
 msgid "输入对方屏幕上显示的 {n} 位连接密码。对方是还没有密码的旧版本时留空，这时只用配对码完成首次配对。"
 msgstr "상대 화면에 표시된 {n}자리 연결 비밀번호를 입력하세요. 비밀번호가 없는 이전 버전이면 비워 두면 코드로만 첫 페어링이 끝납니다."
 
-#: app/ui/transfer.py:503
+#: app/ui/transfer.py:739
 msgid "发送给所选设备"
 msgstr "선택한 기기로 보내기"
 
-#: app/ui/transfer.py:590
+#: app/ui/transfer.py:829
 msgid "已换成新的配对码和密码，旧二维码作废。已连接的设备不受影响。"
 msgstr "새 페어링 코드와 비밀번호로 바꿨습니다. 이전 QR 코드는 쓸 수 없습니다. 연결된 기기는 영향받지 않습니다."
 
-#: app/ui/transfer.py:595
+#: app/ui/transfer.py:834
 msgid "配对码要等接收端口打开才有"
 msgstr "페어링 코드는 수신 포트가 열리면 표시됩니다"
 
-#: app/ui/transfer.py:596
+#: app/ui/transfer.py:835
 #, python-brace-format
 msgid "配对码：{code}"
 msgstr "페어링 코드: {code}"
 
-#: app/ui/transfer.py:601
+#: app/ui/transfer.py:840
 #, python-brace-format
 msgid "密码：{secret}"
 msgstr "비밀번호: {secret}"
 
-#: app/ui/transfer.py:605
+#: app/ui/transfer.py:844
 msgid "本机接收端口没有打开。"
 msgstr "이 기기는 받는 포트를 열지 않았습니다."
 
-#: app/ui/transfer.py:607
+#: app/ui/transfer.py:846
 msgid "接收已停止，对方连不进来。"
 msgstr "받기를 멈췄으므로 상대가 연결할 수 없습니다."
 
-#: app/ui/transfer.py:608
+#: app/ui/transfer.py:847
 #, python-brace-format
 msgid "端口：{port}"
 msgstr "포트: {port}"
 
-#: app/ui/transfer.py:616
+#: app/ui/transfer.py:855
 msgid "发现通道：mDNS 与 UDP 都可用。"
 msgstr "검색 경로: mDNS와 UDP 모두 사용 가능합니다."
 
-#: app/ui/transfer.py:617
+#: app/ui/transfer.py:856
 msgid "mDNS"
 msgstr "mDNS"
 
-#: app/ui/transfer.py:617
+#: app/ui/transfer.py:856
 msgid "UDP 广播"
 msgstr "UDP 브로드캐스트"
 
-#: app/ui/transfer.py:620
+#: app/ui/transfer.py:859
 #, python-brace-format
 msgid "发现通道：{which} 都不可用，只能手输地址或粘贴配对串。"
 msgstr "검색 경로: {which} 모두 사용할 수 없어 주소 입력이나 페어링 문자열만 가능합니다."
 
-#: app/ui/transfer.py:621
+#: app/ui/transfer.py:860
 #, python-brace-format
 msgid "发现通道：{which} 不可用，仍可手输地址或粘贴配对串。"
 msgstr "검색 경로: {which}를 사용할 수 없지만, 주소 입력이나 페어링 문자열은 쓸 수 있습니다."
 
-#: app/ui/transfer.py:625
+#: app/ui/transfer.py:864
 #, python-brace-format
 msgid "这台机器开不了接收端口，但仍能主动发出去：{error}"
 msgstr "이 기기는 받는 포트를 열 수 없지만 보내는 것은 가능합니다: {error}"
 
-#: app/ui/transfer.py:627
+#: app/ui/transfer.py:866
 #, python-brace-format
 msgid "上次有 {n} 个传输没传完，对方接着传就会续上。"
 msgstr "지난번에 {n}개 전송이 끝나지 않았습니다. 상대가 이어서 보내면 다시 이어집니다."
 
-#: app/ui/transfer.py:658
+#: app/ui/transfer.py:897
 msgid "这台设备对别人显示的名字："
 msgstr "다른 기기에 보이는 이 기기의 이름:"
 
-#: app/ui/transfer.py:706
+#: app/ui/transfer.py:945
 #, python-brace-format
 msgid "…共 {n} 个文件"
 msgstr "…총 {n}개 파일"
 
-#: app/ui/transfer.py:708
+#: app/ui/transfer.py:947
 #, python-brace-format
 msgid "接收来自 {who} 的文件？"
 msgstr "{who}에서 파일을 받을까요?"
 
-#: app/ui/transfer.py:709
+#: app/ui/transfer.py:948
 #, python-brace-format
 msgid ""
 "对方：{who}\n"
@@ -611,232 +653,298 @@ msgstr ""
 "\n"
 "{listing}"
 
-#: app/ui/transfer.py:711
+#: app/ui/transfer.py:950
 msgid "接收"
 msgstr "받기"
 
-#: app/ui/transfer.py:712
+#: app/ui/transfer.py:951
 msgid "拒绝"
 msgstr "거부"
 
-#: app/ui/transfer.py:759
+#: app/ui/transfer.py:998
 #, python-brace-format
 msgid "正在连接 {name}（{host}）…"
 msgstr "{name}({host})에 연결 중…"
 
-#: app/ui/transfer.py:764
+#: app/ui/transfer.py:1003
 #, python-brace-format
 msgid "已选择 {name}（{host}）。本机存过它的密钥，留空配对码点连接。"
 msgstr "{name}({host}) 선택됨. 이 기기에 키가 있으므로 코드를 비운 채 [연결]을 누르세요."
 
-#: app/ui/transfer.py:765
+#: app/ui/transfer.py:1004
 #, python-brace-format
 msgid "已选择 {name}（{host}）。输入它屏幕上的 {n} 位配对码{extra}，再点连接。"
 msgstr "{name}({host})을(를) 선택했습니다. 상대 화면의 {n}자리 코드{extra}를 입력하고 [연결]을 누르세요."
 
-#: app/ui/transfer.py:766
+#: app/ui/transfer.py:1005
 #, python-brace-format
 msgid "和 {m} 位密码"
 msgstr "및 {m}자리 비밀번호"
 
-#: app/ui/transfer.py:770
+#: app/ui/transfer.py:1009
 #, python-brace-format
 msgid "一次只连一台，现在连着 {name}。要换设备先点「断开」。"
 msgstr "한 번에 한 대만 연결합니다. 지금 {name}에 연결되어 있으니 바꾸려면 [연결 해제]를 누르세요."
 
-#: app/ui/transfer.py:772
+#: app/ui/transfer.py:1011
 msgid "自动发现没有运行。点「从附近选择…」手输对方地址。"
 msgstr "자동 발견이 실행 중이 아닙니다. [근처에서 선택…]에서 상대 주소를 입력하세요."
 
-#: app/ui/transfer.py:775
+#: app/ui/transfer.py:1014
 msgid "附近暂时没有广播出来的设备。点「从附近选择…」手输地址。"
 msgstr "현재 알리는 기기가 없습니다. [근처에서 선택…]에서 주소를 입력하세요."
 
-#: app/ui/transfer.py:776
+#: app/ui/transfer.py:1015
 #, python-brace-format
 msgid "附近发现 {n} 台设备，点「从附近选择…」连接。"
 msgstr "근처에서 {n}대의 기기를 발견했습니다. [근처에서 선택…]으로 연결하세요."
 
-#: app/ui/transfer.py:787
+#: app/ui/transfer.py:1026
 msgid "（对方连进来，只能收）"
 msgstr "(상대가 접속함, 수신 전용)"
 
-#: app/ui/transfer.py:800
+#: app/ui/transfer.py:1039
 #, python-brace-format
 msgid "指纹前缀 {fp}。它主动连进来，本机没有可回拨的地址，所以只能收它的文件。要发给它，请由它来连本机。"
 msgstr ""
-"지문 접두사 {fp}. 상대가 먼저 접속했으므로 이 기기에는 걸 주소가 없어 상대 파일만 받을 수 있습니다. 보내려면 상대에서 이 "
-"기기로 연결하세요."
+"지문 접두사 {fp}. 상대가 먼저 접속했으므로 이 기기에는 걸 주소가 없어 상대 파일만 받을 수 있습니다. 보내려면 상대에서 이 기기로"
+" 연결하세요."
 
-#: app/ui/transfer.py:804
+#: app/ui/transfer.py:1043
 #, python-brace-format
 msgid "指纹前缀 {fp}。已配对，会话保留到点断开为止。"
 msgstr "지문 접두사 {fp}. 페어링되어 있으며 연결 해제 시까지 세션이 유지됩니다."
 
-#: app/ui/transfer.py:809
+#: app/ui/transfer.py:1048
 msgid "还没有已连接的设备。点下面「从附近选择…」挑一台，或手输它的地址。"
 msgstr "아직 연결된 기기가 없습니다. 아래 [근처에서 선택…]으로 고르거나 주소를 입력하세요."
 
-#: app/ui/transfer.py:838
+#: app/ui/transfer.py:1077
 #, python-brace-format
 msgid "{name} 已连上本机（{ip}），现在只等它发文件过来。"
 msgstr "{name}이 {ip}에서 이 기기로 연결했습니다. 상대가 파일을 보내기만 기다리면 됩니다."
 
-#: app/ui/transfer.py:861
+#: app/ui/transfer.py:1100
 #, python-brace-format
 msgid "{name} 已经连着，选文件发送即可。"
 msgstr "{name}은(는) 이미 연결되었습니다. 파일을 선택해 보내면 됩니다."
 
-#: app/ui/transfer.py:877
+#: app/ui/transfer.py:1116
 #, python-brace-format
 msgid "{addr} 应答了，但不是能配的版本：{why}"
 msgstr "{addr}이(가) 응답했지만 조합할 수 있는 버전이 아닙니다: {why}"
 
-#: app/ui/transfer.py:880 app/ui/transfer.py:970
+#: app/ui/transfer.py:1119 app/ui/transfer.py:1209
 #, python-brace-format
 msgid "连不上 {addr}：{error}"
 msgstr "{addr}에 연결할 수 없습니다: {error}"
 
-#: app/ui/transfer.py:907
+#: app/ui/transfer.py:1146
 #, python-brace-format
 msgid "一次只连一台。先断开 {name}，再连新设备。"
 msgstr "한 번에 한 대만 연결합니다. 먼저 {name} 연결을 해제하세요."
 
-#: app/ui/transfer.py:908
+#: app/ui/transfer.py:1147
 msgid "用上面的配对码和密码连接选中的设备。"
 msgstr "위의 페어링 코드와 비밀번호로 선택한 기기에 연결합니다."
 
-#: app/ui/transfer.py:920
+#: app/ui/transfer.py:1159
 msgid "先在「从附近选择…」里挑一台设备，或手输它的地址。"
 msgstr "먼저 [근처에서 선택…]에서 기기를 고르거나 주소를 입력하세요."
 
-#: app/ui/transfer.py:925
+#: app/ui/transfer.py:1164
 #, python-brace-format
 msgid "本机一次只连一台，现在连着 {name}。要先点「断开」再连它。"
 msgstr "이 기기는 한 번에 한 대만 연결합니다. 지금 {name}에 연결되어 있으니 [연결 해제]를 먼저 누르세요."
 
-#: app/ui/transfer.py:930
+#: app/ui/transfer.py:1169
 #, python-brace-format
 msgid "还差对方屏幕上那 {n} 位配对码。"
 msgstr "상대 화면의 {n}자리 페어링 코드가 아직 없습니다."
 
-#: app/ui/transfer.py:954
+#: app/ui/transfer.py:1193
 #, python-brace-format
 msgid "配对码或密码不对。请照着对方屏幕上现在的 {n} 位码和 {m} 位密码再输一次。"
 msgstr "페어링 코드 또는 비밀번호가 올바르지 않습니다. 상대 화면에 지금 표시된 {n}자리 코드와 {m}자리 비밀번호를 다시 입력하세요."
 
-#: app/ui/transfer.py:963
+#: app/ui/transfer.py:1202
 #, python-brace-format
 msgid "它已经连着 {peer}，一次只允许一台。请那边先断开。"
 msgstr "상대가 이미 {peer}에 연결되어 있습니다. 한 번에 한 대만 됩니다. 먼저 그쪽에서 연결을 해제하세요."
 
-#: app/ui/transfer.py:966 app/ui/transfer.py:1158
+#: app/ui/transfer.py:1205 app/ui/transfer.py:1569
 #, python-brace-format
 msgid "对方说：{text}"
 msgstr "상대가 말한 내용: {text}"
 
-#: app/ui/transfer.py:999
+#: app/ui/transfer.py:1238
 #, python-brace-format
 msgid "已连接 {name}，指纹前缀 {fp}。核对无误再发。"
 msgstr "{name}에 연결됨(지문 접두사 {fp}). 확인 후 보내세요."
 
-#: app/ui/transfer.py:1025
+#: app/ui/transfer.py:1264
 #, python-brace-format
 msgid "已断开 {name}。它的密钥还留在本机，留空配对码就能重连；要彻底撤销请去设置。"
 msgstr "{name} 연결을 해제했습니다. 키는 이 기기에 남아 코드를 비우면 재연결됩니다. 완전히 삭제하려면 설정에서 취소하세요."
 
-#: app/ui/transfer.py:1056
+#: app/ui/transfer.py:1295
 msgid "这台设备是连进来的，本机没有可回拨的地址。要发给它，请改由它连接本机。"
 msgstr "이 기기는 상대가 먼저 연결해 걸 주소가 없습니다. 보내려면 상대에서 이 기기로 연결하세요."
 
-#: app/ui/transfer.py:1065
+#: app/ui/transfer.py:1310
+msgid "还没有选定接收设备。到「设备」页连一台，或在附近列表里选一台。"
+msgstr "수신 기기가 아직 선택되지 않았습니다. 「기기」 페이지에서 연결하거나 근처 목록에서 선택하세요."
+
+#: app/ui/transfer.py:1315
+#, python-brace-format
+msgid "当前对端：{name}（{addr}，指纹前缀 {fp}）"
+msgstr "현재 상대: {name}({addr}, 지문 앞부분 {fp})"
+
+#: app/ui/transfer.py:1321
+msgid "这台设备还没有连接会话，点「连接」建立一条。"
+msgstr "이 기기에는 연결 세션이 없습니다. 「연결」을 눌러 만드세요."
+
+#: app/ui/transfer.py:1324
+#, python-brace-format
+msgid "对方要求每 {ms} 毫秒写一条 TLS 记录，所以这台设备比局域网正常水平慢，这不是网络故障。"
+msgstr "상대가 {ms}밀리초마다 TLS 기록 하나를 요구해서 이 전송은 LAN 정상 속도보다 느립니다. 네트워크 장애가 아닙니다."
+
+#: app/ui/transfer.py:1329
+msgid "对方没有要求放慢写入，本机按最快速度发。"
+msgstr "상대가 쓰기 지연을 요구하지 않아 이 기기는 최대로 보냅니다."
+
+#: app/ui/transfer.py:1361
 msgid "选择要发送的文件夹"
 msgstr "보낼 폴더 선택"
 
-#: app/ui/transfer.py:1072
+#: app/ui/transfer.py:1370
 msgid "选择要发送的文件"
 msgstr "보낼 파일 선택"
 
-#: app/ui/transfer.py:1082
+#: app/ui/transfer.py:1382
 msgid "这些文件不在同一个文件夹下，请分开发送。"
 msgstr "이 파일들은 같은 폴더에 있지 않습니다. 나눠서 보내세요."
 
-#: app/ui/transfer.py:1097
+#: app/ui/transfer.py:1397
 msgid "还没选要发送的内容。"
 msgstr "보낼 내용을 아직 선택하지 않았습니다."
 
-#: app/ui/transfer.py:1102
+#: app/ui/transfer.py:1402
 #, python-brace-format
 msgid "已选：{name}（整个文件夹，约 {size}）"
 msgstr "선택: {name}(폴더 전체, 약 {size})"
 
-#: app/ui/transfer.py:1103
+#: app/ui/transfer.py:1403
 #, python-brace-format
 msgid "已选 {n} 个文件，共 {size}"
 msgstr "{n}개 파일을 선택했습니다. 총 {size}"
 
-#: app/ui/transfer.py:1113
+#: app/ui/transfer.py:1413
 msgid "准备中…"
 msgstr "준비 중…"
 
-#: app/ui/transfer.py:1129
+#: app/ui/transfer.py:1416
+#, python-brace-format
+msgid "{what} → {who}"
+msgstr "{what} → {who}"
+
+#: app/ui/transfer.py:1447
+msgid "停下这次传输，并让对方扔掉已经收到的半件。"
+msgstr "이 전송을 멈추고 상대가 이미 받은 일부 파일을 버리도록 합니다."
+
+#: app/ui/transfer.py:1492
+msgid "（正在取消…）"
+msgstr "(취소 중…)"
+
+#: app/ui/transfer.py:1511
+msgid "完成"
+msgstr "완료"
+
+#: app/ui/transfer.py:1511
+msgid "失败"
+msgstr "실패"
+
+#: app/ui/transfer.py:1524
 msgid "这台设备已经没有连接会话，请重新连接它。"
 msgstr "이 기기에는 연결 세션이 없습니다. 다시 연결하세요."
 
-#: app/ui/transfer.py:1134
+#: app/ui/transfer.py:1529
 msgid "这里没有可发的文件。"
 msgstr "보낼 파일이 없습니다."
 
-#: app/ui/transfer.py:1151
+#: app/ui/transfer.py:1551
 #, python-brace-format
 msgid "已发给 {name}：{n} 个文件（{size}），对方逐个校验通过。"
 msgstr "{name}에 보냈습니다: 파일 {n}개({size}), 각각 상대가 검증했습니다."
 
-#: app/ui/transfer.py:1156
+#: app/ui/transfer.py:1564
+#, python-brace-format
+msgid "已取消发给 {name}：本机停止发送，对方那半件也撤掉了。"
+msgstr "{name}에게 보내기를 취소했습니다. 이 기기는 전송을 멈췄고 상대의 일부 파일도 취소되었습니다."
+
+#: app/ui/transfer.py:1567
 msgid "对方不再认识本机的密钥。选中它，输入它屏幕上新显示的配对码再连接。"
 msgstr "상대가 이 기기의 키를 더 이상 인식하지 않습니다. 선택한 뒤 상대 화면의 새 코드를 입력하고 연결하세요."
 
-#: app/ui/transfer.py:1160
+#: app/ui/transfer.py:1571
 #, python-brace-format
 msgid "有文件已经不在了：{path}"
 msgstr "더 이상 없는 파일이 있습니다: {path}"
 
-#: app/ui/transfer.py:1165
+#: app/ui/transfer.py:1576
 #, python-brace-format
 msgid "连不上对方，它可能已经退出或换了端口：{error}"
 msgstr "상대에 연결할 수 없습니다. 종료했거나 포트를 바꿨을 수 있습니다: {error}"
 
-#: app/ui/transfer.py:1168
+#: app/ui/transfer.py:1579
 #, python-brace-format
 msgid "传输中断：{error}"
 msgstr "전송이 중단되었습니다: {error}"
 
-#: app/ui/transfer.py:1176
+#: app/ui/transfer.py:1587
+#, python-brace-format
+msgid "{title}（正在发送 {name}）"
+msgstr "{title}({name} 보내는 중)"
+
+#: app/ui/transfer.py:1590
 #, python-brace-format
 msgid "正在发送：{name}"
 msgstr "보내는 중: {name}"
 
-#: app/ui/transfer.py:1181
+#: app/ui/transfer.py:1595
 msgid "未开始"
 msgstr "시작하지 않음"
 
-#: app/ui/transfer.py:1197
+#: app/ui/transfer.py:1616
 #, python-brace-format
 msgid "已收到 {who} 发来的 {n} 个文件（{size}），逐个校验通过。"
 msgstr "{who}에게서 파일 {n}개({size})를 받았습니다. 모두 검증되었습니다."
 
-#: app/ui/transfer.py:1207
-#, python-brace-format
-msgid ""
-"来自 {who}\n"
-"双击打开：{path}"
-msgstr ""
-"보낸 사람: {who}\n"
-"더블클릭으로 열기: {path}"
+#: app/ui/transfer.py:1681
+msgid "（已经不在了）"
+msgstr "(없어짐)"
 
-#: app/ui/transfer.py:1210
-msgid "这次还没有收到校验通过的文件；以前收过的都在接收目录里。"
-msgstr "이 세션에서 검증된 파일은 아직 없습니다. 이전에 받은 파일은 수신 폴더에 있습니다."
+#: app/ui/transfer.py:1685
+msgid "时间未知"
+msgstr "시간 알 수 없음"
+
+#: app/ui/transfer.py:1689
+#, python-brace-format
+msgid "原本落在：{path}"
+msgstr "처음 저장 위치: {path}"
+
+#: app/ui/transfer.py:1699
+msgid "还没有收到校验通过的文件。"
+msgstr "검증을 통과한 파일이 아직 없습니다."
+
+#: app/ui/transfer.py:1701
+msgid "这个时间里没有收到的文件。"
+msgstr "이 기간에 받은 파일이 없습니다."
+
+#: app/ui/transfer.py:1713
+#, python-brace-format
+msgid "这条记录还在，文件已经不在这个位置了：{path}"
+msgstr "기록은 남아 있지만 파일은 더 이상 이 위치에 없습니다: {path}"
 
 #: app/ui/tray.py:28 app/ui/tray.py:60
 msgid "打开主界面"
@@ -896,4 +1004,14 @@ msgstr ""
 
 #~ msgid "打开接收后这里才显示配对码"
 #~ msgstr "받기를 켜면 여기에 페어링 코드가 표시됩니다"
+
+#~ msgid "接收到的文件（本次会话已校验）"
+#~ msgstr "받은 파일(이 세션에서 검증됨)"
+
+#~ msgid ""
+#~ "来自 {who}\n"
+#~ "双击打开：{path}"
+#~ msgstr ""
+#~ "보낸 사람: {who}\n"
+#~ "더블클릭으로 열기: {path}"
 

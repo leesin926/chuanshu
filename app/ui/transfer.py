@@ -11,25 +11,29 @@ proof of anything; the fingerprint prefix next to them is the only real anchor.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import secrets
 import socket
 import threading
+import time
 from pathlib import Path
 
 import qrcode
 from qrcode.image.svg import SvgPathImage
 from PySide6.QtCore import QUrl, Qt, QTimer, Signal
-from PySide6.QtGui import QDesktopServices, QImage, QPainter, QPixmap
+from PySide6.QtGui import QDesktopServices, QImage, QPainter, QPalette, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QInputDialog,
     QLabel,
     QLineEdit,
@@ -38,6 +42,9 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QStackedWidget,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -50,7 +57,7 @@ from app.net.discovery import DiscoveryService, Peer, local_ipv4, verify_peer
 from app.net.identity import load_or_create
 from app.net.receive import ReceiveService
 from app.net.send import PairNeeded, PeerConnection, plan
-from app.paths import identity_dir, receive_root
+from app.paths import identity_dir, receive_root, user_data_dir
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +68,11 @@ CODE_REFRESH_MS = 5_000
 #: Side of the pairing picture. Phone cameras need roughly 5 px per module across a desk,
 #: and 224 still leaves the window's minimum width free to hold the code beside it.
 QR_SIZE = 224
+#: How many arrivals to keep on disk. The receive folder is the archive; this list is only
+#: the reading list, and a few hundred rows is years of use.
+_ARRIVALS_KEPT = 500
+#: How many finished task rows the 传输 page remembers from this session.
+_TASK_HISTORY_KEPT = 12
 
 
 def _split_addr(text: str, default_port: int, scheme: str) -> tuple[str, int, str]:
@@ -89,6 +101,19 @@ def _human(size: int) -> str:
     return f"{size} B"
 
 
+def _arrivals_file() -> Path:
+    """Where verified arrivals are remembered between runs.
+
+    The receive folder is the truth about the bytes; this file is only the reading list that
+    makes the 文件 page answer "when did it arrive and from whom", which a folder cannot say.
+    """
+    return user_data_dir() / "arrivals.json"
+
+
+def _when(stamp: float) -> str:
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(stamp))
+
+
 def _qr_pixmap(text: str) -> QPixmap:
     """Render the pairing payload as a QR without a native dependency.
 
@@ -103,6 +128,22 @@ def _qr_pixmap(text: str) -> QPixmap:
     renderer.render(painter)
     painter.end()
     return QPixmap.fromImage(image)
+
+
+class _ArrivalRow(QTreeWidgetItem):
+    """A file row that sorts by what the column means, not by the words printed in it.
+
+    The display text is a human size and a formatted date, so "9 KB" must not beat "1 MB"
+    and "2026-10-19" must not sort against a filename. The comparable value rides in UserRole.
+    """
+
+    def __lt__(self, other: QTreeWidgetItem) -> bool:  # noqa: D105 - Qt's sort hook
+        tree = self.treeWidget()
+        column = 0 if tree is None else tree.sortColumn()
+        mine, theirs = self.data(column, Qt.UserRole), other.data(column, Qt.UserRole)
+        if type(mine) is type(theirs):
+            return bool(mine < theirs)
+        return str(mine) < str(theirs)
 
 
 class _CandidateDialog(QDialog):
@@ -204,6 +245,10 @@ class _CandidateDialog(QDialog):
         self.accept()
 
 
+class _Cancelled(Exception):
+    """Raised inside the send worker when 取消 is pressed on its row."""
+
+
 class TransferPanel(QWidget):
     _offer_arrived = Signal(dict, str, str)  # manifest, who, token
     _peers_changed = Signal()  # emitted from discovery threads
@@ -253,8 +298,13 @@ class TransferPanel(QWidget):
         self._connect_worker: threading.Thread | None = None
         #: Built on the first 连接… click and reused, so it keeps its scroll position.
         self._candidates: _CandidateDialog | None = None
-        #: Verified arrivals, newest last. Painted from ``_received_arrived`` only.
-        self._received: list[dict] = []
+        #: Verified arrivals, newest last. Kept on disk so the 文件 page outlives this run.
+        self._received: list[dict] = self._load_arrivals()
+        #: Rows in the 传输 page's task list, by task key. Only the send in flight can be
+        #: cancelled; finished rows stay so the page can say what happened after it happened.
+        self._task_rows: dict[str, dict] = {}
+        #: Task keys the user asked to stop. The worker's progress callback reads this.
+        self._cancelled: set[str] = set()
         #: Fingerprints that dialled *in*. They are connected but not reachable: an inbound
         #: peer never told us a port we could call back on, so it can receive nothing.
         self._inbound: set[str] = set()
@@ -283,7 +333,149 @@ class TransferPanel(QWidget):
     # ------------------------------------------------------------------ widgets
 
     def _build(self) -> None:
-        grid = QGridLayout(self)
+        """Three pages the rail can switch between, all owned by this widget.
+
+        Every control keeps its old attribute name: the acceptance script reaches the window
+        through these objects, and a rename would turn a passing run into a missing widget.
+        """
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.stack = QStackedWidget(self)
+        self.page_transfer = self._build_transfer_page()
+        self.page_devices = self._build_devices_page()
+        self.page_files = self._build_files_page()
+        for page in (self.page_transfer, self.page_devices, self.page_files):
+            self.stack.addWidget(page)
+        outer.addWidget(self.stack, 1)
+
+        self.status_label = QLabel()
+        self.status_label.setObjectName("Muted")
+        self.status_label.setWordWrap(True)
+        outer.addWidget(self.status_label)
+
+        self.setAcceptDrops(True)
+
+    def add_page(self, page: QWidget) -> int:
+        """Let the window contribute a rail page. 设置 lives here, not in a second window."""
+        return self.stack.addWidget(page)
+
+    def show_page(self, index: int) -> None:
+        self.stack.setCurrentIndex(index)
+
+    def current_page(self) -> int:
+        return self.stack.currentIndex()
+
+    def fit_pages(self) -> None:
+        """Ask every page what height its sentences need at the width the rail leaves them.
+
+        A stacked widget sizes itself on the biggest page minimum it is given, and a minimum
+        hint counts a wrapping label as one line. At the narrowest width the stack can reach a
+        caption needs more lines than that, and the layout paid for the difference out of the
+        buttons' height. Measuring at that width is the worst case, because the window cannot
+        go narrower than the widest page.
+        """
+        width = self.stack.minimumSizeHint().width()
+        need = 0
+        for index in range(self.stack.count()):
+            page = self.stack.widget(index)
+            layout = page.layout()
+            height = page.minimumSizeHint().height()
+            if width > 0 and layout is not None and layout.hasHeightForWidth():
+                height = max(height, layout.totalHeightForWidth(width))
+            need = max(need, height)
+        if need:
+            self.stack.setMinimumHeight(need)
+
+    # ----------------------------------------------------------------- 传输 page
+
+    def _build_transfer_page(self) -> QWidget:
+        page = QWidget(self)
+        page.setObjectName("TransferPage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        title = QLabel()
+        title.setObjectName("PageTitle")
+        self.page_title_transfer = title
+
+        # The drop box is the whole top of the page: dropping is the way anyone actually moves
+        # files, and the two pickers are what a keyboard-only user has instead.
+        self.drop_box = QFrame(page)
+        self.drop_box.setObjectName("DropZone")
+        drop_layout = QVBoxLayout(self.drop_box)
+        drop_layout.setContentsMargins(18, 20, 18, 16)
+        self.drop_big = QLabel()
+        self.drop_big.setObjectName("DropBig")
+        self.drop_big.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+        self.drop_hint = QLabel()
+        self.drop_hint.setObjectName("DropHint")
+        self.drop_hint.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+        self.pick_files_button = QPushButton()
+        self.pick_files_button.setObjectName("Inline")
+        self.pick_files_button.clicked.connect(lambda: self._stage(kind="files"))
+        self.pick_dir_button = QPushButton()
+        self.pick_dir_button.setObjectName("Inline")
+        self.pick_dir_button.clicked.connect(lambda: self._stage(kind="dir"))
+        self.clear_stage_button = QPushButton()
+        self.clear_stage_button.setObjectName("Inline")
+        self.clear_stage_button.clicked.connect(self._clear_stage)
+        pickers = QHBoxLayout()
+        pickers.addStretch(1)
+        pickers.addWidget(self.pick_files_button)
+        pickers.addWidget(self.pick_dir_button)
+        pickers.addWidget(self.clear_stage_button)
+        pickers.addStretch(1)
+        self.stage_label = QLabel()
+        self.stage_label.setObjectName("Muted")
+        self.stage_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+        drop_layout.addWidget(self.drop_big)
+        drop_layout.addWidget(self.drop_hint)
+        drop_layout.addLayout(pickers)
+        drop_layout.addWidget(self.stage_label)
+
+        # Which device this is going to, and what that device asked us to write at. The pace
+        # line exists because a paced transfer looks exactly like a slow network from here.
+        self.peer_now_box = QGroupBox(page)
+        now_layout = QVBoxLayout(self.peer_now_box)
+        self.peer_now_label = QLabel()
+        self.peer_now_label.setWordWrap(True)
+        self.pace_label = QLabel()
+        self.pace_label.setObjectName("Muted")
+        self.pace_label.setWordWrap(True)
+        now_layout.addWidget(self.peer_now_label)
+        now_layout.addWidget(self.pace_label)
+
+        self.task_title = QLabel()
+        self.task_title.setObjectName("SectionTitle")
+        # One row per transfer in flight: name, bar, speed, cancel. The protocol only lets one
+        # peer hold the slot at a time, so this list holds at most the send under way plus the
+        # offer someone else dialled in and we are still deciding about.
+        self.task_list = QListWidget()
+        self.task_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setTextVisible(True)
+        self.send_button = QPushButton()
+        self.send_button.clicked.connect(self._start_send)
+        self.send_button.setEnabled(False)
+
+        layout.addWidget(title)
+        layout.addWidget(self.drop_box)
+        layout.addWidget(self.peer_now_box)
+        layout.addWidget(self.task_title)
+        layout.addWidget(self.task_list, 1)
+        layout.addWidget(self.progress)
+        layout.addWidget(self.send_button)
+        return page
+
+    # ----------------------------------------------------------------- 设备 page
+
+    def _build_devices_page(self) -> QWidget:
+        page = QWidget(self)
+        page.setObjectName("DevicesPage")
+        grid = QGridLayout(page)
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(14)
         # Both cards want roughly the same width: the left one is bounded by the QR plus
@@ -358,22 +550,14 @@ class TransferPanel(QWidget):
         rotate = QHBoxLayout()
         rotate.addWidget(self.refresh_pair_button)
         rotate.addStretch(1)
-        # The arrivals list sits where the stretch used to be: it grows into the space the
-        # card has, and the hint above it says what it can honestly promise.
-        self.received_label = QLabel()
-        self.received_label.setObjectName("SectionTitle")
-        self.received_label.setWordWrap(True)
-        self.received_list = QListWidget()
-        self.received_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.received_list.itemDoubleClicked.connect(self._open_received)
+
         mine_layout.addLayout(who)
         mine_layout.addWidget(self.listen_label)
         mine_layout.addWidget(self.channel_label)
         mine_layout.addLayout(pairing)
         mine_layout.addLayout(rotate)
         mine_layout.addLayout(where)
-        mine_layout.addWidget(self.received_label)
-        mine_layout.addWidget(self.received_list, 1)
+        mine_layout.addStretch(1)
 
         # ---- peers (sending) ----
         peers = QGroupBox(self)
@@ -395,10 +579,12 @@ class TransferPanel(QWidget):
         self.disconnect_button = QPushButton()
         self.disconnect_button.setObjectName("Inline")
         self.disconnect_button.clicked.connect(self._disconnect_selected)
+        # The sentence gets its own row: on the same row as the two buttons it was the only
+        # widget allowed to shrink, and at the narrowest window it ended up one character wide.
         nearby = QHBoxLayout()
-        nearby.addWidget(self.nearby_label, 1)
         nearby.addWidget(self.pick_peer_button)
         nearby.addWidget(self.disconnect_button)
+        nearby.addStretch(1)
 
         # The code is typed here rather than in a modal that appears mid-transfer: which device
         # it belongs to has to be readable while it is being typed.
@@ -420,52 +606,105 @@ class TransferPanel(QWidget):
         code_row.addWidget(self.secret_edit, 1)
         code_row.addWidget(self.connect_button)
 
-        self.stage_label = QLabel()
-        self.stage_label.setObjectName("Muted")
-        self.stage_label.setWordWrap(True)
-        # 选择文件 used to be three stacked full-width buttons. The line under them already
-        # says what was picked, so short text buttons carry the same three actions cheaper.
-        self.pick_files_button = QPushButton()
-        self.pick_files_button.setObjectName("Inline")
-        self.pick_files_button.clicked.connect(lambda: self._stage(kind="files"))
-        self.pick_dir_button = QPushButton()
-        self.pick_dir_button.setObjectName("Inline")
-        self.pick_dir_button.clicked.connect(lambda: self._stage(kind="dir"))
-        self.clear_stage_button = QPushButton()
-        self.clear_stage_button.setObjectName("Inline")
-        self.clear_stage_button.clicked.connect(self._clear_stage)
-        stage = QHBoxLayout()
-        stage.addWidget(self.pick_files_button)
-        stage.addWidget(self.pick_dir_button)
-        stage.addWidget(self.clear_stage_button)
-        stage.addStretch(1)
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 100)
-        self.progress.setValue(0)
-        self.progress.setTextVisible(True)
-        self.send_button = QPushButton()
-        self.send_button.clicked.connect(self._start_send)
-        self.send_button.setEnabled(False)
         peers_layout.addWidget(self.peer_list, 1)
+        peers_layout.addWidget(self.nearby_label)
         peers_layout.addLayout(nearby)
         peers_layout.addLayout(code_row)
-        peers_layout.addLayout(stage)
-        peers_layout.addWidget(self.stage_label)
-        peers_layout.addWidget(self.progress)
-        peers_layout.addWidget(self.send_button)
 
         grid.addWidget(mine, 0, 0)
         grid.addWidget(peers, 0, 1)
-        self.status_label = QLabel()
-        self.status_label.setObjectName("Muted")
-        self.status_label.setWordWrap(True)
-        grid.addWidget(self.status_label, 1, 0, 1, 2)
         self.mine_box, self.peers_box = mine, peers
+        return page
+
+    # ----------------------------------------------------------------- 文件 page
+
+    def _build_files_page(self) -> QWidget:
+        page = QWidget(self)
+        page.setObjectName("FilesPage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        self.page_title_files = QLabel()
+        self.page_title_files.setObjectName("PageTitle")
+
+        # The hint above the table is what this list can honestly promise; the promise changed
+        # once arrivals were kept across restarts, so it is still a label and not a caption.
+        self.received_label = QLabel()
+        self.received_label.setObjectName("SectionTitle")
+        self.received_label.setWordWrap(True)
+
+        # Narrow filters rather than a menu: the useful questions are "since when" and "from
+        # whom", and both are answerable with a pill or two on screen.
+        self.chip_row = QHBoxLayout()
+        self.chip_row.setSpacing(8)
+        self.chip_all = QPushButton()
+        self.chip_all.setObjectName("Chip")
+        self.chip_all.setCheckable(True)
+        self.chip_today = QPushButton()
+        self.chip_today.setObjectName("Chip")
+        self.chip_today.setCheckable(True)
+        self.chip_week = QPushButton()
+        self.chip_week.setObjectName("Chip")
+        self.chip_week.setCheckable(True)
+        self._chips: list[QPushButton] = []
+        for chip, value in ((self.chip_all, "all"), (self.chip_today, "today"), (self.chip_week, "week")):
+            chip.setProperty("filter", value)
+            chip.clicked.connect(lambda _c=False, picked=chip: self._choose_filter(picked))
+            self.chip_row.addWidget(chip)
+            self._chips.append(chip)
+        self.chip_row.addStretch(1)
+        #: Rows are a reading list; the folder is where the bytes actually are, and the two can
+        #: disagree (the user may have moved a file), so the folder gets a button of its own.
+        self.open_received_dir_button = QPushButton()
+        self.open_received_dir_button.setObjectName("Inline")
+        self.open_received_dir_button.clicked.connect(self._open_receive_dir)
+        self.chip_row.addWidget(self.open_received_dir_button)
+
+        # Columns, because a file list that cannot say which machine it came from or when is
+        # a log, not a filing cabinet.
+        self.received_list = QTreeWidget()
+        self.received_list.setObjectName("ReceivedTable")
+        self.received_list.setColumnCount(4)
+        self.received_list.setRootIsDecorated(False)
+        self.received_list.setAlternatingRowColors(True)
+        self.received_list.setSortingEnabled(True)
+        self.received_list.sortByColumn(2, Qt.DescendingOrder)
+        self.received_list.setSelectionBehavior(QTreeWidget.SelectRows)
+        self.received_list.itemDoubleClicked.connect(self._open_received)
+        # The name is the only column allowed to shrink; the rest carry numbers that must be
+        # readable in full at the narrowest window the layout permits.
+        header = self.received_list.header()
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        for column in (1, 2, 3):
+            header.setSectionResizeMode(column, QHeaderView.ResizeToContents)
+        self._received_filter = "all"
+        #: Where an arrival stopped existing on disk, so the table can say so instead of
+        #: listing a row that opens nothing.
+        self._missing: dict[str, str] = {}
+
+        layout.addWidget(self.page_title_files)
+        layout.addWidget(self.received_label)
+        layout.addLayout(self.chip_row)
+        layout.addWidget(self.received_list, 1)
+        return page
+
 
     def retranslate(self) -> None:
         """Re-apply every visible string, including the ones set from callbacks."""
+        self.page_title_transfer.setText(_("传输"))
+        self.page_title_files.setText(_("文件"))
         self.mine_box.setTitle(_("我的设备"))
         self.peers_box.setTitle(_("已连接的设备"))
+        self.drop_big.setText(_("把文件或文件夹拖到这里"))
+        self.drop_hint.setText(
+            _("也可以点下面的按钮挑选。对方要先接受，文件才会落到它的接收目录。")
+        )
+        self.task_title.setText(_("本次会话的传输"))
+        self.chip_all.setText(_("全部"))
+        self.chip_today.setText(_("今天"))
+        self.chip_week.setText(_("近 7 天"))
+        self.open_received_dir_button.setText(_("打开接收目录"))
+        self.received_list.setHeaderLabels([_("文件"), _("大小"), _("时间"), _("来源设备")])
         self.code_label.setText(self._code_text())
         self.pass_label.setText(self._pass_text())
         self.listen_label.setText(self._listen_text())
@@ -479,7 +718,7 @@ class TransferPanel(QWidget):
         self.open_dir_button.setToolTip(_("打开接收目录"))
         self.rename_button.setText(_("编辑"))
         self.name_label.setText(_("本机：{name}").format(name=self.device_name))
-        self.received_label.setText(_("接收到的文件（本次会话已校验）"))
+        self.received_label.setText(_("收到的文件都校验通过、已经落盘。记录存在本机，重启也还在。"))
         self.pick_files_button.setText(_("选择文件…"))
         self.pick_dir_button.setText(_("选择文件夹…"))
         self.clear_stage_button.setText(_("清空"))
@@ -504,6 +743,9 @@ class TransferPanel(QWidget):
         self.qr_label.setToolTip(_("让对方扫这个码，就能带着配对码和密码连过来。"))
         self.stage_label.setText(self._stage_text())
         self.status_label.setText(self._status_text())
+        for row in self._task_rows.values():
+            row["cancel"].setText(_("取消"))
+        self._sync_chips()
         self._refresh_peers()
         self._refresh_received()
 
@@ -1059,6 +1301,63 @@ class TransferPanel(QWidget):
         self.connect_button.setEnabled(not connecting and self._locked_out() is None)
         self.connect_button.setToolTip(self._connect_tip())
         self.disconnect_button.setEnabled(selected is not None and not busy)
+        self._sync_target(selected)
+
+    def _sync_target(self, selected: Peer | None) -> None:
+        """Say which device this page would send to, and at what pace it asked to be written at.
+
+        The pace line is not decoration: a peer that declared ``chunk_pace_ms`` makes the
+        transfer look exactly like a congested network, and only the receiver knows why.
+        """
+        if selected is None:
+            self.peer_now_label.setText(_("还没有选定接收设备。到「设备」页连一台，或在附近列表里选一台。"))
+            self.pace_label.setText("")
+            return
+        who = selected.name or selected.prefix
+        self.peer_now_label.setText(
+            _("当前对端：{name}（{addr}，指纹前缀 {fp}）").format(
+                name=who, addr=f"{selected.host}:{selected.port}", fp=selected.prefix
+            )
+        )
+        conn = self._sessions.get(selected.fingerprint)
+        if conn is None:
+            self.pace_label.setText(_("这台设备还没有连接会话，点「连接」建立一条。"))
+        elif conn.pace_ms:
+            self.pace_label.setText(
+                _("对方要求每 {ms} 毫秒写一条 TLS 记录，所以这台设备比局域网正常水平慢，这不是网络故障。").format(
+                    ms=conn.pace_ms
+                )
+            )
+        else:
+            self.pace_label.setText(_("对方没有要求放慢写入，本机按最快速度发。"))
+
+    def dragEnterEvent(self, event) -> None:  # noqa: D102 - Qt hook
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+            self._set_dragging(True)
+
+    def dragLeaveEvent(self, event) -> None:  # noqa: D102 - Qt hook
+        self._set_dragging(False)
+
+    def dropEvent(self, event) -> None:  # noqa: D102 - Qt hook
+        self._set_dragging(False)
+        paths = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]
+        if not paths:
+            return
+        event.acceptProposedAction()
+        # Dropping means "send this", so the page follows the intent even when the user
+        # dropped onto the file list.
+        self.stack.setCurrentIndex(0)
+        self._stage_paths(paths)
+
+    def _set_dragging(self, on: bool) -> None:
+        """Re-polish the drop frame so it can show that the pointer is carrying something."""
+        if bool(self.drop_box.property("dragging")) == on:
+            return
+        self.drop_box.setProperty("dragging", on)
+        style = self.drop_box.style()
+        style.unpolish(self.drop_box)
+        style.polish(self.drop_box)
 
     def _stage(self, kind: str) -> None:
         if kind == "dir":
@@ -1068,23 +1367,27 @@ class TransferPanel(QWidget):
             base = Path(chosen)
             self._staged_base = base.parent
             self._staged = [base]
+            self.stage_label.setText(self._stage_text())
+            self._sync_buttons()
         else:
             chosen_list = QFileDialog.getOpenFileNames(self, _("选择要发送的文件"))[0]
-            if not chosen_list:
-                return
-            paths = [Path(p) for p in chosen_list]
-            try:
-                # Every relpath in an offer is taken from one shared base, so a selection
-                # that spans drives or roots cannot be described - say so instead of
-                # flattening names and letting two files fight over one path.
-                base = Path(os.path.commonpath([str(p.parent) for p in paths]))
-            except ValueError:
-                self.status_label.setText(_("这些文件不在同一个文件夹下，请分开发送。"))
-                return
-            self._staged_base = base
-            self._staged = paths
+            if chosen_list:
+                self._stage_paths([Path(p) for p in chosen_list])
+
+    def _stage_paths(self, paths: list[Path]) -> bool:
+        """Accept a picked or dropped selection, or refuse it out loud."""
+        try:
+            # Every relpath in an offer is taken from one shared base, so a selection
+            # that spans drives or roots cannot be described - say so instead of
+            # flattening names and letting two files fight over one path.
+            self._staged_base = Path(os.path.commonpath([str(p.parent) for p in paths]))
+        except ValueError:
+            self.status_label.setText(_("这些文件不在同一个文件夹下，请分开发送。"))
+            return False
+        self._staged = paths
         self.stage_label.setText(self._stage_text())
         self._sync_buttons()
+        return True
 
     def _clear_stage(self) -> None:
         self._staged = []
@@ -1112,10 +1415,105 @@ class TransferPanel(QWidget):
         self.progress.setValue(0)
         self.progress.setFormat(_("准备中…"))
         self.send_button.setEnabled(False)
+        self._cancelled.discard("send")
+        self._add_task_row("send", _("{what} → {who}").format(what=self._stage_text(), who=peer.name or peer.prefix))
         self._worker = threading.Thread(
             target=self._send_worker, args=(peer, paths, base), name="chuanshu-send", daemon=True
         )
         self._worker.start()
+
+    # ---------------------------------------------------------------- task rows
+
+    def _add_task_row(self, key: str, title: str) -> dict:
+        """One row per transfer: what, how far, how long, and a way to stop it.
+
+        Rows stay after they finish. A bar that disappears the moment it hits 100% leaves the
+        user with no answer to the only question they asked by pressing 发送.
+        """
+        row = QWidget(self.task_list)
+        row.setObjectName("TaskRow")
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(8, 6, 8, 6)
+        name = QLabel(title)
+        name.setWordWrap(True)
+        bar = QProgressBar()
+        bar.setRange(0, 100)
+        bar.setValue(0)
+        bar.setFixedSize(150, 16)
+        bar.setTextVisible(False)
+        # An elapsed clock rather than a throughput estimate: bytes only become a rate once
+        # both ends agree the transfer is over, and a mid-flight guess would be a lie.
+        elapsed = QLabel("0:00")
+        elapsed.setObjectName("Muted")
+        cancel = QPushButton(_("取消"))
+        cancel.setObjectName("Inline")
+        cancel.setToolTip(_("停下这次传输，并让对方扔掉已经收到的半件。"))
+        cancel.clicked.connect(lambda _checked=False, stop=key: self._cancel_task(stop))
+        layout.addWidget(name, 1)
+        layout.addWidget(bar)
+        layout.addWidget(cancel)
+        item = QListWidgetItem(self.task_list)
+        item.setSizeHint(row.sizeHint())
+        self.task_list.setItemWidget(item, row)
+        entry = {
+            "item": item,
+            "widget": row,
+            "name": name,
+            "bar": bar,
+            "elapsed": elapsed,
+            "cancel": cancel,
+            "started": time.time(),
+            "title": title,
+            "done": False,
+        }
+        self._task_rows[key] = entry
+        self._trim_tasks()
+        return entry
+
+    def _trim_tasks(self) -> None:
+        """Forget the oldest finished rows so a long session cannot grow the list forever."""
+        extra = len(self._task_rows) - _TASK_HISTORY_KEPT
+        if extra <= 0:
+            return
+        finished = [key for key, row in self._task_rows.items() if row["done"]]
+        for key in finished[:extra]:
+            entry = self._task_rows.pop(key)
+            self.task_list.takeItem(self.task_list.row(entry["item"]))
+
+    def _cancel_task(self, key: str) -> None:
+        """Ask a running send to stop between chunks.
+
+        The worker only checks this once a chunk is fully written, so 取消 lands within one
+        chunk of the request - on a paced peer that is a few seconds, and the row says so
+        instead of pretending the bytes already sent came back.
+        """
+        entry = self._task_rows.get(key)
+        if entry is None or entry["cancel"].isEnabled() is False:
+            return
+        self._cancelled.add(key)
+        entry["cancel"].setEnabled(False)
+        self._tick_task(key, note=entry["title"] + _("（正在取消…）"))
+
+    def _tick_task(self, key: str, percent: int | None = None, note: str | None = None) -> None:
+        entry = self._task_rows.get(key)
+        if entry is None:
+            return
+        seconds = int(time.time() - entry["started"])
+        entry["elapsed"].setText(f"{seconds // 60}:{seconds % 60:02d}")
+        if percent is not None:
+            entry["bar"].setValue(percent)
+        if note is not None:
+            entry["name"].setText(note)
+
+    def _close_task(self, key: str, ok: bool) -> None:
+        entry = self._task_rows.get(key)
+        if entry is None:
+            return
+        entry["bar"].setValue(100 if ok else 0)
+        entry["cancel"].setEnabled(False)
+        entry["cancel"].setText(_("完成") if ok else _("失败"))
+        entry["done"] = True
+        self._tick_task(key, note=entry["title"])
 
     def _send_worker(self, peer: Peer, paths: list[Path], base: Path | None) -> None:
         """Push the staged files through the session 连接 made, without closing it afterwards.
@@ -1136,9 +1534,14 @@ class TransferPanel(QWidget):
             # Same counting rule as PeerConnection._chunk_count: an empty file has no
             # chunks at all, so including one here would make progress pass 100%.
             total_chunks = sum((f.size + self.proto.chunk_size - 1) // self.proto.chunk_size if f.size else 0 for f in files)
+            total_bytes = sum(f.size for f in files)
             done = [0]
 
             def progress(relpath: str, _index: int, _total: int) -> None:
+                # Cancelled between chunks on purpose: stopping mid-chunk would leave the
+                # receiver holding a half-written file it has no hash for.
+                if "send" in self._cancelled:
+                    raise _Cancelled
                 done[0] += 1
                 self._progressed.emit(done[0], total_chunks, relpath)
 
@@ -1149,8 +1552,19 @@ class TransferPanel(QWidget):
             self._finished.emit(
                 True,
                 _("已发给 {name}：{n} 个文件（{size}），对方逐个校验通过。").format(
-                    name=peer.name or peer.prefix, n=len(files), size=_human(sum(f.size for f in files))
+                    name=peer.name or peer.prefix, n=len(files), size=_human(total_bytes)
                 ),
+            )
+        except _Cancelled:
+            # Ask the receiver to drop the half-offer before saying it is done, so the folder
+            # it shows the user cannot contain a file this machine refused to finish.
+            try:
+                conn.abort()
+            except (OSError, protocol_spec.ProtocolError, ConnectionError) as error:
+                log.warning("could not withdraw the cancelled offer: %s", error)
+            self._finished.emit(
+                False,
+                _("已取消发给 {name}：本机停止发送，对方那半件也撤掉了。").format(name=peer.name or peer.prefix),
             )
         except PairNeeded:
             self._finished.emit(False, _("对方不再认识本机的密钥。选中它，输入它屏幕上新显示的配对码再连接。"))
@@ -1173,12 +1587,17 @@ class TransferPanel(QWidget):
         # The bar is only as wide as the column, so it carries the number and the status
         # line carries the file name; a long Chinese relpath would not fit in the bar.
         self.progress.setFormat(f"{percent}%")
+        self._tick_task("send", percent=percent, note=_("{title}（正在发送 {name}）").format(
+            title=self._task_rows["send"]["name"].text() if "send" in self._task_rows else "", name=relpath
+        ) if "send" in self._task_rows else None)
         self.status_label.setText(_("正在发送：{name}").format(name=relpath))
 
     def _on_finished(self, ok: bool, message: str) -> None:
         self.progress.setValue(100 if ok else 0)
         if not ok:
             self.progress.setFormat(_("未开始"))
+        self._close_task("send", ok)
+        self._cancelled.discard("send")
         self.status_label.setText(message)
         log.info("transfer finished ok=%s: %s", ok, message)
         self._sync_buttons()
@@ -1187,32 +1606,117 @@ class TransferPanel(QWidget):
 
     def _on_received(self, who: str, landed: list[dict]) -> None:
         """Runs on the GUI thread: the server-side handler emits, and only that emit is allowed to paint."""
+        now = time.time()
         for entry in landed:
             item = dict(entry)
             item["who"] = who
+            item["at"] = now
             self._received.append(item)
+        self._save_arrivals()
         self._refresh_received()
         total = sum(int(entry["size"]) for entry in landed)
         self.status_label.setText(
             _("已收到 {who} 发来的 {n} 个文件（{size}），逐个校验通过。").format(who=who, n=len(landed), size=_human(total))
         )
 
-    def _refresh_received(self) -> None:
-        self.received_list.clear()
-        # Newest first: the point of the list is what just arrived, and scrolling to the
-        # bottom of a long session to find it would be the opposite of that.
-        for entry in reversed(self._received):
-            item = QListWidgetItem(f"{entry['relpath']}    {_human(int(entry['size']))}")
-            item.setData(Qt.UserRole, entry["path"])
-            item.setToolTip(_("来自 {who}\n双击打开：{path}").format(who=entry["who"], path=entry["path"]))
-            self.received_list.addItem(item)
-        if not self._received:
-            self.received_list.addItem(QListWidgetItem(_("这次还没有收到校验通过的文件；以前收过的都在接收目录里。")))
+    @staticmethod
+    def _load_arrivals() -> list[dict]:
+        """Read the arrival list back, and forget it rather than fail to open the window.
 
-    def _open_received(self, item: QListWidgetItem) -> None:
-        path = item.data(Qt.UserRole)
-        if path:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        A record whose file has since been deleted is still worth listing - the point of the
+        page is what landed here, and the row says out loud when the bytes are gone.
+        """
+        try:
+            stored = json.loads(_arrivals_file().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        if not isinstance(stored, list):
+            return []
+        return [e for e in stored if isinstance(e, dict) and e.get("path") and e.get("relpath")]
+
+    def _save_arrivals(self) -> None:
+        """Keep the tail of the list; the receive folder itself is never touched here."""
+        try:
+            target = _arrivals_file()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(
+                json.dumps(self._received[-_ARRIVALS_KEPT:], ensure_ascii=False), encoding="utf-8"
+            )
+        except OSError as error:
+            log.warning("could not save the arrival list: %s", error)
+
+    def _choose_filter(self, chip: QPushButton) -> None:
+        self._received_filter = str(chip.property("filter") or "all")
+        self._sync_chips()
+        self._refresh_received()
+
+    def _sync_chips(self) -> None:
+        """Exactly one pill is pressed, including on the first paint."""
+        for chip in self._chips:
+            chip.blockSignals(True)
+            chip.setChecked(str(chip.property("filter")) == self._received_filter)
+            chip.blockSignals(False)
+
+    def _filtered_arrivals(self) -> list[dict]:
+        if self._received_filter == "all":
+            return list(self._received)
+        now = time.localtime()
+        midnight = time.mktime((now.tm_year, now.tm_mon, now.tm_mday, 0, 0, 0, 0, 0, -1))
+        days = 1 if self._received_filter == "today" else 7
+        since = midnight - (days - 1) * 86_400
+        return [entry for entry in self._received if float(entry.get("at") or 0) >= since]
+
+    def _refresh_received(self) -> None:
+        tree = self.received_list
+        # Inserting into a sorted tree lets each row land where the previous order says, which
+        # scrambles a list of identical timestamps. Sort once, at the end.
+        tree.setSortingEnabled(False)
+        tree.clear()
+        arrivals = self._filtered_arrivals()
+        for entry in reversed(arrivals):
+            path = str(entry["path"])
+            gone = not Path(path).exists()
+            row = _ArrivalRow(tree)
+            row.path = path
+            size = int(entry.get("size") or 0)
+            stamp = float(entry.get("at") or 0)
+            who = str(entry.get("who") or "")
+            row.setText(0, str(entry["relpath"]) + (_("（已经不在了）") if gone else ""))
+            row.setData(0, Qt.UserRole, str(entry["relpath"]))
+            row.setText(1, _human(size))
+            row.setData(1, Qt.UserRole, size)
+            row.setText(2, _when(stamp) if stamp else _("时间未知"))
+            row.setData(2, Qt.UserRole, stamp)
+            row.setText(3, who)
+            row.setData(3, Qt.UserRole, who)
+            row.setToolTip(0, path if not gone else _("原本落在：{path}").format(path=path))
+            if gone:
+                # Same row, visibly dimmed: the record still means something even though the
+                # bytes moved, and a palette brush keeps it readable in both themes.
+                row.setForeground(0, tree.palette().brush(QPalette.Disabled, QPalette.Text))
+        if not arrivals:
+            placeholder = _ArrivalRow(tree)
+            placeholder.path = ""
+            placeholder.setText(
+                0,
+                _("还没有收到校验通过的文件。")
+                if self._received_filter == "all"
+                else _("这个时间里没有收到的文件。"),
+            )
+            placeholder.setDisabled(True)
+        tree.setSortingEnabled(True)
+
+    def _open_received(self, row: QTreeWidgetItem, _column: int = 0) -> None:
+        path = str(getattr(row, "path", "") or "")
+        if not path:
+            return
+        if not Path(path).exists():
+            # The record is honest about the arrival; only the bytes moved. Say which of the
+            # two happened rather than opening an empty explorer window.
+            self.status_label.setText(_("这条记录还在，文件已经不在这个位置了：{path}").format(path=path))
+            self._refresh_received()
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
     # --------------------------------------------------------------- lifecycle
 

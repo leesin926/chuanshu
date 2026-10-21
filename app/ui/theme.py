@@ -27,6 +27,18 @@ class Palette:
     close_hover: str
     close_pressed: str
     menu_hover: str
+    #: The left-hand rail is dark in both themes: it is the one area that has to read as chrome
+    #: rather than content, and a light rail against a light window loses the separation.
+    nav: str
+    nav_text: str
+    nav_sel: str
+    nav_sel_text: str
+    #: Filter chips on the files page: unselected is a quiet pill, selected wears the accent.
+    chip: str
+    chip_sel: str
+    #: The dashed outline of the drop zone, and the text inside it.
+    drop_border: str
+    drop_text: str
 
 
 LIGHT = Palette(
@@ -43,6 +55,14 @@ LIGHT = Palette(
     close_hover="#f36b5f",
     close_pressed="#d94a3d",
     menu_hover="#eef2fb",
+    nav="#20242b",
+    nav_text="#b9c0ca",
+    nav_sel="#313842",
+    nav_sel_text="#ffffff",
+    chip="#eef1f5",
+    chip_sel="#3b82f6",
+    drop_border="#c3ccd8",
+    drop_text="#5f6b7a",
 )
 
 DARK = Palette(
@@ -59,6 +79,14 @@ DARK = Palette(
     close_hover="#c8503f",
     close_pressed="#a53f31",
     menu_hover="#2b3038",
+    nav="#13161a",
+    nav_text="#98a1ab",
+    nav_sel="#2c333c",
+    nav_sel_text="#ffffff",
+    chip="#2a2f36",
+    chip_sel="#4f8cf7",
+    drop_border="#3c434c",
+    drop_text="#98a1ab",
 )
 
 PALETTES = {p.name: p for p in (LIGHT, DARK)}
@@ -124,6 +152,53 @@ QListWidget#SettingsMenu::item:selected {{ background: {p.menu_hover}; color: {p
 
 QWidget#TitleBar {{ background: {p.surface}; border-bottom: 1px solid {p.border}; }}
 
+/* ---- left rail ---- */
+QWidget#Nav {{ background: {p.nav}; }}
+QPushButton#NavButton {{
+    background: transparent;
+    color: {p.nav_text};
+    border: none;
+    border-radius: 8px;
+    padding: 9px 10px;
+    text-align: left;
+    font-size: 13px;
+}}
+QPushButton#NavButton:hover {{ background: {p.nav_sel}; color: {p.nav_sel_text}; }}
+/* Checked is the page you are on, so it is the one item in the rail wearing the accent. */
+QPushButton#NavButton:checked {{ background: {p.chip_sel}; color: {p.accent_text}; font-weight: 600; }}
+
+/* ---- pages ---- */
+QLabel#PageTitle {{ font-size: 17px; font-weight: 600; color: {p.text}; }}
+QScrollArea#Page {{ background: transparent; border: none; }}
+QScrollArea#Page > QWidget > QWidget {{ background: transparent; }}
+
+/* ---- filter chips ---- */
+QPushButton#Chip {{
+    background: {p.chip};
+    color: {p.text};
+    border: none;
+    border-radius: 13px;
+    padding: 4px 12px;
+}}
+QPushButton#Chip:hover {{ background: {p.hover}; color: {p.text}; }}
+QPushButton#Chip:checked {{ background: {p.chip_sel}; color: {p.accent_text}; }}
+
+/* The drop target is an outline with nothing in it, so it is drawn rather than painted. */
+QFrame#DropZone {{
+    background: {p.surface};
+    border: 2px dashed {p.drop_border};
+    border-radius: 10px;
+}}
+QLabel#DropHint {{ color: {p.drop_text}; background: transparent; }}
+QLabel#DropBig {{ font-size: 15px; font-weight: 600; color: {p.drop_text}; background: transparent; }}
+/* While a drag is over the window the outline says "here", in the accent rather than the
+   border grey, because a dashed line that never changes is a line nobody reads. */
+QFrame#DropZone[dragging="true"] {{ border: 2px solid {p.accent}; background: {p.hover}; }}
+
+/* A transfer in flight is one row: name, bar, elapsed, cancel. */
+QWidget#TaskRow {{ background: {p.surface}; border: 1px solid {p.border}; border-radius: 8px; }}
+QWidget#TaskRow QProgressBar {{ height: 6px; }}
+
 QGroupBox {{
     background: {p.surface};
     border: 1px solid {p.border};
@@ -136,6 +211,11 @@ QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 4px; color
 QListWidget {{ background: {p.window}; border: 1px solid {p.border}; border-radius: 6px; padding: 2px; }}
 QListWidget::item {{ padding: 6px; border-radius: 4px; color: {p.text}; }}
 QListWidget::item:selected {{ background: {p.menu_hover}; color: {p.text}; }}
+
+QTreeView {{ background: {p.window}; alternate-background-color: {p.surface}; border: 1px solid {p.border}; border-radius: 6px; padding: 2px; color: {p.text}; }}
+QTreeView::item {{ padding: 6px; border-radius: 4px; }}
+QTreeView::item:selected {{ background: {p.menu_hover}; color: {p.text}; }}
+QHeaderView::section {{ background: {p.surface}; color: {p.text_muted}; border: none; border-bottom: 1px solid {p.border}; padding: 6px 8px; }}
 
 QProgressBar {{
     background: {p.window};

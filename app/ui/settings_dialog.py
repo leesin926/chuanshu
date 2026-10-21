@@ -1,8 +1,9 @@
-"""Settings window: a list of sections on the left, the chosen section on the right.
+"""The settings page: a list of sections on the left, the chosen section on the right.
 
-There is deliberately no OK button. Each control writes the value the rest of the app
-already reads and takes effect on the spot - a dialog you could "cancel" after the
-receiving port had already moved would be lying about one of the two states.
+It is a page in the window's rail rather than a dialog, because there is deliberately no OK
+button. Each control writes the value the rest of the app already reads and takes effect on
+the spot - a window you could "cancel" after the receiving port had already moved would be
+lying about one of the two states.
 
 Anything shown here has to be something the app can actually do, so the protocol numbers
 (port, chunk size, code lifetime) are read-only facts: they come from the frozen contract
@@ -21,8 +22,6 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QDialog,
-    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
@@ -49,8 +48,10 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-#: Left-hand menu, in the order the stack holds them. Each one is also a msgid.
-SECTIONS = ("常规", "传输", "已配对设备", "关于")
+#: Left-hand menu, in the order the stack holds them. Each one is also a msgid, so N() is what
+#: puts it in the template: retranslate() hands the tuple element to _(), and Babel only reads
+#: literals out of a call.
+SECTIONS = (N("常规"), N("传输"), N("已配对设备"), N("关于"))
 
 #: Width an explanation keeps at the smallest window the user can drag this to.
 #: Qt counts a single line of a word-wrapped label when it works out a layout's minimum, so
@@ -60,7 +61,7 @@ SECTIONS = ("常规", "传输", "已配对设备", "关于")
 NOTE_WIDTH = 340
 
 
-class SettingsDialog(QDialog):
+class SettingsPage(QWidget):
     def __init__(self, window: MainWindow, settings: Settings, languages: LanguageManager, panel: TransferPanel) -> None:
         super().__init__(window)
         self.host = window
@@ -72,11 +73,10 @@ class SettingsDialog(QDialog):
         #: Labels allowed to break into several lines; remeasured whenever their text changes.
         self._wrapping: list[QLabel] = []
 
-        self.setObjectName("SettingsDialog")
+        self.setObjectName("SettingsPage")
         # No explicit minimum: it would override the layout's own, and the window could then
         # be sized narrower than the longest caption on a page, which clips the control
         # instead of refusing the size. The layout floor moves with the language.
-        self.resize(760, 500)
 
         self.menu = QListWidget(self)
         self.menu.setObjectName("SettingsMenu")
@@ -89,20 +89,14 @@ class SettingsDialog(QDialog):
         self.menu.currentRowChanged.connect(self.stack.setCurrentIndex)
         self.menu.setCurrentRow(0)
 
-        close_box = QDialogButtonBox(QDialogButtonBox.Close, self)
-        close_box.rejected.connect(self.close)
-        close_box.accepted.connect(self.close)
-        self._bind(close_box.button(QDialogButtonBox.Close), "关闭")
-
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(12)
         row.addWidget(self.menu)
         row.addWidget(self.stack, 1)
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(14, 12, 14, 12)
+        outer.setContentsMargins(6, 6, 6, 6)
         outer.addLayout(row, 1)
-        outer.addWidget(close_box)
 
         # The name is edited here and inline on the panel, so both have to follow it.
         self.panel.device_name_changed.connect(lambda _name: self.reload())
@@ -427,7 +421,6 @@ class SettingsDialog(QDialog):
         """Re-apply every string; also runs right after a language switch."""
         for widget, msgid, setter in self._bound:
             setter(_(msgid))
-        self.setWindowTitle(_("设置"))
         for row, title in enumerate(SECTIONS):
             self.menu.item(row).setText(_(title))
         self._fit_menu()

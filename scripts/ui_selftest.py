@@ -17,6 +17,7 @@ Run:  py -X utf8 scripts/ui_selftest.py
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import socket
@@ -34,8 +35,8 @@ os.environ["XDG_DATA_HOME"] = str(SCRATCH / "xdg")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(ROOT))
 
-from PySide6.QtCore import QPoint, Qt, QTimer  # noqa: E402
-from PySide6.QtGui import QFont  # noqa: E402
+from PySide6.QtCore import QPoint, QPointF, QMimeData, Qt, QTimer, QUrl  # noqa: E402
+from PySide6.QtGui import QDropEvent, QFont  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QInputDialog, QLineEdit, QListWidget, QMessageBox  # noqa: E402
 
 from cryptography import x509  # noqa: E402
@@ -51,7 +52,7 @@ from app.net.receive import ReceiveService  # noqa: E402
 from app.net.send import PeerConnection, plan  # noqa: E402
 from app.paths import receive_root, user_data_dir  # noqa: E402
 from app.ui import theme  # noqa: E402
-from app.ui.main_window import MainWindow  # noqa: E402
+from app.ui.main_window import PAGE_SETTINGS, MainWindow  # noqa: E402
 from app.ui.settings_dialog import SECTIONS  # noqa: E402
 
 SHOT = SCRATCH / "window.png"
@@ -64,6 +65,11 @@ CONTROLS = (
     "peer_list", "nearby_label", "pick_peer_button", "code_edit", "secret_edit", "connect_button",
     "disconnect_button", "stage_label", "pick_files_button", "pick_dir_button",
     "clear_stage_button", "progress", "send_button", "status_label",
+    # The rail pages each bring their own captions, and every one of them is a control the
+    # user is supposed to be able to read at the smallest size the window allows.
+    "page_title_transfer", "drop_box", "drop_big", "drop_hint", "peer_now_box", "peer_now_label",
+    "pace_label", "task_title", "task_list", "page_title_files", "chip_all", "chip_today",
+    "chip_week", "open_received_dir_button",
 )
 fails: list[str] = []
 
@@ -323,14 +329,104 @@ def roster_texts(panel) -> list[str]:
 
 
 def received_rows(panel) -> list[str]:
-    """The arrivals card as the user reads it. An empty list shows one hint sentence, and that
+    """The arrivals table as the user reads it. An empty table shows one hint row, and that
     row is not an arrival, so it is reported as no rows rather than counted as one."""
     if not panel._received:
         return []
-    return [panel.received_list.item(i).text() for i in range(panel.received_list.count())]
+    tree = panel.received_list
+    return [tree.topLevelItem(i).text(0) for i in range(tree.topLevelItemCount())]
 
 
 # --------------------------------------------------------------------------- phases
+
+
+RAIL_KEYS = ("transfer", "devices", "files", "settings")
+
+
+def phase_rail(app: QApplication, window: MainWindow) -> None:
+    """The rail, the drop box and the arrivals table - what the four pages promise on their own.
+
+    Dropping is driven by handing the panel a real QDropEvent rather than by calling the
+    staging helper: the promise is that a drag from explorer lands files in the box, and only
+    the event path can show whether the panel accepts it at all.
+    """
+    panel = window.panel
+    for page, key in enumerate(RAIL_KEYS):
+        window.nav_buttons[key].click()
+        app.processEvents()
+        check(f"the rail's {key} button shows page {page}", panel.current_page() == page and window.nav_buttons[key].isChecked(),
+              f"{panel.current_page()} | {[b.isChecked() for b in window.nav_buttons.values()]}")
+    window.show_page(0)
+    app.processEvents()
+    check("the drop box is the first thing the page says", "拖到这里" in panel.drop_big.text(), panel.drop_big.text())
+    check("the page names the device it would send to", "还没有选定接收设备" in panel.peer_now_label.text(), panel.peer_now_label.text())
+
+    staged = [SCRATCH / "drag-a.txt", SCRATCH / "nested" / "drag-b.txt"]
+    for path in staged:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("dragged", encoding="utf-8")
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(p)) for p in staged])
+    drop = QDropEvent(QPointF(20, 20), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
+    panel.dropEvent(drop)
+    app.processEvents()
+    check("a drop stages the files it carried", [p.name for p in panel._staged] == [p.name for p in staged], panel._staged)
+    check("and the box says so", "2" in panel.stage_label.text(), panel.stage_label.text())
+    check("a drop from two folders still finds one base", str(panel._staged_base) == str(SCRATCH), panel._staged_base)
+    panel._clear_stage()
+    app.processEvents()
+
+    spread = [SCRATCH / "x" / "one.txt", Path(os.environ["SystemDrive"]) / "y" / "two.txt"]
+    for path in spread:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x", encoding="utf-8")
+    far = QMimeData()
+    far.setUrls([QUrl.fromLocalFile(str(p)) for p in spread])
+    panel.dropEvent(QDropEvent(QPointF(20, 20), Qt.CopyAction, far, Qt.LeftButton, Qt.NoModifier))
+    app.processEvents()
+    check("a selection with no shared base is refused out loud", panel._staged == [] and "同一个文件夹" in panel.status_label.text(),
+          panel.status_label.text())
+
+
+def phase_arrivals(app: QApplication, window: MainWindow) -> None:
+    """The 文件 page over a list that survives this run - and one whose bytes have moved."""
+    panel = window.panel
+    if not panel._received:
+        check("arrivals were recorded", False, "nothing landed, so the table was never exercised")
+        return
+    stored = json.loads((user_data_dir() / "arrivals.json").read_text(encoding="utf-8"))
+    check("every arrival is written down", len(stored) == len(panel._received), f"{len(stored)} vs {len(panel._received)}")
+    check("and names where it came from and when", all(e.get("who") and e.get("at") for e in stored), stored[:1])
+
+    window.show_page(2)
+    app.processEvents()
+    rows = panel.received_list.topLevelItemCount()
+    panel.chip_week.click()
+    app.processEvents()
+    check("近 7 天 keeps today's arrivals", panel.received_list.topLevelItemCount() == rows, rows)
+    panel.chip_today.click()
+    app.processEvents()
+    check("今天 keeps them too", panel.received_list.topLevelItemCount() == rows, panel.received_list.topLevelItemCount())
+    check("only one pill is pressed", [c.isChecked() for c in panel._chips] == [False, True, False],
+          [c.isChecked() for c in panel._chips])
+    panel.chip_all.click()
+    app.processEvents()
+
+    newest = panel._received[-1]
+    victim = Path(newest["path"])
+    victim.rename(victim.parent / (victim.name + ".moved"))
+    panel._refresh_received()
+    app.processEvents()
+    listed = [panel.received_list.topLevelItem(i) for i in range(panel.received_list.topLevelItemCount())]
+    row = next((r for r in listed if r.text(0).startswith(Path(newest["relpath"]).name)), None)
+    check("a moved file is still listed, and says it moved", row is not None and "已经不在了" in row.text(0),
+          None if row is None else row.text(0))
+    if row is not None:
+        panel._open_received(row)
+        app.processEvents()
+        check("opening it explains rather than failing silently", "已经不在这个位置" in panel.status_label.text(), panel.status_label.text())
+    victim.parent.joinpath(victim.name + ".moved").rename(victim)
+    panel._refresh_received()
 
 
 def phase_idle(app: QApplication, window: MainWindow, proto: protocol_spec.Protocol) -> None:
@@ -341,8 +437,8 @@ def phase_idle(app: QApplication, window: MainWindow, proto: protocol_spec.Proto
     pixmap = panel.qr_label.pixmap()
     check("QR painted at launch", not panel.qr_label.isHidden() and pixmap is not None and not pixmap.isNull(),
           "hidden" if panel.qr_label.isHidden() else (None if pixmap is None else pixmap.size()))
-    check("the fixed code is on screen", re.search(r"\d{4}", panel.code_label.text()) is not None, panel.code_label.text())
-    check("the passphrase is shown next to it", re.search(r"[A-Z2-9]{4}", panel.pass_label.text()) is not None, panel.pass_label.text())
+    check("the fixed code is on screen", re.search(rf"(?<!\d)\d{{{proto.pair_code_digits}}}(?!\d)", panel.code_label.text()) is not None, panel.code_label.text())
+    check("the passphrase is shown next to it", re.search(rf"[A-Z2-9]{{{proto.passphrase_chars}}}(?![A-Z2-9])", panel.pass_label.text()) is not None, panel.pass_label.text())
     check("the port is stated", str(panel._receiver.port) in panel.listen_label.text(), panel.listen_label.text())
     check("own name carries an inline edit", panel.name_label.text() == f"本机：{panel.device_name}" and panel.rename_button.text() == "编辑",
           f"{panel.name_label.text()} | {panel.rename_button.text()}")
@@ -361,8 +457,9 @@ def phase_idle(app: QApplication, window: MainWindow, proto: protocol_spec.Proto
     panel.connect_button.click()
     app.processEvents()
     check("connecting blind names the missing step", "挑一台" in panel.status_label.text(), panel.status_label.text())
-    check("the arrivals list is promised and honest", "接收到的文件" in panel.received_label.text()
-          and "校验通过" in panel.received_list.item(0).text(), f"{panel.received_label.text()} | {panel.received_list.item(0).text()}")
+    check("the arrivals table is promised and honest", "收到的文件" in panel.received_label.text()
+          and "校验通过" in panel.received_list.topLevelItem(0).text(0),
+          f"{panel.received_label.text()} | {panel.received_list.topLevelItem(0).text(0)}")
     check("断开 is not offered for a device that is not paired", not panel.disconnect_button.isEnabled())
 
 
@@ -421,14 +518,30 @@ def squeeze(root, named: dict) -> tuple[list, list]:
 
 
 def phase_fit(app: QApplication, window: MainWindow, label: str) -> None:
-    """Controls must survive the smallest window the user can drag this to, not only a roomy one."""
+    """Controls must survive the smallest window the user can drag this to, on every rail page.
+
+    One squeeze per page rather than one per window: a QStackedWidget is sized by its widest
+    page, so measuring only the one on screen would let the 设备 card's QR or the 文件 table's
+    columns be cut off and nobody would notice until the user clicked there.
+    """
     panel = window.panel
     window.resize(window.minimumSize())
     app.processEvents()
-    squeezed, cut_off = squeeze(window, {name: getattr(panel, name) for name in CONTROLS})
-    check(f"every control keeps its own minimum ({label})", not squeezed, squeezed)
-    check(f"no control is cut off by the window edge ({label})", not cut_off, cut_off)
-    window.grab().save(str(SCRATCH / f"window-min-{label.split()[0]}.png"))
+    named = {name: getattr(panel, name) for name in CONTROLS}
+    # A control left out of a layout is never measured: it becomes its own top-level widget,
+    # invisible, and the loop below skips it as "not visible". Check parentage once, up front,
+    # so a widget dropped from a page fails loudly instead of quietly disappearing from it.
+    orphans = [name for name, widget in named.items() if widget.window() is not window]
+    check("every control is inside a page", not orphans, orphans)
+    for page in (0, 1, 2, PAGE_SETTINGS):
+        window.show_page(page)
+        app.processEvents()
+        squeezed, cut_off = squeeze(window, named)
+        where = panel.stack.widget(page).objectName() or f"page{page}"
+        check(f"every control keeps its own minimum ({label}, {where})", not squeezed, squeezed)
+        check(f"no control is cut off by the window edge ({label}, {where})", not cut_off, cut_off)
+        window.grab().save(str(SCRATCH / f"window-min-{label.split()[0]}-{page}.png"))
+    window.show_page(0)
     window.resize(1080, 680)
     app.processEvents()
 
@@ -499,12 +612,14 @@ def phase_incoming(app: QApplication, dialog: AutoDialog, panel, sender: Identit
     check("files landed byte-identical in the receive root", not bad, bad or str(root))
     # The list is painted from finalize's verdict, so a file that arrived on disk but failed to
     # hash would have to stay off it - and a declined one already did, above.
-    rows = [panel.received_list.item(i).text() for i in range(panel.received_list.count())]
-    missing = [file.relpath for file in files if not any(file.relpath in row for row in rows)]
+    rows = [[panel.received_list.topLevelItem(i).text(col) for col in range(4)] for i in range(panel.received_list.topLevelItemCount())]
+    missing = [file.relpath for file in files if not any(file.relpath in row[0] for row in rows)]
     check("the arrivals list shows every verified file", not missing, f"{missing} missing from {rows}")
     check("an arrival is counted, not just named", len(rows) == arrivals + len(files), f"{arrivals} + {len(files)} -> {len(rows)}")
-    check("an arrival names its sender", "Probe-Sender" in panel.received_list.item(0).toolTip(), panel.received_list.item(0).toolTip())
-    check("the arrivals list puts the newest first", bool(rows) and files[-1].relpath in rows[0], rows[:2])
+    # The sender is a column now, not a tooltip: a table that cannot say who sent what is a log.
+    check("an arrival names its sender", bool(rows) and rows[0][3] == "Probe-Sender", rows[:1])
+    check("an arrival carries its size and time", bool(rows) and rows[0][1] and rows[0][2], rows[:1])
+    check("the arrivals list puts the newest first", bool(rows) and files[-1].relpath in rows[0][0], [row[0] for row in rows[:2]])
 
 
 def connect_through_ui(app: QApplication, dialog: AutoDialog, panel, port: int, code: str, label: str, manual: bool = False) -> bool:
@@ -602,6 +717,12 @@ def send_through_ui(app: QApplication, panel, paths, base, files, service, servi
     bad = [f.relpath for f in files if not (root / f.relpath).is_file() or hashlib.sha256((root / f.relpath).read_bytes()).hexdigest() != f.sha256]
     check(f"peer received every file byte-identical ({label})", not bad, bad)
     check(f"progress bar ended at 100% ({label})", panel.progress.value() == 100, panel.progress.value())
+    # The task row is what the user reads after the bar stops moving: it has to stay, say
+    # how it ended, and no longer offer a 取消 for a transfer that is already over.
+    row = panel._task_rows.get("send")
+    check(f"the send left a finished row ({label})", row is not None and row["done"] and row["bar"].value() == 100, row and dict((k, v) for k, v in row.items() if k in ("done", "title")))
+    check(f"a finished row cannot be cancelled ({label})", row is not None and not row["cancel"].isEnabled() and row["cancel"].text() == "完成",
+          row and row["cancel"].text())
     return ok
 
 
@@ -626,6 +747,50 @@ def phase_outgoing(app: QApplication, dialog: AutoDialog, panel, paths, base, fi
         return
     check("a pinned device reconnects on an empty code", roster_row(panel, service.port) is not None, roster_texts(panel))
     send_through_ui(app, panel, paths, base, files, service, service_root, "known peer")
+
+def phase_cancel(app: QApplication, panel, paths, base, files, service_root) -> None:
+    """取消 mid-send: the worker stops at the next chunk and the half-offer is withdrawn.
+
+    The ask is raised on the first chunk that reports home rather than on a timer: a localhost
+    transfer can finish inside one pump, and a race that happens to win either way proves
+    nothing. What is under test is the stop path, not the timing. The connection is DirectConnection
+    so the flag lands in the worker before it builds the next chunk's request - a queued signal
+    would not run until the send was already over.
+    """
+    panel._staged = list(paths)
+    panel._staged_base = base
+    panel._sync_buttons()
+    if not panel.send_button.isEnabled():
+        check("取消 had a send to work with", False, f"{panel.stage_label.text()} | {roster_texts(panel)}")
+        return
+    before = offer_dirs(service_root)
+    finished: list[tuple[bool, str]] = []
+
+    def spy(ok: bool, message: str) -> None:
+        finished.append((ok, message))
+
+    def first_chunk(_done: int, _total: int, _relpath: str) -> None:
+        # Asking on the first chunk that lands is the deterministic version of a user pressing
+        # 取消 mid-transfer: the worker stops at the next one, and the offer is withdrawn.
+        panel._cancelled.add("send")
+
+    panel._finished.connect(spy)
+    panel._progressed.connect(first_chunk, Qt.DirectConnection)
+    panel.send_button.click()
+    done = pump_until(app, lambda: bool(finished), 60.0)
+    panel._progressed.disconnect(first_chunk)
+    panel._finished.disconnect(spy)
+    check("取消 ends the send without hanging", done and bool(finished) and finished[0][0] is False, finished)
+    check("取消 says it cancelled", bool(finished) and "取消" in finished[0][1], finished[:1])
+    # The receiver's abort unlinks the bytes it was given, so the folders it leaves are empty.
+    # That is a tidiness gap, not a lie: no half file may survive.
+    new = [service_root / name for name in offer_dirs(service_root) - before]
+    left = [str(d / f.relpath) for d in new for f in files if (d / f.relpath).is_file()]
+    check("a cancelled send leaves no file behind", not left, left or sorted(new))
+    row = panel._task_rows.get("send")
+    check("the cancelled row is closed", row is not None and row["done"] and not row["cancel"].isEnabled(),
+          None if row is None else row["cancel"].text())
+    check("the cancel flag is handed back for the next send", "send" not in panel._cancelled, sorted(panel._cancelled))
 
 
 def phase_single_slot(app: QApplication, dialog: AutoDialog, panel, hidden) -> None:
@@ -664,8 +829,12 @@ def phase_single_slot(app: QApplication, dialog: AutoDialog, panel, hidden) -> N
 
 def phase_manual(app: QApplication, dialog: AutoDialog, panel, paths, base, files, hidden, hidden_root) -> None:
     """Reach a device discovery never announced - the fallback the empty picker promises."""
-    check("a silent device is not a candidate", hidden.port not in {peer.port for peer in panel._candidate_peers()},
-          [peer.public() for peer in panel._candidate_peers()])
+    # The picker asked for this address a phase ago, so it is a candidate by then and has been
+    # ever since. What is under test here is that *nobody announced it*: discovery alone would
+    # never have listed a port it has only heard of because the user typed it.
+    announced = {peer.port for peer in panel._discovery.candidates()}
+    check("a silent device is not something discovery found", hidden.port not in announced,
+          [peer.public() for peer in panel._discovery.candidates()])
     if not connect_through_ui(app, dialog, panel, hidden.port, hidden.current_pair_code(), "typed address", manual=True):
         return
     peer = roster_row(panel, hidden.port).data(Qt.UserRole)
@@ -697,15 +866,19 @@ SETTINGS_CONTROLS = (
 
 
 def phase_settings(app: QApplication, window: MainWindow) -> None:
-    """The gear button and everything its window promises to change."""
+    """The rail's 设置 page and everything it promises to change."""
     panel = window.panel
     settings = window.settings
 
+    window.show_page(0)
     window.title_bar.settings_button.click()
     app.processEvents()
-    d = window.settings_window
-    check("the gear opens a settings window", d is not None and d.isVisible() and d.windowTitle() == "设置", d)
+    d = window.settings_page
+    check("the gear opens the settings page", d is not None and d.isVisible() and panel.current_page() == PAGE_SETTINGS,
+          f"{d} | {panel.current_page()}")
     check("receiving survives while it is open", panel._receiver is not None, panel._receiver)
+    check("the rail marks the page you are on", window.nav_buttons["settings"].isChecked() and not window.nav_buttons["transfer"].isChecked(),
+          {k: b.isChecked() for k, b in window.nav_buttons.items()})
     check("menu lists the sections", [d.menu.item(i).text() for i in range(d.menu.count())] == list(SECTIONS),
           [d.menu.item(i).text() for i in range(d.menu.count())])
     wrong = []
@@ -773,55 +946,62 @@ def phase_settings(app: QApplication, window: MainWindow) -> None:
 
     d.language_box.setCurrentIndex(max(0, d.language_box.findData("en")))
     app.processEvents()
-    check("a language picked here rewrites this window too", d.windowTitle() == "Settings" and d.menu.item(0).text() == "General",
-          f"{d.windowTitle()} | {d.menu.item(0).text()}")
+    check("a language picked here rewrites this page too", d.menu.item(0).text() == "General" and window.nav_buttons["transfer"].text() == "Transfer",
+          f"{d.menu.item(0).text()} | {window.nav_buttons['transfer'].text()}")
     d.language_box.setCurrentIndex(max(0, d.language_box.findData("zh_CN")))
     app.processEvents()
-    check("and back", d.menu.item(0).text() == SECTIONS[0], d.menu.item(0).text())
+    check("and back", d.menu.item(0).text() == SECTIONS[0] and window.nav_buttons["transfer"].text() == "传输", d.menu.item(0).text())
 
-    d.close()
+    window.show_page(0)
     app.processEvents()
     window.open_settings()
     app.processEvents()
-    check("reopening reuses the same window", window.settings_window is d and d.isVisible())
+    check("reopening reuses the same page", window.settings_page is d and d.isVisible() and panel.current_page() == PAGE_SETTINGS)
     # Back to row 0: a measurement pass that starts on the last page would skip the pages
     # before it, because only the current one is visible.
     d.menu.setCurrentRow(0)
-    phase_settings_fit(app, d, "zh_CN")
-    d.close()
+    phase_settings_fit(app, window, "zh_CN")
+    window.show_page(0)
 
 
-def phase_settings_fit(app: QApplication, dialog, label: str) -> None:
-    """The same squeeze the main window gets, for the window the settings promise lives in."""
-    dialog.resize(dialog.minimumSize())
+def phase_settings_fit(app: QApplication, window: MainWindow, label: str) -> None:
+    """The same squeeze the transfer pages get, for the sections the settings page promises.
+
+    The window is the frame under test, not the page: a page inside a rail can be given less
+    room than its own layout asks for, and that is exactly the clipping this measures.
+    """
+    page = window.settings_page
+    window.show_page(PAGE_SETTINGS)
+    window.resize(window.minimumSize())
     app.processEvents()
-    room = dialog.menu.viewport().width()
+    room = page.menu.viewport().width()
     cut = [
-        dialog.menu.item(row).text()
-        for row in range(dialog.menu.count())
-        if dialog.menu.fontMetrics().horizontalAdvance(dialog.menu.item(row).text()) > room
+        page.menu.item(row).text()
+        for row in range(page.menu.count())
+        if page.menu.fontMetrics().horizontalAdvance(page.menu.item(row).text()) > room
     ]
     check(f"the section menu truncates nothing ({label})", not cut, cut)
     bad = []
-    for row in range(dialog.menu.count()):
-        dialog.menu.setCurrentRow(row)
+    for row in range(page.menu.count()):
+        page.menu.setCurrentRow(row)
         app.processEvents()
-        named = {name: getattr(dialog, name) for name in SETTINGS_CONTROLS}
+        named = {name: getattr(page, name) for name in SETTINGS_CONTROLS}
         # The hint sentences are the controls most likely to be cut off, and they are the
-        # ones the dialog holds by role rather than by name.
-        named.update({f"note{i}": note for i, note in enumerate(dialog._wrapping)})
-        squeezed, cut_off = squeeze(dialog, named)
+        # ones the page holds by role rather than by name.
+        named.update({f"note{i}": note for i, note in enumerate(page._wrapping)})
+        squeezed, cut_off = squeeze(window, named)
         if squeezed or cut_off:
             bad.append(f"{SECTIONS[row]}: {squeezed + cut_off}")
         # One picture per page: the numbers say a control is short, only the shot says whether
         # the sentence above it still reads as a sentence.
-        dialog.grab().save(str(SCRATCH / f"settings-min-{label}-{row}.png"))
-    check(f"every setting control fits at {dialog.width()}x{dialog.height()} ({label})", not bad, bad)
-    dialog.resize(760, 500)
+        window.grab().save(str(SCRATCH / f"settings-min-{label}-{row}.png"))
+    check(f"every setting control fits at {window.width()}x{window.height()} ({label})", not bad, bad)
+    window.resize(1080, 680)
     app.processEvents()
     if label == "zh_CN":
-        dialog.menu.setCurrentRow(1)
-        dialog.grab().save(str(SCRATCH / "settings-page.png"))
+        page.menu.setCurrentRow(1)
+        window.grab().save(str(SCRATCH / "settings-page.png"))
+    page.menu.setCurrentRow(0)
 
 
 def phase_language(app: QApplication, window: MainWindow, languages: LanguageManager) -> None:
@@ -838,17 +1018,21 @@ def phase_language(app: QApplication, window: MainWindow, languages: LanguageMan
         phase_fit(app, window, code)
         window.open_settings()
         app.processEvents()
-        phase_settings_fit(app, window.settings_window, code)
-        window.settings_window.close()
+        phase_settings_fit(app, window, code)
+        window.show_page(0)
     languages.set_language("en")
     app.processEvents()
     check("english relabels the panel", panel.mine_box.title() == "My device" and panel.refresh_pair_button.text() == "Change code and password",
           f"{panel.mine_box.title()} | {panel.refresh_pair_button.text()}")
-    check("english keeps the pairing code", re.search(r"Pairing code: \d{4}", panel.code_label.text()) is not None, panel.code_label.text())
-    check("english keeps the password", re.search(r"Password: [A-Z2-9]{4}", panel.pass_label.text()) is not None, panel.pass_label.text())
+    digits = panel.proto.pair_code_digits
+    check("english keeps the pairing code", re.search(rf"Pairing code: \d{{{digits}}}(?!\d)", panel.code_label.text()) is not None, panel.code_label.text())
+    check("english keeps the password", re.search(rf"Password: [A-Z2-9]{{{panel.proto.passphrase_chars}}}(?![A-Z2-9])", panel.pass_label.text()) is not None, panel.pass_label.text())
     check("english renames the peer card", panel.peers_box.title() == "Connected devices", panel.peers_box.title())
     check("english keeps the roster", panel.peer_list.count() >= 1, panel.peer_list.count())
-    check("english keeps the arrivals list", panel.received_label.text() == "Received files (verified this session)", panel.received_label.text())
+    check("english keeps the arrivals table", "收到的文件" not in panel.received_label.text() and "verified" in panel.received_label.text(),
+          panel.received_label.text())
+    check("english relabels the rail", [b.text() for b in window.nav_buttons.values()] == ["Transfer", "Devices", "Files", "Settings"],
+          [b.text() for b in window.nav_buttons.values()])
     languages.set_language("zh_CN")
     app.processEvents()
     check("switching back re-applies Chinese", panel.mine_box.title() == "我的设备", panel.mine_box.title())
@@ -889,35 +1073,44 @@ def main() -> int:
     hidden = ReceiveService(silent, "Probe-Silent", lambda manifest, who, caller: True, port=0, root=silent_root)
     hidden.start()
 
+    base, paths = corpus(proto)
+    files = plan(paths, base=base)
+    # A live instance on this machine owns the contract port, and Windows lets a second socket
+    # claim the same number anyway - the probe would then pair with the neighbour's certificate
+    # and fail a dozen checks that have nothing to do with the code under test. So the panel is
+    # built with a port nobody is answering on, before it ever binds one, and the run says out
+    # loud that it did not use the contract default.
+    spare_port = proto.transport_port
+    original_load = None
+    if port_open(spare_port):
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        taken, spare_port = spare_port, probe.getsockname()[1]
+        probe.close()
+        original_load = protocol_spec.load
+        protocol_spec.load = lambda: replace(original_load(), transport_port=spare_port)
+        print(f"NOTE  port {taken} already serves another peer; the probe uses {spare_port}", flush=True)
     window = MainWindow(settings, languages)
     window.show()
     app.processEvents()
     dialog = AutoDialog(app)
     panel = window.panel
-    # A live instance on this machine owns the contract port, and Windows lets a second socket
-    # claim the same number anyway - the probe would then pair with the neighbour's certificate
-    # and fail a dozen checks that have nothing to do with the code under test. So ask for a port
-    # nobody is answering on, and say out loud that the run did not use the contract default.
-    if port_open(panel.proto.transport_port):
-        spare = socket.socket()
-        spare.bind(("127.0.0.1", 0))
-        taken, spare_port = panel.proto.transport_port, spare.getsockname()[1]
-        spare.close()
-        panel.proto = replace(panel.proto, transport_port=spare_port)
-        print(f"NOTE  port {taken} already serves another peer; the probe uses {panel.proto.transport_port}", flush=True)
-    base, paths = corpus(proto)
-    files = plan(paths, base=base)
     try:
         phase_idle(app, window, proto)
         phase_start(app, window, proto)
+        phase_rail(app, window)
         phase_fit(app, window, "zh_CN at the minimum size")
         phase_incoming(app, dialog, panel, pusher, files, accept=True)
         phase_incoming(app, dialog, panel, pusher, files, accept=False)
+        phase_arrivals(app, window)
         # Each probe that dials in takes the one session slot, so the card has to be cleared
         # before this machine can be the one that dials out.
         clear_roster(app, panel)
         check("断开 empties the card and frees the slot", panel._connected == [] and panel._locked_out() is None, roster_texts(panel))
         phase_outgoing(app, dialog, panel, paths, base, files, service, target_root)
+        # 取消 rides the same session: the peer is still connected and reachable here, which is
+        # the only situation where the button on the task row means anything.
+        phase_cancel(app, panel, paths, base, files, target_root)
         phase_single_slot(app, dialog, panel, hidden)
         clear_roster(app, panel)
         phase_manual(app, dialog, panel, paths, base, files, hidden, silent_root)
@@ -925,6 +1118,8 @@ def main() -> int:
         phase_language(app, window, languages)
         phase_shutdown(app, window)
     finally:
+        if original_load is not None:
+            protocol_spec.load = original_load
         announcer.stop()
         service.stop()
         hidden.stop()
