@@ -1,0 +1,1425 @@
+import {
+	CsFile,
+	CHUNK_SIZE,
+	TRANSPORT_PORT,
+	chunkCount,
+	chunkSizeAt,
+	codeOf,
+	detailOf,
+	offerJson,
+	pairJson,
+	pairMessage,
+	parseJson,
+	randomHex,
+	newPassphrase,
+	PASSPHRASE_CHARS
+} from '../cs-protocol.uts'
+import {
+	BufferCallback,
+	Caller,
+	ConnectDone,
+	FileEvent,
+	FinishCallback,
+	HexCallback,
+	MetaCallback,
+	PeerSession,
+	ProgressCallback,
+	ReplyCallback,
+	SelfCallback,
+	SignCallback,
+	TransferOptions,
+	Writer,
+	connectPeer,
+	sendFiles
+} from '../cs-client.uts'
+import {
+	DigestFileFn,
+	DropFn,
+	HexFn,
+	Inbox,
+	KeyFpFn,
+	LocalPeer,
+	PrepareFn,
+	ReceiveSnapshot,
+	Req,
+	VerifyFn,
+	WireReply,
+	WriteFn,
+	adoptAll,
+	currentPairCode,
+	handleReceive,
+	holdSlotFor,
+	newInbox,
+	passphraseOf,
+	restartLike,
+	resolveOffer,
+	rotatePairing,
+	snapshot,
+	stateAll
+} from '../cs-receive.uts'
+
+/** Web half of the transport. A browser has no TLS socket to a LAN peer, so this file stands in
+ *  for the PC: it really checks the pair code, really digests every chunk and really reassembles and
+ *  verifies the whole file. The state machine in utssdk/cs-client.uts cannot tell the difference,
+ *  which is the point - what it cannot prove from a browser is the TLS pinning and the real file
+ *  system, and those stay marked as device-only work.
+ *
+ *  The same file now stands in for both directions: the browser is the phone (its receiver runs
+ *  utssdk/cs-receive.uts over an in-memory byte store) and the PC is a peer inside this tab that
+ *  runs utssdk/cs-client.uts against it. Nothing on the wire knows the difference. */
+
+const DEMO_CHUNK_SIZE = 4194304
+
+const SHA_K: number[] = [
+	0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+	0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+	0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+	0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+	0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+	0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+	0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+	0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+]
+
+function rotr(x: number, n: number): number {
+	return ((x >>> n) | (x << (32 - n))) >>> 0
+}
+
+function sha256Bytes(data: Uint8Array): Uint8Array {
+	const len = data.length
+	const total = (((len + 9 + 63) >> 6) << 6)
+	const padded = new Uint8Array(total)
+	padded.set(data)
+	padded[len] = 0x80
+	const bitLen = len * 8
+	const view = new DataView(padded.buffer)
+	view.setUint32(total - 8, Math.floor(bitLen / 4294967296))
+	view.setUint32(total - 4, bitLen >>> 0)
+
+	const h: number[] = [
+		0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+	]
+	const w = new Uint32Array(64)
+	for (let off = 0; off < total; off += 64) {
+		for (let i = 0; i < 16; i++) {
+			w[i] = view.getUint32(off + i * 4)
+		}
+		for (let i = 16; i < 64; i++) {
+			const a15 = w[i - 15]
+			const a2 = w[i - 2]
+			const s0 = (rotr(a15, 7) ^ rotr(a15, 18) ^ (a15 >>> 3)) >>> 0
+			const s1 = (rotr(a2, 17) ^ rotr(a2, 19) ^ (a2 >>> 10)) >>> 0
+			w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0
+		}
+		let a = h[0], b = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7]
+		for (let i = 0; i < 64; i++) {
+			const S1 = (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) >>> 0
+			const ch = ((e & f) ^ ((~e) & g)) >>> 0
+			const temp1 = (hh + S1 + ch + SHA_K[i] + w[i]) >>> 0
+			const S0 = (rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) >>> 0
+			const maj = ((a & b) ^ (a & c) ^ (b & c)) >>> 0
+			const temp2 = (S0 + maj) >>> 0
+			hh = g
+			g = f
+			f = e
+			e = (d + temp1) >>> 0
+			d = c
+			c = b
+			b = a
+			a = (temp1 + temp2) >>> 0
+		}
+		h[0] = (h[0] + a) >>> 0
+		h[1] = (h[1] + b) >>> 0
+		h[2] = (h[2] + c) >>> 0
+		h[3] = (h[3] + d) >>> 0
+		h[4] = (h[4] + e) >>> 0
+		h[5] = (h[5] + f) >>> 0
+		h[6] = (h[6] + g) >>> 0
+		h[7] = (h[7] + hh) >>> 0
+	}
+	const out = new Uint8Array(32)
+	const outView = new DataView(out.buffer)
+	for (let i = 0; i < 8; i++) {
+		outView.setUint32(i * 4, h[i])
+	}
+	return out
+}
+
+function hexOf(bytes: Uint8Array): string {
+	const digits = '0123456789abcdef'
+	let out = ''
+	for (let i = 0; i < bytes.length; i++) {
+		const v = bytes[i]
+		out = out + digits.charAt(v >> 4) + digits.charAt(v & 15)
+	}
+	return out
+}
+
+function randomBytes(len: number): Uint8Array {
+	const out = new Uint8Array(len)
+	for (let i = 0; i < len; i++) {
+		out[i] = Math.floor(Math.random() * 256)
+	}
+	return out
+}
+
+function b64(bytes: Uint8Array): string {
+	let binary = ''
+	for (let i = 0; i < bytes.length; i++) {
+		binary = binary + String.fromCharCode(bytes[i])
+	}
+	return btoa(binary)
+}
+
+/* ------------------------------------------------------------------ our own identity */
+
+let myPeerId = ''
+let myPub = new Uint8Array(0)
+let myRaw = new Uint8Array(32)
+let myFp = ''
+
+function ensureSelf(): void {
+	if (myPeerId != '') {
+		return
+	}
+	myPeerId = 'android-web-' + hexOf(randomBytes(8))
+	// A browser cannot hold an Ed25519 key the way java.security does, so this is a stand-in
+	// keypair: 44 bytes shaped like a SubjectPublicKeyInfo, digesting to a fingerprint that
+	// behaves like a real one for the demo peer.
+	const raw = randomBytes(32)
+	myRaw = raw
+	const spki = spkiOfRaw(raw)
+	myPub = spki
+	myFp = hexOf(sha256Bytes(spki))
+}
+
+export function selfInfo(cb: (peerId: string, name: string, fingerprint: string) => void): void {
+	ensureSelf()
+	const info = uni.getSystemInfoSync()
+	cb(myPeerId, '浏览器 · ' + info.browserName, myFp)
+}
+
+/** The page has to say plainly which peer it is talking to, so the answer lives next to the
+ *  transport that decides it rather than in a compile-time branch the reader cannot verify. */
+export function transportMocked(): boolean {
+	return true
+}
+
+export function transportNote(): string {
+	return '浏览器没有 TLS socket，也没有真实文件系统：对端由本页内的模拟 PC 代答，但它会真的逐块算校验和、重组并整文件复算。' +
+		'证书固定与落盘仍然只算真机工作，这里的结果不能替它们作证。'
+}
+
+/** The browser cannot enumerate this machine's interfaces, and the stand-in peer has no address to
+ *  begin with, so the honest answer is "unknown" - never a pass that makes the demo look checked. */
+export function lanCheck(host: string, cb: (level: string, text: string) => void): void {
+	cb('unknown', host == ''
+		? '还没有对端地址'
+		: '浏览器查不到本机网卡，' + host + ' 是否在同一网络要在手机上核对')
+}
+
+/** The browser's substitute for the identity key: it signs whatever bytes it is handed, because
+ *  which message carries the signature is spec §3's decision and cs-client.uts makes it. */
+export function signPair(message: string, cb: (publicKeyB64: string, signatureB64: string) => void): void {
+	ensureSelf()
+	// The wire carries base64 of the raw 32-byte key, the way app/net/receive.py reads it with
+	// Ed25519PublicKey.from_public_bytes - not the 44-byte SPKI. Getting this shape wrong is the
+	// difference between a peer the PC can verify and one it rejects as unreadable.
+	cb(b64(myRaw), b64(sha256Bytes(utf8(message))))
+}
+
+function utf8(text: string): Uint8Array {
+	const enc = new TextEncoder()
+	return enc.encode(text)
+}
+
+/* ------------------------------------------------------------------ key shapes */
+
+const SPKI_HEAD: number[] = [0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00]
+
+/** Re-encode a raw Ed25519 key as the SubjectPublicKeyInfo whose digest is the trust anchor. This
+ *  is the whole reason the pair request carries the raw key: both ends must reach the same 44 bytes
+ *  or the fingerprint each side computes is about a different object. */
+function spkiOfRaw(raw: Uint8Array): Uint8Array {
+	if (raw.length != 32) {
+		return new Uint8Array(0)
+	}
+	const spki = new Uint8Array(44)
+	for (let i = 0; i < 12; i++) {
+		spki[i] = SPKI_HEAD[i]
+	}
+	for (let i = 0; i < 32; i++) {
+		spki[12 + i] = raw[i]
+	}
+	return spki
+}
+
+const B64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+
+/** base64 without a platform decoder: `atob` is not typed in UTS, and a receiver that cannot decode
+ *  a key would have to either trust it or refuse every peer. */
+function fromBase64(text: string): Uint8Array | null {
+	let clean = text
+	while (clean.length > 0 && clean.charAt(clean.length - 1) == '=') {
+		clean = clean.substring(0, clean.length - 1)
+	}
+	if (clean.length == 0 || clean.length > 128) {
+		return null
+	}
+	const out = new Uint8Array(Math.floor(clean.length * 3 / 4))
+	let acc = 0
+	let bits = 0
+	let at = 0
+	for (let i = 0; i < clean.length; i++) {
+		const v = B64_ALPHABET.indexOf(clean.charAt(i))
+		if (v < 0) {
+			return null
+		}
+		acc = (acc << 6) | v
+		bits = bits + 6
+		if (bits >= 8) {
+			bits = bits - 8
+			out[at] = (acc >> bits) & 0xff
+			at = at + 1
+			acc = acc & ((1 << bits) - 1)
+		}
+	}
+	if (at == out.length) {
+		return out
+	}
+	return out.subarray(0, at)
+}
+
+export function digestHex(buf: ArrayBuffer, cb: (hex: string) => void): void {
+	cb(hexOf(sha256Bytes(new Uint8Array(buf))))
+}
+
+/* --------------------------------------------------------------------- digest self-check */
+
+/** The padding boundaries - 55/56, 63/64/65, 119/120, 127/128/129 - are where a hand-written
+ *  SHA-256 actually breaks, so these are hashlib outputs for the same byte pattern, kept here as
+ *  an oracle. 'abc' is the published NIST vector. */
+function pattern(n: number): Uint8Array {
+	const out = new Uint8Array(n)
+	for (let i = 0; i < n; i++) {
+		out[i] = (i * 7 + 3) % 256
+	}
+	return out
+}
+
+const VECTOR_LEN: number[] = [0, 1, 3, 55, 56, 57, 63, 64, 65, 119, 120, 127, 128, 129, 1000]
+const VECTOR_HEX: string[] = [
+	'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+	'084fed08b978af4d7d196a7446a86b58009e636b611db16211b65a9aadff29c5',
+	'6ab0dba1f4f1dfbb37b4f9eeb092c09fca4900ad32bdcd147d8dde35d6c87c35',
+	'e7313d333c272e639f790978283f9eb392e843d0f29b7016828bb1daa4aac70b',
+	'4324d65f3c103567f5589c710bc08f8523f929a9272e3af36fc968e52abc6c27',
+	'35df609437dcfea3279283ab79fd554e2bf78f8f7ae2de532d8ee300b09e8f73',
+	'81c80242132f230c3bd41b3e63bbcff16107339549214a99614ff26664625055',
+	'39e3d7b6b5d075d37d053ad89b24b41bef4f3c29760c84447cab3f3be1882241',
+	'aacca6ff74fdbb296d165a45cecfa04e5127bc008770fbbdd48006f2d2fae95e',
+	'9ce7368e4daf32341631b492e80359dc9f594b48453cd0dd5bf0b19279cc177e',
+	'7836b787757e95e58b3ca5aec90b1b004e8deba1e50e9675af9cabf1a13a04b5',
+	'a8d23e75d936f303d248888d9b165ee543f4cbafcad3c9dd2a79bd84faa11d07',
+	'd2742f1f4ac6bb7ca2b239ee18402ba8b3f9f8e652d2a72973c2b9ba11c08cf6',
+	'307f8fc2c1622b92762e818d39a185d4d667ad49a4b07ceae1f4afa008a93ec4',
+	'1e9bc38cbf860b9ec31918b065f9b52476c549a782e0e7990bed8ce3868d2371'
+]
+
+export function shaSelfTest(): string {
+	const out: string[] = []
+	let bad = 0
+	for (let i = 0; i < VECTOR_LEN.length; i++) {
+		const mine = hexOf(sha256Bytes(pattern(VECTOR_LEN[i])))
+		if (mine == VECTOR_HEX[i]) {
+			out.push(VECTOR_LEN[i].toString() + ' 字节 一致')
+		} else {
+			bad = bad + 1
+			out.push(VECTOR_LEN[i].toString() + ' 字节 不符：' + mine)
+		}
+	}
+	const abc = hexOf(sha256Bytes(utf8('abc')))
+	if (abc == 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad') {
+		out.push('abc 一致（NIST 公开向量）')
+	} else {
+		bad = bad + 1
+		out.push('abc 不符：' + abc)
+	}
+	out.push(bad == 0 ? 'SHA-256 自检 16/16 通过' : 'SHA-256 自检失败 ' + bad.toString() + ' 项')
+	return out.join('\n')
+}
+
+/* ------------------------------------------------------------------------ file access */
+
+const fileCache = new Map<string, Uint8Array>()
+
+function nameType(name: string): string {
+	const dot = name.lastIndexOf('.')
+	if (dot < 0) {
+		return 'application/octet-stream'
+	}
+	const ext = name.substring(dot + 1).toLowerCase()
+	if (ext == 'txt' || ext == 'md' || ext == 'log') {
+		return 'text/plain'
+	}
+	if (ext == 'png' || ext == 'jpg' || ext == 'jpeg' || ext == 'gif' || ext == 'webp') {
+		return 'image/' + (ext == 'jpeg' ? 'jpg' : ext)
+	}
+	if (ext == 'zip') {
+		return 'application/zip'
+	}
+	if (ext == 'json') {
+		return 'application/json'
+	}
+	return 'application/octet-stream'
+}
+
+function loadFile(path: string, cb: (bytes: Uint8Array | null, message: string) => void): void {
+	const cached = fileCache.get(path)
+	if (cached != null) {
+		cb(cached, '')
+		return
+	}
+	const req = fetch(path)
+	if (req == null) {
+		cb(null, '浏览器未能打开这个文件地址')
+		return
+	}
+	req.then((res: Response): Promise<ArrayBuffer> => {
+		return res.arrayBuffer()
+	}).then((buf: ArrayBuffer): void => {
+		const bytes = new Uint8Array(buf)
+		fileCache.set(path, bytes)
+		cb(bytes, '')
+	}).catch((err: any): void => {
+		cb(null, '' + err)
+	})
+}
+
+export function prepareFile(
+	path: string,
+	relpath: string,
+	cb: (ok: boolean, id: string, size: number, sha256: string, mtime: number, type: string, message: string) => void
+): void {
+	loadFile(path, function (bytes: Uint8Array | null, message: string) {
+		if (bytes == null) {
+			cb(false, '', 0, '', 0, '', message)
+			return
+		}
+		const id = hexOf(randomBytes(8))
+		const sha = hexOf(sha256Bytes(bytes))
+		const mtime = Math.floor(Date.now() / 1000)
+		cb(true, id, bytes.length, sha, mtime, nameType(relpath), '')
+	})
+}
+
+export function readChunk(path: string, offset: number, length: number, cb: (buf: ArrayBuffer | null, message: string) => void): void {
+	loadFile(path, function (bytes: Uint8Array | null, message: string) {
+		if (bytes == null) {
+			cb(null, message)
+			return
+		}
+		const end = offset + length
+		const slice = bytes.subarray(offset, end > bytes.length ? bytes.length : end)
+		const copy = new Uint8Array(slice.length)
+		copy.set(slice)
+		cb(copy.buffer as ArrayBuffer, '')
+	})
+}
+
+/* -------------------------------------------------------------------- the stand-in peer */
+
+class DemoOffer {
+	offerId: string = ''
+	files: UTSJSONObject[] = []
+	chunks: Map<string, Map<number, Uint8Array>> = new Map()
+}
+
+class DemoPeer {
+	code: string = ''
+	passphrase: string = ''
+	fingerprint: string = ''
+	token: string = ''
+	paired: boolean = false
+	/** Whose session this stand-in currently holds, so a refusal can name the holder like the PC does. */
+	pairedName: string = ''
+	offers: Map<string, DemoOffer> = new Map()
+	fault: string = ''
+	chunkFaultUsed: boolean = false
+}
+
+const peer = new DemoPeer()
+/** The key that was trusted at the last successful pairing - the stand-in for the phone's trust
+ *  store, and it survives a peer restart exactly like the real one does. */
+let pinnedFp = ''
+/** The other half of the trust story: what the *demo PC* pinned about this browser. It is the pair
+ *  request's base64 SPKI, the only identity a stand-in with no TLS handshake has. */
+let trustedKey = ''
+
+function newCode(): string {
+	const digits = '0123456789'
+	let out = ''
+	// Six, because protocol.json says so (pair_code_digits); a shorter code here would let the page
+	// accept something the real PC would never issue.
+	for (let i = 0; i < 6; i++) {
+		out = out + digits.charAt(Math.floor(Math.random() * 10))
+	}
+	return out
+}
+
+function resetPeer(): void {
+	peer.code = newCode()
+	peer.passphrase = newPassphrase(PASSPHRASE_CHARS)
+	peer.fingerprint = hexOf(sha256Bytes(utf8('chuanshu-demo-pc|' + peer.code)))
+	peer.token = ''
+	peer.paired = false
+	peer.offers = new Map()
+	peer.fault = ''
+	peer.chunkFaultUsed = false
+}
+
+export function demoPeer(): UTSJSONObject {
+	if (peer.code == '') {
+		resetPeer()
+	}
+	const out: UTSJSONObject = { host: '127.0.0.1', port: 43720, code: peer.code, passphrase: peer.passphrase, fingerprint: peer.fingerprint, name: 'PC 演示机' }
+	return out
+}
+
+/** The pairing payload a real PC paints as a QR, so pasting in a browser does what scanning does on
+ *  a phone. Same fields, same order: h, p, v, f, c, k. */
+export function demoQrUrl(): string {
+	if (peer.code == '') {
+		resetPeer()
+	}
+	return 'chuanshu://p?h=127.0.0.1&p=43720&v=1&f=' + peer.fingerprint + '&c=' + peer.code + '&k=' + peer.passphrase
+}
+
+export function setDemoFault(fault: string): void {
+	if (peer.code == '') {
+		resetPeer()
+	}
+	peer.fault = fault
+	peer.chunkFaultUsed = false
+}
+
+/** Restarting the peer rotates its key and code but deliberately keeps our pin, which is what a
+ *  real rekey looks like from this side: the next connection is refused before any endpoint runs. */
+export function demoRestart(): void {
+	resetPeer()
+}
+
+/** A restart that keeps the key: the token dies, every authed endpoint answers NOT_PAIRED, and the
+ *  sender is meant to repair it by signature alone. spec §3 says the user must not see this. */
+export function demoExpireToken(): void {
+	peer.token = ''
+	peer.paired = false
+	peer.offers = new Map()
+}
+
+/** What the PC app's "撤销已配对设备" does, so a demo restart can be undone. */
+export function demoUnpin(): void {
+	pinnedFp = ''
+	trustedKey = ''
+}
+
+export function pinnedFingerprint(): string {
+	return pinnedFp
+}
+
+function reply(status: number, body: UTSJSONObject, cb: (status: number, body: string) => void): void {
+	cb(status, JSON.stringify(body))
+}
+
+function failure(code: string, detail: UTSJSONObject | null, status: number, cb: (status: number, body: string) => void): void {
+	const body: UTSJSONObject = detail == null ? { code: code } : { code: code, detail: detail }
+	reply(status, body, cb)
+}
+
+function chunkCountOf(size: number): number {
+	if (size <= 0) {
+		return 0
+	}
+	return Math.floor((size + DEMO_CHUNK_SIZE - 1) / DEMO_CHUNK_SIZE)
+}
+
+function offerPayload(offer: DemoOffer): UTSJSONObject {
+	const list: UTSJSONObject[] = []
+	for (let i = 0; i < offer.files.length; i++) {
+		const file = offer.files[i]
+		const id = file.getString('id', '')
+		const size = file.getNumber('size', 0)
+		const stored = offer.chunks.get(id)
+		const have = stored == null ? 0 : stored.size
+		const missing: number[] = []
+		for (let k = 0; k < chunkCountOf(size); k++) {
+			if (stored == null || !stored.has(k)) {
+				missing.push(k)
+			}
+		}
+		const entry: UTSJSONObject = { id: id, received: have, missing: missing }
+		list.push(entry)
+	}
+	return { offer_id: offer.offerId, accepted: true, files: list } as UTSJSONObject
+}
+
+function routeOffer(body: UTSJSONObject, cb: (status: number, body: string) => void): void {
+	const offerId = body.getString('offer_id', '')
+	const files = body.getArray('files')
+	if (offerId == '' || files == null || files.length == 0) {
+		failure('UNSUPPORTED_PROTOCOL', { reason: 'offer has no id or files' } as UTSJSONObject, 400, cb)
+		return
+	}
+	const known = peer.offers.get(offerId)
+	if (known != null) {
+		reply(200, offerPayload(known), cb)
+		return
+	}
+	if (peer.fault == 'DECLINED') {
+		failure('DECLINED', null, 403, cb)
+		return
+	}
+	const list: UTSJSONObject[] = []
+	for (let i = 0; i < files.length; i++) {
+		list.push(files[i] as UTSJSONObject)
+	}
+	const offer = new DemoOffer()
+	offer.offerId = offerId
+	offer.files = list
+	peer.offers.set(offerId, offer)
+	reply(200, offerPayload(offer), cb)
+}
+
+function routeChunk(parts: string[], body: ArrayBuffer, sha: string, cb: (status: number, body: string) => void): void {
+	const offerId = parts[3]
+	const fileId = parts[5]
+	const index = Math.floor(parseFloat(parts[6]))
+	const offer = peer.offers.get(offerId)
+	if (offer == null) {
+		failure('OFFER_UNKNOWN', { offer_id: offerId } as UTSJSONObject, 404, cb)
+		return
+	}
+	let file: UTSJSONObject | null = null
+	for (let i = 0; i < offer.files.length; i++) {
+		if (offer.files[i].getString('id', '') == fileId) {
+			file = offer.files[i]
+		}
+	}
+	if (file == null) {
+		failure('OFFER_UNKNOWN', { file_id: fileId } as UTSJSONObject, 404, cb)
+		return
+	}
+	const size = file!.getNumber('size', 0)
+	const count = chunkCountOf(size)
+	if (index < 0 || index >= count) {
+		failure('BAD_CHUNK_INDEX', { index: index, count: count } as UTSJSONObject, 400, cb)
+		return
+	}
+	const data = new Uint8Array(body)
+	const want = Math.min(DEMO_CHUNK_SIZE, size - index * DEMO_CHUNK_SIZE)
+	if (data.length != want) {
+		failure('CHUNK_DIGEST_MISMATCH', { reason: 'length', got: data.length, want: want } as UTSJSONObject, 422, cb)
+		return
+	}
+	const digest = hexOf(sha256Bytes(data))
+	if (sha != '' && sha != digest) {
+		failure('CHUNK_DIGEST_MISMATCH', { index: index, expected: sha } as UTSJSONObject, 422, cb)
+		return
+	}
+	// One injected failure, then it behaves: the client's retry path is what this tests.
+	if (peer.fault == 'CHUNK_DIGEST_MISMATCH' && !peer.chunkFaultUsed) {
+		peer.chunkFaultUsed = true
+		failure('CHUNK_DIGEST_MISMATCH', { index: index, injected: true } as UTSJSONObject, 422, cb)
+		return
+	}
+	let stored = offer.chunks.get(fileId)
+	if (stored == null) {
+		stored = new Map()
+		offer.chunks.set(fileId, stored)
+	}
+	stored!.set(index, data)
+	reply(200, { index: index, stored: true } as UTSJSONObject, cb)
+}
+
+function routeFinalize(offerId: string, cb: (status: number, body: string) => void): void {
+	const offer = peer.offers.get(offerId)
+	if (offer == null) {
+		failure('OFFER_UNKNOWN', { offer_id: offerId } as UTSJSONObject, 404, cb)
+		return
+	}
+	const verified: UTSJSONObject[] = []
+	for (let i = 0; i < offer.files.length; i++) {
+		const file = offer.files[i]
+		const id = file.getString('id', '')
+		const relpath = file.getString('relpath', '')
+		const size = file.getNumber('size', 0)
+		const count = chunkCountOf(size)
+		const stored = offer.chunks.get(id)
+		const missing: number[] = []
+		for (let k = 0; k < count; k++) {
+			if (stored == null || !stored.has(k)) {
+				missing.push(k)
+			}
+		}
+		let ok = missing.length == 0
+		if (ok) {
+			const joined = new Uint8Array(size)
+			let cursor = 0
+			for (let k = 0; k < count; k++) {
+				const part = stored!.get(k)!
+				joined.set(part, cursor)
+				cursor = cursor + part.length
+			}
+			ok = hexOf(sha256Bytes(joined)) == file.getString('sha256', '')
+		}
+		if (ok && peer.fault == 'FILE_DIGEST_MISMATCH') {
+			ok = false
+		}
+		const entry: UTSJSONObject = { id: id, ok: ok, missing: missing, path: ok ? '/模拟接收目录/' + relpath : null }
+		verified.push(entry)
+	}
+	reply(200, { offer_id: offerId, verified: verified } as UTSJSONObject, cb)
+}
+
+function routePair(json: string, cb: (status: number, body: string) => void): void {
+	const body = JSON.parse(json) as UTSJSONObject | null
+	if (body == null) {
+		failure('NOT_PAIRED', { reason: 'body is not a JSON object' } as UTSJSONObject, 403, cb)
+		return
+	}
+	const peerId = body!.getString('peer_id', '')
+	const nonce = body!.getString('nonce', '')
+	const key = body!.getString('public_key', '')
+	const signature = body!.getString('signature', '')
+	const code = body!.getString('code', '')
+	if (peerId == '' || nonce == '' || key == '' || signature == '') {
+		failure('NOT_PAIRED', { reason: 'pair request is incomplete' } as UTSJSONObject, 403, cb)
+		return
+	}
+	if (peer.fault == 'BAD_PAIR_CODE') {
+		failure('BAD_PAIR_CODE', null, 403, cb)
+		return
+	}
+	// spec §3: a key this receiver already pinned may re-pair on its signature alone, with no code,
+	// which is how a lost token is repaired without ever asking the user to look at the PC again.
+	const known = trustedKey != '' && trustedKey == key
+	// One peer at a time: while a session is live, a different key is refused before it gets to
+	// guess anything. The stand-in has one slot, so this is the rule rather than a simulation of it.
+	if (!known && peer.paired && trustedKey != '') {
+		failure('PEER_BUSY', { reason: 'one peer at a time', peer: peer.pairedName } as UTSJSONObject, 429, cb)
+		return
+	}
+	if (!known && code != peer.code) {
+		failure('BAD_PAIR_CODE', null, 403, cb)
+		return
+	}
+	// An absent key means a sender with no passphrase to offer, which is a build from before it
+	// existed and is authenticated by the code alone.
+	if (!known && body!.get('secret') != null && body!.getString('secret', '') != peer.passphrase) {
+		failure('BAD_PAIR_CODE', { reason: 'passphrase' } as UTSJSONObject, 403, cb)
+		return
+	}
+	const resumed = known
+	peer.token = hexOf(sha256Bytes(utf8(peerId + '|' + nonce)))
+	peer.paired = true
+	peer.pairedName = body!.getString('name', '')
+	pinnedFp = peer.fingerprint
+	trustedKey = key
+	reply(200, {
+		token: peer.token,
+		peer_id: 'pc-demo-01',
+		name: 'PC 演示机',
+		protocol_version: 1,
+		fingerprint: peer.fingerprint,
+		resumed: resumed
+	} as UTSJSONObject, cb)
+}
+
+export function request(
+	method: string,
+	host: string,
+	port: number,
+	path: string,
+	jsonBody: string,
+	token: string,
+	pinFpHex: string,
+	body: ArrayBuffer,
+	sha: string,
+	cb: (status: number, resBody: string) => void
+): void {
+	if (peer.code == '') {
+		resetPeer()
+	}
+	// The browser cannot pin, but the client still has to survive a peer whose key does not match:
+	// refuse the same way a failed SPKI comparison would on the phone.
+	if (pinFpHex != '' && pinFpHex != peer.fingerprint) {
+		failure('TLS_PIN_MISMATCH', { expected: pinFpHex, got: peer.fingerprint } as UTSJSONObject, 0, cb)
+		return
+	}
+	if (pinnedFp != '' && pinnedFp != peer.fingerprint) {
+		failure('TLS_PIN_MISMATCH', { pinned: pinnedFp, got: peer.fingerprint } as UTSJSONObject, 0, cb)
+		return
+	}
+	const parts = path.split('?')[0].split('/')
+	if (method == 'GET' && path == '/v1/hello') {
+		reply(200, {
+			peer_id: 'pc-demo-01',
+			name: 'PC 演示机',
+			protocol_version: 1,
+			compatible_versions: [1],
+			features: ['resume', 'chunk-hash', 'directory'],
+			port: port,
+			fingerprint: peer.fingerprint
+		} as UTSJSONObject, cb)
+		return
+	}
+	if (method == 'POST' && path == '/v1/pair') {
+		routePair(jsonBody, cb)
+		return
+	}
+	if (token != peer.token || token == '') {
+		failure('NOT_PAIRED', null, 403, cb)
+		return
+	}
+	if (method == 'POST' && path == '/v1/offer') {
+		const parsed = JSON.parse(jsonBody) as UTSJSONObject | null
+		if (parsed == null) {
+			failure('UNSUPPORTED_PROTOCOL', { reason: 'body is not a JSON object' } as UTSJSONObject, 400, cb)
+			return
+		}
+		routeOffer(parsed!, cb)
+		return
+	}
+	if (parts[0] == '' && parts[1] == 'v1' && parts[2] == 'offer') {
+		if (method == 'GET' && parts[4] == 'state') {
+			const offer = peer.offers.get(parts[3])
+			if (offer == null) {
+				failure('OFFER_UNKNOWN', { offer_id: parts[3] } as UTSJSONObject, 404, cb)
+				return
+			}
+			reply(200, offerPayload(offer!), cb)
+			return
+		}
+		if (method == 'POST' && parts[4] == 'finalize') {
+			routeFinalize(parts[3], cb)
+			return
+		}
+		if (method == 'PUT' && parts[4] == 'chunk' && parts.length == 7) {
+			routeChunk(parts, body, sha, cb)
+			return
+		}
+		if (method == 'DELETE') {
+			peer.offers.delete(parts[3])
+			reply(200, { offer_id: parts[3], dropped: true } as UTSJSONObject, cb)
+			return
+		}
+	}
+	failure('OFFER_UNKNOWN', { path: method + ' ' + path } as UTSJSONObject, 404, cb)
+}
+
+/* ================================================== this device as a receiver */
+
+const recvInbox = newInbox()
+/** The stand-in for filesDir. A chunk written here is only as durable as the tab, which is enough to
+ *  drive the state machine and nowhere near enough to prove the file system - so the offset writes
+ *  and the whole-file re-read are the parts worth reading carefully, and the durability they claim is
+ *  still device work. */
+const recvStore = new Map<string, Uint8Array>()
+let recvFault = ''
+
+function nowSeconds(): number {
+	return Math.floor(Date.now() / 1000)
+}
+
+function receiverSelf(): LocalPeer {
+	ensureSelf()
+	const info = uni.getSystemInfoSync()
+	const self = new LocalPeer()
+	self.peerId = myPeerId
+	self.name = '浏览器 · ' + info.browserName
+	self.fingerprint = myFp
+	self.port = TRANSPORT_PORT
+	return self
+}
+
+const recvHex: HexFn = (buf: ArrayBuffer): string => {
+	return hexOf(sha256Bytes(new Uint8Array(buf)))
+}
+
+const recvKeyFp: KeyFpFn = (publicKeyB64: string): string => {
+	const raw = fromBase64(publicKeyB64)
+	if (raw == null) {
+		return ''
+	}
+	const spki = spkiOfRaw(raw!)
+	if (spki.length != 44) {
+		return ''
+	}
+	return hexOf(sha256Bytes(spki))
+}
+
+/** The one assertion a browser can make about a signature: it is the digest of exactly the message
+ *  the sender claimed to sign, under a key that decodes. Real Ed25519 verification is app-android
+ *  work and this stand-in must never be described as if it proved the crypto. */
+const recvVerify: VerifyFn = (publicKeyB64: string, message: string, signatureB64: string): boolean => {
+	if (recvKeyFp(publicKeyB64) == '') {
+		return false
+	}
+	const sig = fromBase64(signatureB64)
+	if (sig == null || sig!.length != 32) {
+		return false
+	}
+	const want = sha256Bytes(utf8(message))
+	for (let i = 0; i < 32; i++) {
+		if (sig![i] != want[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+const recvPrepare: PrepareFn = (relpath: string, size: number): string => {
+	if (recvFault == 'STORAGE_FULL') {
+		return ''
+	}
+	recvStore.set(relpath, new Uint8Array(size))
+	return '/模拟接收目录/' + relpath
+}
+
+const recvWrite: WriteFn = (relpath: string, offset: number, buf: ArrayBuffer): string => {
+	const target = recvStore.get(relpath)
+	if (target == null) {
+		return '目标文件还没有分配'
+	}
+	if (recvFault == 'WRITE_FAIL') {
+		return '写入失败（注入）'
+	}
+	const have = target!
+	const src = new Uint8Array(buf)
+	if (offset + src.length > have.length) {
+		return '写入超出文件末尾'
+	}
+	for (let i = 0; i < src.length; i++) {
+		have[offset + i] = src[i]
+	}
+	return ''
+}
+
+const recvDigestFile: DigestFileFn = (relpath: string): string => {
+	const bytes = recvStore.get(relpath)
+	if (bytes == null) {
+		return ''
+	}
+	return hexOf(sha256Bytes(bytes!))
+}
+
+const recvDrop: DropFn = (relpath: string): void => {
+	recvStore.delete(relpath)
+}
+
+function askOn(inbox: Inbox, client: string, method: string, path: string, jsonBody: string, token: string, body: ArrayBuffer, sha: string): WireReply {
+	const req = new Req()
+	req.method = method
+	req.path = path
+	req.json = jsonBody
+	req.token = token
+	req.body = body
+	req.sha = sha
+	req.client = client
+	return handleReceive(inbox, receiverSelf(), nowSeconds(), req, recvHex, recvKeyFp, recvVerify, recvPrepare, recvWrite, recvDigestFile, recvDrop)
+}
+
+const noopCb: ReplyCallback = (status: number, body: string): void => {}
+
+/** The offer is the only endpoint that can wait for a person, so it is the only one that can leave a
+ *  sender's reply callback parked here. One slot: a second concurrent offer is answered PEER_BUSY,
+ *  which is what the contract's own vocabulary says about a receiver with its hands full. */
+let pendingOfferId = ''
+let pendingCb: ReplyCallback = noopCb
+
+/* --------------------------------------------- the peer that sends *to* this device */
+
+const SIM_PEER_ID = 'pc-demo-01'
+const SIM_NAME = 'PC 演示机'
+const SIM_TEXT = 'pc-备忘.txt'
+const SIM_BIG = 'pc-大块.bin'
+
+let simRaw = new Uint8Array(32)
+let simFp = ''
+const simBytes = new Map<string, Uint8Array>()
+
+function ensureSimPc(): void {
+	if (simFp != '') {
+		return
+	}
+	simRaw = randomBytes(32)
+	simFp = hexOf(sha256Bytes(spkiOfRaw(simRaw)))
+}
+
+const simTakeSelf: (cb: SelfCallback) => void = (cb: SelfCallback): void => {
+	ensureSimPc()
+	cb(SIM_PEER_ID, SIM_NAME, simFp)
+}
+
+const simSignPair: (message: string, cb: SignCallback) => void = (message: string, cb: SignCallback): void => {
+	ensureSimPc()
+	cb(b64(simRaw), b64(sha256Bytes(utf8(message))))
+}
+
+function simFileOf(relpath: string): Uint8Array {
+	const cached = simBytes.get(relpath)
+	if (cached != null) {
+		return cached!
+	}
+	let out = new Uint8Array(0)
+	if (relpath.indexOf('大块') >= 0) {
+		// Deliberately one chunk plus a tail, so chunkSizeAt's odd last size is exercised and not
+		// just the round case.
+		out = new Uint8Array(CHUNK_SIZE + 1000)
+		for (let i = 0; i < out.length; i++) {
+			out[i] = (i * 31 + 7) % 256
+		}
+	} else {
+		const line = utf8('传书接收自测：这一行重复十二次，凑成一个不到一个分块的小文件。\n')
+		out = new Uint8Array(line.length * 12)
+		for (let k = 0; k < 12; k++) {
+			for (let i = 0; i < line.length; i++) {
+				out[k * line.length + i] = line[i]
+			}
+		}
+	}
+	simBytes.set(relpath, out)
+	return out
+}
+
+let senderFault = ''
+let chunkDigestFaultLeft = 0
+
+const simPrepareFile: (path: string, relpath: string, cb: MetaCallback) => void = (path: string, relpath: string, cb: MetaCallback): void => {
+	const bytes = simFileOf(path)
+	cb(true, hexOf(randomBytes(8)), bytes.length, hexOf(sha256Bytes(bytes)), Math.floor(Date.now() / 1000), nameType(relpath), '')
+}
+
+const simReadChunk: (path: string, offset: number, length: number, cb: BufferCallback) => void = (path: string, offset: number, length: number, cb: BufferCallback): void => {
+	const all = simFileOf(path)
+	const end = offset + length
+	const src = all.subarray(offset, end > all.length ? all.length : end)
+	const copy = new Uint8Array(src.length)
+	copy.set(src)
+	// One flipped byte under an honest chunk digest: every chunk then verifies, and only the
+	// whole-file re-read at finalize can catch it. That is exactly the case FILE_DIGEST_MISMATCH
+	// exists for, and the only way to show a receiver catching a corruption no single chunk admits.
+	if (senderFault == 'BAD_FILE' && offset == 0 && copy.length > 0) {
+		copy[0] = (copy[0] + 1) % 256
+	}
+	cb(copy.buffer as ArrayBuffer, '')
+}
+
+const simDigestHex: (buf: ArrayBuffer, cb: HexCallback) => void = (buf: ArrayBuffer, cb: HexCallback): void => {
+	const h = hexOf(sha256Bytes(new Uint8Array(buf)))
+	if (chunkDigestFaultLeft > 0) {
+		chunkDigestFaultLeft = chunkDigestFaultLeft - 1
+		const alt = h.charAt(0) == '0' ? '1' : '0'
+		cb(alt + h.substring(1))
+		return
+	}
+	cb(h)
+}
+
+const simCall: Caller = (method: string, path: string, jsonBody: string, token: string, body: ArrayBuffer, sha: string, cb: ReplyCallback): void => {
+	const reply = askOn(recvInbox, SIM_PEER_ID, method, path, jsonBody, token, body, sha)
+	if (!reply.pending) {
+		cb(reply.status, reply.body)
+		return
+	}
+	if (path != '/v1/offer') {
+		cb(429, JSON.stringify({ code: 'PEER_BUSY', detail: { reason: 'only an offer can await a decision' } } as UTSJSONObject))
+		return
+	}
+	const parsed = parseJson(jsonBody)
+	const offerId = parsed == null ? '' : parsed!.getString('offer_id', '')
+	if (pendingOfferId != '' && pendingOfferId != offerId) {
+		cb(429, JSON.stringify({ code: 'PEER_BUSY', detail: { reason: 'another offer still awaits a decision' } } as UTSJSONObject))
+		return
+	}
+	pendingOfferId = offerId
+	pendingCb = cb
+}
+
+let simSession: PeerSession | null = null
+
+export function setSenderFault(fault: string): void {
+	senderFault = fault
+	chunkDigestFaultLeft = 0
+}
+
+/** Receiver-side faults, so the 507 path and its rollback are not left untested just because a
+ *  browser never runs out of memory. */
+export function setReceiveFault(fault: string): void {
+	recvFault = fault
+}
+
+export function demoPcConnected(): boolean {
+	return simSession != null
+}
+
+export function receiveCode(): string {
+	return currentPairCode(recvInbox, nowSeconds())
+}
+
+export function receivePassphrase(): string {
+	return passphraseOf(recvInbox, nowSeconds())
+}
+
+/** Fresh code and passphrase, by the user's hand only. Pinned peers and live sessions are untouched.
+ *  Same name and return shape as the phone hosts, because the page calls it without asking which
+ *  platform it is on. */
+export function receiveRotatePairing(): string {
+	rotatePairing(recvInbox, nowSeconds())
+	return '已换一组配对码和密码'
+}
+
+/** Say who this device dialled, so the one-session rule guards the door it goes out of as well as
+ *  the one it is dialled in through (spec §3). The page calls it on connect and on disconnect. */
+export function receiveHoldSlot(fingerprint: string): void {
+	holdSlotFor(recvInbox, fingerprint)
+}
+
+/** The code with its last digit changed: guaranteed different, so the wrong-code path is testable
+ *  without a text box the user has to mis-type on purpose. */
+export function receiveWrongCode(): string {
+	const code = currentPairCode(recvInbox, nowSeconds())
+	const last = code.charAt(code.length - 1)
+	const alt = last == '9' ? '8' : '9'
+	return code.substring(0, code.length - 1) + alt
+}
+
+export function receiveSnapshot(): ReceiveSnapshot {
+	return snapshot(recvInbox, nowSeconds())
+}
+
+export function demoPcConnect(useCode: string, write: Writer, done: ConnectDone): void {
+	ensureSimPc()
+	const opts = new TransferOptions()
+	opts.host = '本机接收端'
+	opts.port = TRANSPORT_PORT
+	opts.code = useCode
+	// The stand-in PC knows this device's passphrase the way a paired peer does: it reads it off
+	// the same screen. Wrong-passphrase behaviour is the receiver's self-check's job to prove.
+	opts.secret = passphraseOf(recvInbox, nowSeconds())
+	connectPeer(opts, simTakeSelf, simSignPair, simCall, write, function (ok: boolean, message: string, session: PeerSession | null): void {
+		if (ok && session != null) {
+			simSession = session
+		}
+		done(ok, message, session)
+	})
+}
+
+export function demoPcDisconnect(): void {
+	simSession = null
+}
+
+export function demoPcSend(write: Writer, progress: ProgressCallback, fileEvent: FileEvent, finish: FinishCallback): void {
+	const session = simSession
+	if (session == null) {
+		finish(false, 'PC 还没有和这台手机配对')
+		return
+	}
+	const opts = new TransferOptions()
+	opts.host = '本机接收端'
+	opts.port = TRANSPORT_PORT
+	opts.paths = [SIM_TEXT, SIM_BIG]
+	opts.relpaths = [SIM_TEXT, SIM_BIG]
+	chunkDigestFaultLeft = senderFault == 'BAD_CHUNK' ? 1 : 0
+	sendFiles(session, opts, simTakeSelf, simSignPair, simCall, simPrepareFile, simReadChunk, simDigestHex, write, progress, fileEvent, function (ok: boolean, summary: string): void {
+		chunkDigestFaultLeft = 0
+		finish(ok, summary)
+	})
+}
+
+/** The user's answer. Whatever the sender was waiting on gets its reply here, which is the moment the
+ *  wire has been holding open for. */
+export function receiveDecide(accepted: boolean): string {
+	const snap = snapshot(recvInbox, nowSeconds())
+	if (snap.pendingOfferIds.length == 0) {
+		return '现在没有等待决定的传输'
+	}
+	const offerId = snap.pendingOfferIds[0]
+	const who = snap.pendingFrom[0]
+	const reply = resolveOffer(recvInbox, offerId, accepted, recvPrepare, recvDrop)
+	if (pendingOfferId == offerId) {
+		const cb = pendingCb
+		pendingOfferId = ''
+		pendingCb = noopCb
+		cb(reply.status, reply.body)
+	}
+	if (accepted && reply.status == 200) {
+		return '已接受来自 ' + (who == '' ? '对端' : who) + ' 的传输，PC 那边现在开始推分块'
+	}
+	if (!accepted) {
+		return '已拒绝：PC 那边收到 DECLINED，这次传输没有落盘'
+	}
+	return '接受失败：' + codeOf(reply.body) + ' ' + reply.body
+}
+
+/* ------------------------------------------------------------------ receiver self-check */
+
+/** One pair request as the receiver's self-check sees it. The key is a parameter because the
+ *  refusals are about *whose* session is being asked for, and a stand-in with only one key cannot
+ *  test a second device. */
+function askPairOn(box: Inbox, client: string, useCode: string, useSecret: string, withKey: string): WireReply {
+	const nonce = randomHex(16)
+	const signature = b64(sha256Bytes(utf8(pairMessage(SIM_PEER_ID, nonce, ''))))
+	return askOn(box, client, 'POST', '/v1/pair', pairJson(SIM_PEER_ID, SIM_NAME, nonce, withKey, signature, useCode, useSecret, ''), '', new ArrayBuffer(0), '')
+}
+
+function jsonOf(reply: WireReply): UTSJSONObject | null {
+	return parseJson(reply.body)
+}
+
+function firstVerifiedOk(reply: WireReply): boolean {
+	const obj = jsonOf(reply)
+	if (obj == null) {
+		return false
+	}
+	const list = obj!.getArray('verified')
+	if (list == null || list.length == 0) {
+		return false
+	}
+	let all = true
+	for (let i = 0; i < list.length; i++) {
+		const entry = list[i] as UTSJSONObject
+		if (!entry.getBoolean('ok', false)) {
+			all = false
+		}
+	}
+	return all
+}
+
+function missingOf(reply: WireReply, fileId: string): number[] {
+	const out: number[] = []
+	const obj = jsonOf(reply)
+	if (obj == null) {
+		return out
+	}
+	const list = obj!.getArray('files')
+	if (list == null) {
+		return out
+	}
+	for (let i = 0; i < list.length; i++) {
+		const entry = list[i] as UTSJSONObject
+		if (entry.getString('id', '') == fileId) {
+			const raw = entry.get('missing')
+			if (raw == null) {
+				return out
+			}
+			const items = raw as any[]
+			for (let k = 0; k < items.length; k++) {
+				out.push(Math.floor(parseFloat(items[k].toString())))
+			}
+		}
+	}
+	return out
+}
+
+/** The scratch pair of files the self-check transfers. Kept under different names than the offers the
+ *  UI shows because both write into the same stand-in store, and a test that deletes the user's
+ *  received files would report a clean run on top of a wrecked inbox. */
+const SCRATCH_TEXT = '自测-备忘.txt'
+const SCRATCH_BIG = '自测-大块.bin'
+
+function simFilesFor(textName: string, bigName: string): CsFile[] {
+	const list: CsFile[] = []
+	const names: string[] = [textName, bigName]
+	for (let i = 0; i < names.length; i++) {
+		const bytes = simFileOf(names[i])
+		const file = new CsFile()
+		file.path = names[i]
+		file.relpath = names[i]
+		file.id = hexOf(randomBytes(8))
+		file.size = bytes.length
+		file.sha256 = hexOf(sha256Bytes(bytes))
+		file.mtime = Math.floor(Date.now() / 1000)
+		file.type = nameType(names[i])
+		list.push(file)
+	}
+	return list
+}
+
+function sliceOf(file: Uint8Array, start: number, length: number): Uint8Array {
+	const out = new Uint8Array(length)
+	out.set(file.subarray(start, start + length))
+	return out
+}
+
+/** Runs the receiver's own semantics against a scratch inbox so nothing it proves here depends on the
+ *  offers shown in the UI. Every line is an assertion the page can be checked against. */
+export function receiveSelfReport(): string {
+	ensureSimPc()
+	const out: string[] = []
+	const box = newInbox()
+	let token = ''
+	let pass = 0
+	let fail = 0
+	const check = (label: string, ok: boolean) => {
+		if (ok) {
+			pass = pass + 1
+			out.push('通过 · ' + label)
+		} else {
+			fail = fail + 1
+			out.push('不符 · ' + label)
+		}
+	}
+	const ask = (method: string, path: string, jsonBody: string, body: ArrayBuffer, sha: string): WireReply => {
+		return askOn(box, SIM_PEER_ID, method, path, jsonBody, token, body, sha)
+	}
+	const codeOfReply = (reply: WireReply): string => {
+		return codeOf(reply.body)
+	}
+
+	const code = currentPairCode(box, nowSeconds())
+	const secret = passphraseOf(box, nowSeconds())
+	const wrongCode = code == '000000' ? '111111' : '000000'
+	// '!' is outside the passphrase alphabet, so it can never collide with a real one by accident.
+	const wrongSecret = '!' + secret.substring(0, PASSPHRASE_CHARS - 1)
+	const simKey = b64(simRaw)
+	// 1. five wrong codes from an unknown peer, then the lockout the PC enforces too.
+	let lockout = ''
+	for (let i = 0; i < 6; i++) {
+		lockout = codeOfReply(askPairOn(box, '203.0.113.9', wrongCode, secret, simKey))
+	}
+	check('错配对码五次后进入 PEER_BUSY', lockout == 'PEER_BUSY')
+
+	// 2. this peer's wrong code is refused, the right one pins it.
+	check('错配对码被拒 BAD_PAIR_CODE', codeOfReply(askPairOn(box, SIM_PEER_ID, wrongCode, secret, simKey)) == 'BAD_PAIR_CODE')
+	// 2b. the code alone is not enough any more: right code, wrong passphrase is the same mistake.
+	check('对的码配错的密码仍然被拒', codeOfReply(askPairOn(box, '203.0.113.11', code, wrongSecret, b64(randomBytes(32)))) == 'BAD_PAIR_CODE')
+	const first = askPairOn(box, SIM_PEER_ID, code, secret, simKey)
+	const firstObj = jsonOf(first)
+	token = firstObj == null ? '' : firstObj!.getString('token', '')
+	check('正确配对码换来会话', first.status == 200 && token != '')
+	check('首次配对 resumed=false', firstObj != null && !firstObj!.getBoolean('resumed', true))
+	check('配对回复的指纹就是本机', firstObj != null && firstObj!.getString('fingerprint', '') == receiverSelf().fingerprint)
+	// 2c. one peer at a time: while that session is live, a different key is refused in words.
+	const stranger = askPairOn(box, '203.0.113.12', code, secret, b64(randomBytes(32)))
+	check('一次只连一台：第三方被拒 PEER_BUSY',
+		codeOfReply(stranger) == 'PEER_BUSY' && detailOf(stranger.body).indexOf('one peer at a time') >= 0)
+
+	// 3. an unauthenticated request costs nothing but a 403.
+	check('无令牌请求 403 NOT_PAIRED', codeOfReply(askOn(box, SIM_PEER_ID, 'GET', '/v1/offer/x/state', '', '', new ArrayBuffer(0), '')) == 'NOT_PAIRED')
+
+	// 4. a path this end would refuse is rejected before the user is ever asked.
+	const smallBytes = simFileOf(SCRATCH_TEXT)
+	const smuggle = new CsFile()
+	smuggle.path = SCRATCH_TEXT
+	smuggle.relpath = '../坏名字.txt'
+	smuggle.id = hexOf(randomBytes(8))
+	smuggle.size = smallBytes.length
+	smuggle.sha256 = hexOf(sha256Bytes(smallBytes))
+	smuggle.mtime = Math.floor(Date.now() / 1000)
+	smuggle.type = 'text/plain'
+	const badOffer = ask('POST', '/v1/offer', offerJson(hexOf(randomBytes(8)), [smuggle], SIM_PEER_ID, SIM_NAME), new ArrayBuffer(0), '')
+	check('越界路径 PATH_REJECTED 且没有弹确认', codeOfReply(badOffer) == 'PATH_REJECTED' && !badOffer.pending)
+
+	// 5. the real offer waits for the user, then allocates and starts.
+	const files = simFilesFor(SCRATCH_TEXT, SCRATCH_BIG)
+	const offerId = hexOf(randomBytes(8))
+	const offerJsonText = offerJson(offerId, files, SIM_PEER_ID, SIM_NAME)
+	const offer = ask('POST', '/v1/offer', offerJsonText, new ArrayBuffer(0), '')
+	check('清单等待用户决定（pending）', offer.pending)
+	const decided = resolveOffer(box, offerId, true, recvPrepare, recvDrop)
+	check('接受后回 200 清单', decided.status == 200 && !decided.pending)
+	// The same offer re-sent after the decision comes back as progress, not as a second dialog.
+	const again = ask('POST', '/v1/offer', offerJsonText, new ArrayBuffer(0), '')
+	check('重复清单直接回当前进度', again.status == 200 && !again.pending)
+
+	// 6. chunks: store, reject a lying digest, reject the wrong length, and be idempotent.
+	const bigId = files[1].id
+	const bigSize = files[1].size
+	const bigCount = chunkCount(bigSize)
+	const all = simFileOf(SCRATCH_BIG)
+	const chunkPath = (fid: string, index: number): string => {
+		return '/v1/offer/' + offerId + '/chunk/' + fid + '/' + index.toString()
+	}
+	const c0 = sliceOf(all, 0, chunkSizeAt(bigSize, 0))
+	const tail = sliceOf(all, CHUNK_SIZE, chunkSizeAt(bigSize, 1))
+	check('最后一个分块是不足整块的尾巴', tail.length == 1000 && bigCount == 2)
+	const good = ask('PUT', chunkPath(bigId, 0), '', c0.buffer as ArrayBuffer, hexOf(sha256Bytes(c0)))
+	check('首个分块收下', good.status == 200)
+	const lied = ask('PUT', chunkPath(bigId, 1), '', tail.buffer as ArrayBuffer, hexOf(sha256Bytes(c0)))
+	check('校验和不符的分块被拒', lied.status == 422 && codeOfReply(lied) == 'CHUNK_DIGEST_MISMATCH')
+	const tooLong = ask('PUT', chunkPath(bigId, 1), '', c0.buffer as ArrayBuffer, '')
+	check('长度不符的分块被拒', tooLong.status == 422 && tooLong.body.indexOf('length') >= 0)
+	const outOfDay = ask('PUT', chunkPath(bigId, bigCount + 5), '', c0.buffer as ArrayBuffer, '')
+	check('越界序号 BAD_CHUNK_INDEX', codeOfReply(outOfDay) == 'BAD_CHUNK_INDEX')
+	const repeat = ask('PUT', chunkPath(bigId, 0), '', c0.buffer as ArrayBuffer, hexOf(sha256Bytes(c0)))
+	const repeatObj = jsonOf(repeat)
+	check('重发同一分块标记幂等', repeat.status == 200 && repeatObj != null && repeatObj!.getBoolean('idempotent', false))
+
+	// 7. resume: the state a restart would re-adopt is the state the sender resumes from.
+	const before = ask('GET', '/v1/offer/' + offerId + '/state', '', new ArrayBuffer(0), '')
+	const beforeMissing = missingOf(before, bigId)
+	const kept = stateAll(box)
+	restartLike(box)
+	const adopted = adoptAll(box, kept)
+	check('重启后重新接管传输', adopted == 1)
+	check('重启后会话失效 NOT_PAIRED', codeOfReply(askOn(box, SIM_PEER_ID, 'GET', '/v1/offer/' + offerId + '/state', '', '旧令牌', new ArrayBuffer(0), '')) == 'NOT_PAIRED')
+	const repair = askPairOn(box, SIM_PEER_ID, '', '', simKey)
+	const repairObj = jsonOf(repair)
+	token = repairObj == null ? '' : repairObj!.getString('token', '')
+	check('留空配对码靠签名恢复会话', repair.status == 200 && repairObj != null && repairObj!.getBoolean('resumed', false))
+	const after = ask('GET', '/v1/offer/' + offerId + '/state', '', new ArrayBuffer(0), '')
+	const afterMissing = missingOf(after, bigId)
+	check('续传缺块与重启前一致', beforeMissing.length == afterMissing.length && beforeMissing.length == 1)
+
+	// 8. finish it: the rest of the chunks, then the whole-file digest over the reassembled bytes.
+	for (let k = 1; k < bigCount; k++) {
+		const part = sliceOf(all, k * CHUNK_SIZE, chunkSizeAt(bigSize, k))
+		const pushed = ask('PUT', chunkPath(bigId, k), '', part.buffer as ArrayBuffer, hexOf(sha256Bytes(part)))
+		if (pushed.status != 200) {
+			check('补齐剩余分块', false)
+		}
+	}
+	const smallPath = '/v1/offer/' + offerId + '/chunk/' + files[0].id + '/0'
+	const smallReply = ask('PUT', smallPath, '', smallBytes.buffer as ArrayBuffer, hexOf(sha256Bytes(smallBytes)))
+	check('小文件一次成块', smallReply.status == 200)
+	const done = ask('POST', '/v1/offer/' + offerId + '/finalize', '{}', new ArrayBuffer(0), '')
+	check('整文件校验通过', done.status == 200 && firstVerifiedOk(done))
+	const doneObj = jsonOf(done)
+	const verifiedList = doneObj == null ? null : doneObj!.getArray('verified')
+	let dest = ''
+	if (verifiedList != null && verifiedList.length > 0) {
+		dest = (verifiedList[0] as UTSJSONObject).getString('path', '')
+	}
+	check('校验通过的文件带回落点', dest.indexOf(SCRATCH_TEXT) >= 0)
+
+	// 9. an unfinished delivery is cancelled and the bytes go away.
+	const halfFiles = simFilesFor(SCRATCH_TEXT, SCRATCH_BIG)
+	const halfId = hexOf(randomBytes(8))
+	const half = ask('POST', '/v1/offer', offerJson(halfId, halfFiles, SIM_PEER_ID, SIM_NAME), new ArrayBuffer(0), '')
+	check('半途传输也能等待决定', half.pending)
+	resolveOffer(box, halfId, true, recvPrepare, recvDrop)
+	const head = sliceOf(all, 0, chunkSizeAt(halfFiles[1].size, 0))
+	ask('PUT', '/v1/offer/' + halfId + '/chunk/' + halfFiles[1].id + '/0', '', head.buffer as ArrayBuffer, hexOf(sha256Bytes(head)))
+	check('取消前文件已在收件箱里', recvStore.has(halfFiles[1].relpath))
+	const cancelled = ask('DELETE', '/v1/offer/' + halfId, '', new ArrayBuffer(0), '')
+	check('取消传输带回 dropped', codeOfReply(cancelled) == '' && cancelled.status == 200)
+	check('取消后传输不再存在', codeOfReply(ask('GET', '/v1/offer/' + halfId + '/state', '', new ArrayBuffer(0), '')) == 'OFFER_UNKNOWN')
+	check('取消后不留半个文件', !recvStore.has(halfFiles[1].relpath))
+
+	// 10. the user can say no, and a full disk rolls the allocation back.
+	const noId = hexOf(randomBytes(8))
+	ask('POST', '/v1/offer', offerJson(noId, simFilesFor(SCRATCH_TEXT, SCRATCH_BIG), SIM_PEER_ID, SIM_NAME), new ArrayBuffer(0), '')
+	check('拒绝这次传输', codeOfReply(resolveOffer(box, noId, false, recvPrepare, recvDrop)) == 'DECLINED')
+	recvFault = 'STORAGE_FULL'
+	const fullId = hexOf(randomBytes(8))
+	ask('POST', '/v1/offer', offerJson(fullId, simFilesFor(SCRATCH_TEXT, SCRATCH_BIG), SIM_PEER_ID, SIM_NAME), new ArrayBuffer(0), '')
+	const full = resolveOffer(box, fullId, true, recvPrepare, recvDrop)
+	recvFault = ''
+	check('空间不足回 STORAGE_FULL', full.status == 507)
+	check('空间不足后没有留下半个传输', snapshot(box, nowSeconds()).pendingOfferIds.length == 0)
+	check('空间不足后分配好的文件也回滚了', !recvStore.has(SCRATCH_TEXT))
+
+	out.push(fail == 0 ? '接收自检 ' + pass.toString() + ' 项全部通过' : '接收自检失败 ' + fail.toString() + ' 项，通过 ' + pass.toString() + ' 项')
+	return out.join('\n')
+}

@@ -1,0 +1,141 @@
+{
+  "protocol_version": 1,
+  "compatible_versions": [
+    1
+  ],
+  "brand": {
+    "technical_name": "ChuanShu",
+    "display_name_zh": "传书",
+    "package_id": "com.chuanshu.app",
+    "mdns_service_type": "_chuanshu._tcp.local.",
+    "qr_scheme": "chuanshu://p"
+  },
+  "ports": {
+    "transport_default": 43720,
+    "discovery_udp": 43721,
+    "note": "transport_default may be taken; a peer then binds an ephemeral port and advertises the real one through mDNS TXT/UDP announce/QR. discovery_udp must stay fixed because broadcast has no other way to be found."
+  },
+  "discovery": {
+    "channels": ["mdns", "udp", "qr"],
+    "mdns_txt_fields": ["ver", "name", "fp", "ts"],
+    "udp_payload_fields": ["peer_id", "port", "v", "name", "fp", "ts"],
+    "announce_interval_s": 3,
+    "peer_expiry_s": 15,
+    "fingerprint_prefix_chars": 16,
+    "note": "Broadcast carries a fingerprint PREFIX only; the full SPKI digest comes from GET /v1/hello and must match that prefix before pairing. Presence is not trust."
+  },
+  "transport": {
+    "chunk_size": 4194304,
+    "max_parallel_chunks": 2,
+    "offer_wait_timeout_s": 60,
+    "pair_code_ttl_s": 60,
+    "pair_code_digits": 4,
+    "resume": true,
+    "hash": "sha256",
+    "tls": {
+      "min_version": "TLSv1.2",
+      "certificate": "self-signed Ed25519, CN=peer_id, 10 years",
+      "trust": "SPKI SHA-256 fingerprint pinned at first pairing"
+    }
+  },
+  "endpoints": [
+    {
+      "method": "GET",
+      "path": "/v1/hello",
+      "auth": false,
+      "purpose": "version + capability probe; the optional chunk_pace_ms says how slowly a sender must write a body bigger than one TLS record (milliseconds per 4 KiB record, absent or 0 = as fast as you like) - a Harmony receiver needs 15, below that a 4 MiB chunk arrives whole with the wrong bytes and the receiving process can die on the attempt"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/pair",
+      "auth": false,
+      "purpose": "redeem a 4-digit code, pin the fingerprint"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/offer",
+      "auth": true,
+      "purpose": "send a manifest, long-polls until the peer answers"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/offer/{offer_id}/state",
+      "auth": true,
+      "purpose": "which chunks are already on disk"
+    },
+    {
+      "method": "PUT",
+      "path": "/v1/offer/{offer_id}/chunk/{file_id}/{index}",
+      "auth": true,
+      "purpose": "one chunk, idempotent"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/offer/{offer_id}/finalize",
+      "auth": true,
+      "purpose": "verify whole-file digests"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v1/offer/{offer_id}",
+      "auth": true,
+      "purpose": "abort and drop partial data"
+    }
+  ],
+  "error_codes": {
+    "UNSUPPORTED_PROTOCOL": {
+      "http": 400,
+      "msgid": "对端版本不兼容"
+    },
+    "NOT_PAIRED": {
+      "http": 403,
+      "msgid": "尚未与这台设备配对"
+    },
+    "BAD_PAIR_CODE": {
+      "http": 403,
+      "msgid": "配对码不正确或已过期"
+    },
+    "DECLINED": {
+      "http": 403,
+      "msgid": "对方拒绝了这次传输"
+    },
+    "OFFER_UNKNOWN": {
+      "http": 404,
+      "msgid": "传输请求不存在或已结束"
+    },
+    "BAD_CHUNK_INDEX": {
+      "http": 400,
+      "msgid": "分块序号超出文件范围"
+    },
+    "CHUNK_DIGEST_MISMATCH": {
+      "http": 422,
+      "msgid": "分块校验失败"
+    },
+    "FILE_DIGEST_MISMATCH": {
+      "http": 422,
+      "msgid": "文件校验失败"
+    },
+    "PATH_REJECTED": {
+      "http": 400,
+      "msgid": "文件名被接收方拒绝"
+    },
+    "STORAGE_FULL": {
+      "http": 507,
+      "msgid": "接收方存储空间不足"
+    },
+    "PEER_BUSY": {
+      "http": 429,
+      "msgid": "对方正在处理另一个传输"
+    }
+  },
+  "relay": {
+    "reserved": true,
+    "note": "Cloud relay is built on the cloud-relay branch and must not fork this contract: the same seven endpoints are replayed through the relay, only the address resolution changes (peer_id -> relay session id)."
+  },
+  "limits": {
+    "max_files_per_offer": 2000,
+    "max_name_bytes": 255,
+    "state_flush_chunks": 1,
+    "max_path_depth": 16
+  }
+}

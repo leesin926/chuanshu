@@ -1,0 +1,1119 @@
+/** The receiving half of the protocol, written once with no platform in it. The byte store, the
+ *  digests and the signature check all arrive as parameters, so a browser can hold an offer in
+ *  memory today and app-android can hold the same offer in filesDir against a real TLS listener
+ *  later without one line of this file changing.
+ *
+ *  It mirrors app/net/receive.py endpoint for endpoint - same statuses, same rejections, same
+ *  resume shape - because the sender on the other end is the PC and cannot be talked into
+ *  accepting a different answer.
+ *
+ *  One thing the shared code cannot do is wait for a human inside a return statement. The PC blocks
+ *  in its offer handler for as long as 60 s; a phone's UI cannot block a request thread and a
+ *  browser certainly cannot block its own. So handleReceive registers the offer, answers
+ *  `pending`, and the host - which owns the reply callback - resolves it later through
+ *  resolveOffer(). On the wire nothing differs: the sender's POST /v1/offer simply takes longer. */
+import {
+	PROTOCOL_VERSION,
+	CHUNK_SIZE,
+	TRANSPORT_PORT,
+	MAX_FILES_PER_OFFER,
+	PREFIX_CHARS,
+	PAIR_CODE_DIGITS,
+	PAIR_CODE_TTL_S,
+	PAIR_CODE_STATIC,
+	PASSPHRASE_CHARS,
+	chunkCount,
+	chunkSizeAt,
+	isFullFingerprint,
+	newPassphrase,
+	pairMessage,
+	parseJson,
+	pathReject,
+	randomHex
+} from './cs-protocol.uts'
+
+/** Constants from the PC receiver: the anti-replay window, and the lockout that stops a peer
+ *  brute-forcing a six-digit code (10^6 guesses is not a theoretical risk on a LAN). */
+const REPLAY_WINDOW_S: number = 300
+const CODE_LOCK_S: number = 60
+const CODE_MAX_FAILS: number = 5
+const COMPATIBLE_VERSIONS: number[] = [1]
+
+export type HexFn = (buf: ArrayBuffer) => string
+/** base64 of the raw 32-byte Ed25519 key -> hex SHA-256 of its SPKI DER, '' when the key is
+ *  unreadable. The trust anchor is the SPKI digest, so this is the one primitive that decides
+ *  whether pairing means anything. */
+export type KeyFpFn = (publicKeyB64: string) => string
+export type VerifyFn = (publicKeyB64: string, message: string, signatureB64: string) => boolean
+/** Allocate the final file before a single chunk arrives. Returns the path the user will be shown,
+ *  or '' when there is no room - which the wire answers as STORAGE_FULL, not as a quiet truncate. */
+export type PrepareFn = (relpath: string, size: number) => string
+export type WriteFn = (relpath: string, offset: number, buf: ArrayBuffer) => string
+export type DigestFileFn = (relpath: string) => string
+export type DropFn = (relpath: string) => void
+
+/** What this device says about itself in /v1/hello and in a pair reply. */
+export class LocalPeer {
+	peerId: string = ''
+	name: string = ''
+	fingerprint: string = ''
+	port: number = TRANSPORT_PORT
+	/** How slowly a sender should write a body larger than one TLS record at this device, in milliseconds
+	 *  per 4 KiB record. 0 (or absent from the answer) means "as fast as you can". A Harmony peer measured
+	 *  needing 15: below that a 4 MiB chunk arrives whole but wrong, and the receiving process can die on
+	 *  the attempt; see protocol/spec.md §4. */
+	chunkPaceMs: number = 0
+}
+
+/** One request as the transport read it off the socket. `client` is whatever identifies the
+ *  connection for the code lockout - the PC uses the peer IP, and a phone has that too. */
+export class Req {
+	method: string = ''
+	path: string = ''
+	json: string = ''
+	token: string = ''
+	body: ArrayBuffer | null = null
+	sha: string = ''
+	client: string = ''
+}
+
+export class WireReply {
+	pending: boolean = false
+	status: number = 0
+	body: string = ''
+}
+
+class RFile {
+	id: string = ''
+	relpath: string = ''
+	size: number = 0
+	sha256: string = ''
+	mtime: number = 0
+	type: string = 'application/octet-stream'
+	/** Where the bytes actually went, only known once the offer was accepted. */
+	dest: string = ''
+	chunks: Map<number, string> = new Map()
+	/** 0 undecided, 1 verified whole, 2 rejected by finalize. */
+	verdict: number = 0
+	missingAt: number = 0
+}
+
+class ROffer {
+	offerId: string = ''
+	files: RFile[] = []
+	fromName: string = ''
+	fromFingerprint: string = ''
+	awaiting: boolean = true
+	created: number = 0
+}
+
+class Trust {
+	fingerprint: string = ''
+	peerId: string = ''
+	name: string = ''
+	publicKeyB64: string = ''
+	/** Set only for a peer whose served certificate is signed by another key (spec §3). It is what
+	 *  makes the device this end dialled and the device that dialled in one machine. */
+	tlsFingerprint: string = ''
+}
+
+class TokenEntry {
+	fingerprint: string = ''
+	token: string = ''
+}
+
+class NonceEntry {
+	nonce: string = ''
+	at: number = 0
+}
+
+class FailEntry {
+	client: string = ''
+	times: number[] = []
+}
+
+/** Everything a receiver has to remember between requests. Offers survive a process restart through
+ *  stateJson()/adopt(); sessions deliberately do not, which is what makes the silent re-pair in
+ *  cs-client.uts the recovery path rather than an edge case. */
+export class SettledOffer {
+	id: string = ''
+	status: number = 403
+	body: string = ''
+}
+
+export class Inbox {
+	offers: ROffer[] = []
+	tokens: TokenEntry[] = []
+	nonces: NonceEntry[] = []
+	fails: FailEntry[] = []
+	trusted: Trust[] = []
+	pairCode: string = ''
+	pairCodeUntil: number = 0
+	/** The second secret, minted with the code and kept as long as it is (spec §3). '' on a build
+	 *  that has no passphrase concept, which is also what makes it send none. */
+	passphrase: string = ''
+	/** Which peer this device dialled out to. The receiver is not involved in that handshake, so
+	 *  without this the one-session rule would only ever guard the door that opens inward. */
+	heldBy: string = ''
+	/** Answers a person already gave, kept by offer id and only for this session. A sender that has to
+	 *  ask again on a new connection cannot tell a decline from a delivery nobody has looked at yet, so
+	 *  without this a decline would reopen the same dialog every poll. */
+	settled: SettledOffer[] = []
+}
+
+export function newInbox(): Inbox {
+	return new Inbox()
+}
+
+export class FileRow {
+	offerId: string = ''
+	fromName: string = ''
+	relpath: string = ''
+	size: number = 0
+	type: string = ''
+	dest: string = ''
+	awaiting: boolean = false
+	verdict: number = 0
+	have: number = 0
+	count: number = 0
+	missingAt: number = 0
+}
+
+export class ReceiveSnapshot {
+	pairCode: string = ''
+	/** The second half of the promise shown on this device's own screen. */
+	passphrase: string = ''
+	/** False means this code expires and the page has to count down; true means it does not. */
+	staticCode: boolean = true
+	codeSecondsLeft: number = 0
+	/** The offers waiting on the user, oldest first. The UI decides; this end only says there is one. */
+	pendingOfferIds: string[] = []
+	pendingFrom: string[] = []
+	rows: FileRow[] = []
+	verifiedFiles: number = 0
+	rejectedFiles: number = 0
+	peers: number = 0
+	/** The peers holding a session right now - in either direction - named as they introduced
+	 *  themselves. A card that lists pinned devices and a card that lists connected ones say
+	 *  different things, and the desktop shows the connected ones. */
+	connectedNames: string[] = []
+}
+
+/** spec.json error_codes carries the HTTP status for every code; the sender checks nothing else,
+ *  so the table has to agree with it exactly. */
+function statusOf(code: string): number {
+	if (code == 'OFFER_UNKNOWN') {
+		return 404
+	}
+	if (code == 'CHUNK_DIGEST_MISMATCH' || code == 'FILE_DIGEST_MISMATCH') {
+		return 422
+	}
+	if (code == 'STORAGE_FULL') {
+		return 507
+	}
+	if (code == 'PEER_BUSY') {
+		return 429
+	}
+	if (code == 'NOT_PAIRED' || code == 'BAD_PAIR_CODE' || code == 'DECLINED') {
+		return 403
+	}
+	return 400
+}
+
+function reply(status: number, body: string): WireReply {
+	const out = new WireReply()
+	out.status = status
+	out.body = body
+	return out
+}
+
+function okWith(body: UTSJSONObject): WireReply {
+	return reply(200, JSON.stringify(body))
+}
+
+function failWith(code: string, detail: UTSJSONObject | null): WireReply {
+	const body: UTSJSONObject = detail == null ? { code: code } : { code: code, detail: detail }
+	return reply(statusOf(code), JSON.stringify(body))
+}
+
+function pendingReply(): WireReply {
+	const out = new WireReply()
+	out.pending = true
+	return out
+}
+
+function supports(version: number): boolean {
+	for (let i = 0; i < COMPATIBLE_VERSIONS.length; i++) {
+		if (COMPATIBLE_VERSIONS[i] == version) {
+			return true
+		}
+	}
+	return false
+}
+
+function newPairCode(): string {
+	const digits = '0123456789'
+	let out = ''
+	for (let i = 0; i < PAIR_CODE_DIGITS; i++) {
+		out = out + digits.charAt(Math.floor(Math.random() * 10))
+	}
+	return out
+}
+
+/** Generated on demand rather than on a timer: a phone that spends most of its life backgrounded has
+ *  no business keeping a timer alive, and the PC's current_pair_code() uses the same lazy shape.
+ *  With PAIR_CODE_STATIC the pair minted here is kept for good - the code and the passphrase are a
+ *  printable promise, not a one-time token - and only rotatePairing() below replaces them. */
+export function currentPairCode(inbox: Inbox, now: number): string {
+	if (inbox.pairCode == '' || inbox.passphrase == '') {
+		inbox.pairCode = newPairCode()
+		inbox.passphrase = newPassphrase(PASSPHRASE_CHARS)
+		inbox.pairCodeUntil = now + PAIR_CODE_TTL_S
+	} else if (!PAIR_CODE_STATIC && now > inbox.pairCodeUntil) {
+		inbox.pairCode = newPairCode()
+		inbox.pairCodeUntil = now + PAIR_CODE_TTL_S
+	}
+	return inbox.pairCode
+}
+
+export function passphraseOf(inbox: Inbox, now: number): string {
+	currentPairCode(inbox, now)
+	return inbox.passphrase
+}
+
+/** New material for both secrets. Pins and live sessions are untouched: this only changes what a
+ *  stranger has to get right before it is allowed to pin us. */
+export function rotatePairing(inbox: Inbox, now: number): void {
+	inbox.pairCode = newPairCode()
+	inbox.passphrase = newPassphrase(PASSPHRASE_CHARS)
+	inbox.pairCodeUntil = now + PAIR_CODE_TTL_S
+}
+
+function codeSecondsLeft(inbox: Inbox, now: number): number {
+	if (PAIR_CODE_STATIC) {
+		return 0
+	}
+	if (inbox.pairCode == '') {
+		return PAIR_CODE_TTL_S
+	}
+	const left = inbox.pairCodeUntil - now
+	return left < 0 ? 0 : Math.floor(left)
+}
+
+/** The peers this device is committed to: one that holds a token it was handed, plus the one this
+ *  end dialled out to. Both directions take the same single slot (spec §3). */
+export function activePeers(inbox: Inbox): string[] {
+	const out: string[] = []
+	for (let i = 0; i < inbox.tokens.length; i++) {
+		if (out.indexOf(inbox.tokens[i].fingerprint) < 0) {
+			out.push(inbox.tokens[i].fingerprint)
+		}
+	}
+	if (inbox.heldBy != '' && out.indexOf(inbox.heldBy) < 0) {
+		out.push(inbox.heldBy)
+	}
+	return out
+}
+
+/** Say who this machine already talks to, so the door it dials out of is guarded like the one it is
+ *  dialled in through. '' gives the slot back. The UI owns this: the receiver never sees an
+ *  outgoing handshake. */
+export function holdSlotFor(inbox: Inbox, fingerprint: string): void {
+	inbox.heldBy = fingerprint
+}
+
+/** Say that the machine at an address this device dialled is one it already trusts, so the door that
+ *  same machine dials *in* through opens on the signature alone.
+ *
+ *  One trust answer for both directions is what the PC has always had, and its absence here is what
+ *  makes a resumed pair deadlock: the caller keeps its pin over a restart, so it sends no code, while
+ *  this receiver - which met that caller on the way out, not on the way in - asks for one it cannot get.
+ *  `publicKeyB64` stays empty on purpose: an address being known says nothing about the key behind it,
+ *  and the code only ever stops demanding one after that key has signed something. */
+export function adoptPin(inbox: Inbox, fingerprint: string, peerId: string, name: string): void {
+	if (fingerprint.length != 64) {
+		return
+	}
+	const known = trustByFp(inbox, fingerprint)
+	if (known != null) {
+		if (peerId != '') known.peerId = peerId
+		if (name != '') known.name = name
+		return
+	}
+	const entry = new Trust()
+	entry.fingerprint = fingerprint
+	entry.peerId = peerId
+	entry.name = name
+	entry.publicKeyB64 = ''
+	inbox.trusted.push(entry)
+}
+
+/** Two numbers, one device: the identity key a peer signs with and the certificate it serves can be
+ *  different keys, and only the §3 declaration says they belong to the same machine. */
+function samePeer(inbox: Inbox, a: string, b: string): boolean {
+	if (a == '' || b == '') {
+		return false
+	}
+	if (a == b) {
+		return true
+	}
+	for (let i = 0; i < inbox.trusted.length; i++) {
+		const entry = inbox.trusted[i]
+		const leaf = entry.tlsFingerprint
+		if (leaf != '' && ((entry.fingerprint == a && leaf == b) || (entry.fingerprint == b && leaf == a))) {
+			return true
+		}
+	}
+	return false
+}
+
+function offerById(inbox: Inbox, offerId: string): ROffer | null {
+	for (let i = 0; i < inbox.offers.length; i++) {
+		if (inbox.offers[i].offerId == offerId) {
+			return inbox.offers[i]
+		}
+	}
+	return null
+}
+
+function fileById(offer: ROffer, fileId: string): RFile | null {
+	for (let i = 0; i < offer.files.length; i++) {
+		if (offer.files[i].id == fileId) {
+			return offer.files[i]
+		}
+	}
+	return null
+}
+
+function trustByFp(inbox: Inbox, fingerprint: string): Trust | null {
+	for (let i = 0; i < inbox.trusted.length; i++) {
+		if (inbox.trusted[i].fingerprint == fingerprint) {
+			return inbox.trusted[i]
+		}
+	}
+	return null
+}
+
+function fpOfToken(inbox: Inbox, token: string): string {
+	if (token == '') {
+		return ''
+	}
+	for (let i = 0; i < inbox.tokens.length; i++) {
+		if (inbox.tokens[i].token == token) {
+			return inbox.tokens[i].fingerprint
+		}
+	}
+	return ''
+}
+
+function setToken(inbox: Inbox, fingerprint: string, token: string): void {
+	for (let i = 0; i < inbox.tokens.length; i++) {
+		if (inbox.tokens[i].fingerprint == fingerprint) {
+			inbox.tokens[i].token = token
+			return
+		}
+	}
+	const entry = new TokenEntry()
+	entry.fingerprint = fingerprint
+	entry.token = token
+	inbox.tokens.push(entry)
+}
+
+/** Mirrors _prune(): both windows are sliding, and an unbounded nonce list is a memory leak an
+ *  attacker can grow by re-pairing forever. */
+function prune(inbox: Inbox, now: number): void {
+	const keptNonces: NonceEntry[] = []
+	for (let i = 0; i < inbox.nonces.length; i++) {
+		if (now - inbox.nonces[i].at < REPLAY_WINDOW_S) {
+			keptNonces.push(inbox.nonces[i])
+		}
+	}
+	inbox.nonces = keptNonces
+
+	const keptFails: FailEntry[] = []
+	for (let i = 0; i < inbox.fails.length; i++) {
+		const keptTimes: number[] = []
+		const times = inbox.fails[i].times
+		for (let k = 0; k < times.length; k++) {
+			if (now - times[k] < CODE_LOCK_S) {
+				keptTimes.push(times[k])
+			}
+		}
+		if (keptTimes.length > 0) {
+			const entry = new FailEntry()
+			entry.client = inbox.fails[i].client
+			entry.times = keptTimes
+			keptFails.push(entry)
+		}
+	}
+	inbox.fails = keptFails
+}
+
+function failCount(inbox: Inbox, client: string): number {
+	for (let i = 0; i < inbox.fails.length; i++) {
+		if (inbox.fails[i].client == client) {
+			return inbox.fails[i].times.length
+		}
+	}
+	return 0
+}
+
+function pushFail(inbox: Inbox, client: string, now: number): void {
+	for (let i = 0; i < inbox.fails.length; i++) {
+		if (inbox.fails[i].client == client) {
+			const times = inbox.fails[i].times
+			times.push(now)
+			return
+		}
+	}
+	const entry = new FailEntry()
+	entry.client = client
+	entry.times = [now]
+	inbox.fails.push(entry)
+}
+
+function nonceSeen(inbox: Inbox, nonce: string): boolean {
+	for (let i = 0; i < inbox.nonces.length; i++) {
+		if (inbox.nonces[i].nonce == nonce) {
+			return true
+		}
+	}
+	return false
+}
+
+function addNonce(inbox: Inbox, nonce: string, now: number): void {
+	const entry = new NonceEntry()
+	entry.nonce = nonce
+	entry.at = now
+	inbox.nonces.push(entry)
+}
+
+function payloadOf(offer: ROffer): UTSJSONObject {
+	const list: UTSJSONObject[] = []
+	for (let i = 0; i < offer.files.length; i++) {
+		const file = offer.files[i]
+		const count = chunkCount(file.size)
+		const missing: number[] = []
+		for (let k = 0; k < count; k++) {
+			if (!file.chunks.has(k)) {
+				missing.push(k)
+			}
+		}
+		const entry: UTSJSONObject = { id: file.id, received: file.chunks.size, missing: missing }
+		list.push(entry)
+	}
+	return { offer_id: offer.offerId, accepted: true, files: list } as UTSJSONObject
+}
+
+/** Compared without short-circuiting, which is what the spec's constant-time promise means here.
+ *  A length mismatch is still visible, but the alphabet is fixed-width and generated, so that leak
+ *  says nothing a wrong guess would not already say. */
+function secretMatches(a: string, b: string): boolean {
+	if (a.length != b.length) {
+		return false
+	}
+	let diff = 0
+	for (let i = 0; i < a.length; i++) {
+		const ca = a.charCodeAt(i)
+		const cb = b.charCodeAt(i)
+		if (ca == null || cb == null) {
+			return false
+		}
+		diff = diff | (ca! ^ cb!)
+	}
+	return diff == 0
+}
+
+/* ------------------------------------------------------------------------ endpoints */
+
+function pairReply(
+	inbox: Inbox,
+	self: LocalPeer,
+	now: number,
+	client: string,
+	json: string,
+	keyFp: KeyFpFn,
+	verify: VerifyFn
+): WireReply {
+	const body = parseJson(json)
+	if (body == null) {
+		return failWith('NOT_PAIRED', { reason: 'body is not a JSON object' } as UTSJSONObject)
+	}
+	const peerId = body.getString('peer_id', '')
+	const name = body.getString('name', '')
+	const nonce = body.getString('nonce', '')
+	const declared = body.getString('public_key', '')
+	const signature = body.getString('signature', '')
+	const code = body.getString('code', '')
+	// Absent means "my certificate is signed by the key that signed this"; present means the peer
+	// serves a leaf under another key and says so. Both are off the wire as an empty value, so an
+	// empty string reads the same way the missing key does.
+	const declaredLeaf = body.getString('tls_fingerprint', '')
+	if (declaredLeaf != '' && !isFullFingerprint(declaredLeaf)) {
+		return failWith('NOT_PAIRED', { reason: 'tls_fingerprint is not a full SPKI digest' } as UTSJSONObject)
+	}
+	const version = Math.floor(body.getNumber('protocol_version', 0))
+	if (!supports(version)) {
+		return failWith('UNSUPPORTED_PROTOCOL', { peer_version: version } as UTSJSONObject)
+	}
+	if (peerId == '' || nonce == '' || declared == '' || signature == '') {
+		return failWith('NOT_PAIRED', { reason: 'pair request is incomplete' } as UTSJSONObject)
+	}
+	prune(inbox, now)
+	if (nonceSeen(inbox, nonce)) {
+		return failWith('NOT_PAIRED', { reason: 'replayed nonce' } as UTSJSONObject)
+	}
+	const fingerprint = keyFp(declared)
+	if (fingerprint == '') {
+		return failWith('NOT_PAIRED', { reason: 'public key is not base64 raw ed25519' } as UTSJSONObject)
+	}
+	const message = pairMessage(peerId, nonce, declaredLeaf)
+	if (!verify(declared, message, signature)) {
+		return failWith('NOT_PAIRED', { reason: 'signature does not match the key' } as UTSJSONObject)
+	}
+	const pinned = trustByFp(inbox, fingerprint)
+	if (pinned != null && pinned.publicKeyB64 != '' && pinned.publicKeyB64 != declared) {
+		// Same digest, different bytes: a collision of identity. It must never pass quietly.
+		return failWith('NOT_PAIRED', { reason: 'pinned key mismatch' } as UTSJSONObject)
+	}
+	// Only now, with the key proven to own its own claim, is it safe to say anything about who else
+	// is connected - and "who else" counts the peer this device dialled too.
+	let busyWith = ''
+	const holders = activePeers(inbox)
+	for (let i = 0; i < holders.length; i++) {
+		if (!samePeer(inbox, holders[i], fingerprint)) {
+			busyWith = holders[i]
+			break
+		}
+	}
+	if (busyWith != '') {
+		const holder = trustByFp(inbox, busyWith)
+		const who = holder == null ? busyWith.substring(0, PREFIX_CHARS) : holder!.name
+		return failWith('PEER_BUSY', { reason: 'one peer at a time', peer: who } as UTSJSONObject)
+	}
+	let resumed = true
+	if (pinned == null) {
+		resumed = false
+		if (failCount(inbox, client) >= CODE_MAX_FAILS) {
+			return failWith('PEER_BUSY', { reason: 'too many failed codes' } as UTSJSONObject)
+		}
+		if (code != currentPairCode(inbox, now)) {
+			pushFail(inbox, client, now)
+			return failWith('BAD_PAIR_CODE', null)
+		}
+		// A missing key means a sender that has no passphrase to offer; it is authenticated by the
+		// code alone, exactly as it was before this field existed.
+		if (body.get('secret') != null && !secretMatches(body.getString('secret', ''), passphraseOf(inbox, now))) {
+			pushFail(inbox, client, now)
+			return failWith('BAD_PAIR_CODE', { reason: 'passphrase' } as UTSJSONObject)
+		}
+		const entry = new Trust()
+		entry.fingerprint = fingerprint
+		entry.peerId = peerId
+		entry.name = name
+		entry.publicKeyB64 = declared
+		entry.tlsFingerprint = declaredLeaf
+		inbox.trusted.push(entry)
+	} else {
+		// A key already pinned re-pairs on its signature alone; the code is not part of this branch,
+		// which is what lets a lost token heal without the user ever looking at the other screen.
+		if (pinned.publicKeyB64 == '') {
+			// Adopted from an address this device dialled, so this signed request is the first sight of
+			// the key behind it. The signature above has already vouched for these bytes, which is the
+			// only reason recording them here is safe.
+			pinned.publicKeyB64 = declared
+		}
+		pinned.peerId = peerId
+		pinned.name = name
+		if (declaredLeaf != '') {
+			pinned.tlsFingerprint = declaredLeaf
+		}
+	}
+	addNonce(inbox, nonce, now)
+	const token = randomHex(32)
+	setToken(inbox, fingerprint, token)
+	return okWith({
+		token: token,
+		peer_id: self.peerId,
+		name: self.name,
+		protocol_version: PROTOCOL_VERSION,
+		fingerprint: self.fingerprint,
+		resumed: resumed
+	} as UTSJSONObject)
+}
+
+/** POST /v1/offer. Registers the manifest and then stops: the decision belongs to a person. */
+function offerReply(inbox: Inbox, now: number, json: string, caller: string): WireReply {
+	const body = parseJson(json)
+	if (body == null) {
+		return failWith('UNSUPPORTED_PROTOCOL', { reason: 'body is not a JSON object' } as UTSJSONObject)
+	}
+	const version = Math.floor(body.getNumber('protocol_version', 0))
+	if (!supports(version)) {
+		return failWith('UNSUPPORTED_PROTOCOL', { peer_version: version } as UTSJSONObject)
+	}
+	const offerId = body.getString('offer_id', '')
+	const files = body.getArray<UTSJSONObject>('files')
+	if (offerId == '' || files == null || files.length == 0) {
+		return failWith('UNSUPPORTED_PROTOCOL', { reason: 'offer has no id or files' } as UTSJSONObject)
+	}
+	if (files.length > MAX_FILES_PER_OFFER) {
+		return failWith('UNSUPPORTED_PROTOCOL', { reason: 'too many files' } as UTSJSONObject)
+	}
+	const known = offerById(inbox, offerId)
+	if (known != null) {
+		// A sender that lost its reply re-sends the whole manifest. If the user has not decided yet
+		// the answer is still "wait", not a second dialog for the same delivery.
+		return known.awaiting ? pendingReply() : okWith(payloadOf(known))
+	}
+	const settled = settledOf(inbox, offerId)
+	if (settled != null) {
+		return reply(settled!.status, settled!.body)
+	}
+
+	const offer = new ROffer()
+	offer.offerId = offerId
+	offer.created = now
+	for (let i = 0; i < files.length; i++) {
+		const entry = files[i]
+		const relpath = entry.getString('relpath', '')
+		// Sanitised before the human is asked, so nobody confirms a name this end would refuse.
+		const why = pathReject(relpath)
+		if (why != '') {
+			return failWith('PATH_REJECTED', { relpath: relpath, reason: why } as UTSJSONObject)
+		}
+		const file = new RFile()
+		file.id = entry.getString('id', '')
+		file.relpath = relpath
+		file.size = Math.floor(entry.getNumber('size', 0))
+		file.sha256 = entry.getString('sha256', '')
+		file.mtime = Math.floor(entry.getNumber('mtime', 0))
+		file.type = entry.getString('type', 'application/octet-stream')
+		if (file.id == '' || file.sha256 == '' || file.size < 0) {
+			return failWith('UNSUPPORTED_PROTOCOL', { reason: 'file entry is incomplete' } as UTSJSONObject)
+		}
+		offer.files.push(file)
+	}
+	const pinned = trustByFp(inbox, caller)
+	// The manifest may claim any name it likes; only the pinned one is shown to the user.
+	offer.fromName = pinned == null ? '' : pinned!.name
+	offer.fromFingerprint = caller
+	inbox.offers.push(offer)
+	return pendingReply()
+}
+
+function chunkReply(
+	inbox: Inbox,
+	offerId: string,
+	fileId: string,
+	index: number,
+	body: ArrayBuffer | null,
+	sha: string,
+	hexOf: HexFn,
+	writeAt: WriteFn
+): WireReply {
+	const offer = offerById(inbox, offerId)
+	if (offer == null) {
+		return failWith('OFFER_UNKNOWN', { offer_id: offerId } as UTSJSONObject)
+	}
+	const file = fileById(offer, fileId)
+	if (file == null) {
+		return failWith('OFFER_UNKNOWN', { file_id: fileId } as UTSJSONObject)
+	}
+	const count = chunkCount(file!.size)
+	if (index < 0 || index >= count) {
+		return failWith('BAD_CHUNK_INDEX', { index: index, count: count } as UTSJSONObject)
+	}
+	const data = body == null ? new ArrayBuffer(0) : body!
+	const want = chunkSizeAt(file!.size, index)
+	if (data.byteLength != want) {
+		return failWith('CHUNK_DIGEST_MISMATCH', { reason: 'length', got: data.byteLength, want: want } as UTSJSONObject)
+	}
+	const digest = hexOf(data)
+	if (sha != '' && sha != digest) {
+		return failWith('CHUNK_DIGEST_MISMATCH', { index: index, expected: sha } as UTSJSONObject)
+	}
+	if (file!.chunks.get(index) == digest) {
+		// Idempotent on purpose: a re-send costs a hash, not a rewrite.
+		return okWith({ index: index, stored: true, idempotent: true } as UTSJSONObject)
+	}
+	const why = writeAt(file!.relpath, index * CHUNK_SIZE, data)
+	if (why != '') {
+		return failWith('STORAGE_FULL', { relpath: file!.relpath, reason: why } as UTSJSONObject)
+	}
+	file!.chunks.set(index, digest)
+	return okWith({ index: index, stored: true } as UTSJSONObject)
+}
+
+function stateReply(inbox: Inbox, offerId: string): WireReply {
+	const offer = offerById(inbox, offerId)
+	if (offer == null) {
+		return failWith('OFFER_UNKNOWN', { offer_id: offerId } as UTSJSONObject)
+	}
+	return okWith(payloadOf(offer))
+}
+
+/** POST /v1/offer/{id}/finalize: missing chunks are one answer, a wrong whole-file digest another. */
+function finalizeReply(inbox: Inbox, offerId: string, digestFile: DigestFileFn): WireReply {
+	const offer = offerById(inbox, offerId)
+	if (offer == null) {
+		return failWith('OFFER_UNKNOWN', { offer_id: offerId } as UTSJSONObject)
+	}
+	const verified: UTSJSONObject[] = []
+	for (let i = 0; i < offer.files.length; i++) {
+		const file = offer.files[i]
+		const count = chunkCount(file.size)
+		const missing: number[] = []
+		for (let k = 0; k < count; k++) {
+			if (!file.chunks.has(k)) {
+				missing.push(k)
+			}
+		}
+		let ok = missing.length == 0
+		if (ok) {
+			// Re-read what is on disk rather than trusting the per-chunk digests: chunks that each
+			// hash correctly can still sit at the wrong offset.
+			ok = digestFile(file.relpath) == file.sha256
+		}
+		file.verdict = ok ? 1 : 2
+		file.missingAt = missing.length
+		const entry: UTSJSONObject = { id: file.id, ok: ok, missing: missing, path: ok ? file.dest : null }
+		verified.push(entry)
+	}
+	return okWith({ offer_id: offerId, verified: verified } as UTSJSONObject)
+}
+
+function abortReply(inbox: Inbox, offerId: string, drop: DropFn): WireReply {
+	const offer = offerById(inbox, offerId)
+	if (offer == null) {
+		return failWith('OFFER_UNKNOWN', { offer_id: offerId } as UTSJSONObject)
+	}
+	for (let i = 0; i < offer.files.length; i++) {
+		drop(offer.files[i].relpath)
+	}
+	dropOffer(inbox, offerId)
+	return okWith({ offer_id: offerId, dropped: true } as UTSJSONObject)
+}
+
+function dropOffer(inbox: Inbox, offerId: string): void {
+	const kept: ROffer[] = []
+	for (let i = 0; i < inbox.offers.length; i++) {
+		if (inbox.offers[i].offerId != offerId) {
+			kept.push(inbox.offers[i])
+		}
+	}
+	inbox.offers = kept
+}
+
+/** The answer this session already gave for an offer id, if any. */
+function settledOf(inbox: Inbox, offerId: string): SettledOffer | null {
+	for (let i = inbox.settled.length - 1; i >= 0; i--) {
+		if (inbox.settled[i].id == offerId) {
+			return inbox.settled[i]
+		}
+	}
+	return null
+}
+
+/** Record a person's answer so the sender's next POST gets the same one. The host owns the moment this
+ *  happens, because on the platform that cannot hold a connection open the decision arrives after the
+ *  request that asked for it is gone. */
+export function settleOffer(inbox: Inbox, offerId: string, status: number, body: string): void {
+	if (settledOf(inbox, offerId) != null) {
+		return
+	}
+	const entry = new SettledOffer()
+	entry.id = offerId
+	entry.status = status
+	entry.body = body
+	inbox.settled.push(entry)
+	while (inbox.settled.length > 24) {
+		inbox.settled.splice(0, 1)
+	}
+}
+
+/* ---------------------------------------------------------------------- the dispatcher */
+
+/** The whole server side, one call per request. Returns pending when the answer needs a human; the
+ *  host keeps the reply callback and calls resolveOffer() when the user taps. */
+export function handleReceive(
+	inbox: Inbox,
+	self: LocalPeer,
+	now: number,
+	req: Req,
+	hexOf: HexFn,
+	keyFp: KeyFpFn,
+	verify: VerifyFn,
+	prepare: PrepareFn,
+	writeAt: WriteFn,
+	digestFile: DigestFileFn,
+	drop: DropFn
+): WireReply {
+	const parts = req.path.split('?')[0].split('/')
+	if (req.method == 'GET' && req.path == '/v1/hello') {
+		return okWith({
+			peer_id: self.peerId,
+			name: self.name,
+			protocol_version: PROTOCOL_VERSION,
+			compatible_versions: COMPATIBLE_VERSIONS,
+			features: ['resume', 'chunk-hash', 'directory'],
+			port: self.port,
+			fingerprint: self.fingerprint,
+			chunk_pace_ms: self.chunkPaceMs
+		} as UTSJSONObject)
+	}
+	if (req.method == 'POST' && req.path == '/v1/pair') {
+		return pairReply(inbox, self, now, req.client, req.json, keyFp, verify)
+	}
+	// Everything else is authenticated the same way: no session token, no transfer.
+	const caller = fpOfToken(inbox, req.token)
+	if (caller == '') {
+		return failWith('NOT_PAIRED', null)
+	}
+	if (req.method == 'POST' && req.path == '/v1/offer') {
+		return offerReply(inbox, now, req.json, caller)
+	}
+	if (parts.length > 2 && parts[1] == 'v1' && parts[2] == 'offer') {
+		const offerId = parts[3]
+		const tail = parts.length > 4 ? parts[4] : ''
+		if (req.method == 'GET' && tail == 'state') {
+			return stateReply(inbox, offerId)
+		}
+		if (req.method == 'POST' && tail == 'finalize') {
+			return finalizeReply(inbox, offerId, digestFile)
+		}
+		if (req.method == 'PUT' && tail == 'chunk' && parts.length == 7) {
+			return chunkReply(inbox, offerId, parts[5], Math.floor(parseFloat(parts[6])), req.body, req.sha, hexOf, writeAt)
+		}
+		if (req.method == 'DELETE') {
+			return abortReply(inbox, offerId, drop)
+		}
+	}
+	return failWith('OFFER_UNKNOWN', { path: req.method + ' ' + req.path } as UTSJSONObject)
+}
+
+/** The user's answer to one pending offer. Accepting allocates every file up front, exactly like the
+ *  PC does, so a full disk is refused before a single chunk crosses the wire. */
+export function resolveOffer(inbox: Inbox, offerId: string, accepted: boolean, prepare: PrepareFn, drop: DropFn): WireReply {
+	const offer = offerById(inbox, offerId)
+	if (offer == null || !offer!.awaiting) {
+		return failWith('OFFER_UNKNOWN', { offer_id: offerId } as UTSJSONObject)
+	}
+	if (!accepted) {
+		dropOffer(inbox, offerId)
+		return failWith('DECLINED', null)
+	}
+	for (let i = 0; i < offer!.files.length; i++) {
+		const file = offer!.files[i]
+		const dest = prepare(file.relpath, file.size)
+		if (dest == '') {
+			// Roll back what was already allocated: a half-accepted offer would strand files the
+			// sender was just told do not exist.
+			for (let k = 0; k < i; k++) {
+				drop(offer!.files[k].relpath)
+			}
+			dropOffer(inbox, offerId)
+			return failWith('STORAGE_FULL', { relpath: file.relpath } as UTSJSONObject)
+		}
+		file.dest = dest
+	}
+	offer!.awaiting = false
+	return okWith(payloadOf(offer!))
+}
+
+/** The offer list plus the code, as data - the page owns every word shown from this. */
+export function snapshot(inbox: Inbox, now: number): ReceiveSnapshot {
+	const out = new ReceiveSnapshot()
+	out.pairCode = currentPairCode(inbox, now)
+	out.passphrase = inbox.passphrase
+	out.staticCode = PAIR_CODE_STATIC
+	out.codeSecondsLeft = codeSecondsLeft(inbox, now)
+	out.peers = inbox.trusted.length
+	const active = activePeers(inbox)
+	for (let i = 0; i < active.length; i++) {
+		// The name came in on the pair request and lives in the pin entry; a peer this end dialled
+		// out to has one too, because helloPeer pins it by the same number.
+		let name = ''
+		for (let k = 0; k < inbox.trusted.length; k++) {
+			const pin = inbox.trusted[k]
+			if (pin.fingerprint == active[i] || (pin.tlsFingerprint != '' && pin.tlsFingerprint == active[i])) {
+				name = pin.name
+			}
+		}
+		out.connectedNames.push(name == '' ? '对端 ' + active[i].substring(0, 8) + '…' : name)
+	}
+	for (let i = 0; i < inbox.offers.length; i++) {
+		const offer = inbox.offers[i]
+		if (offer.awaiting) {
+			out.pendingOfferIds.push(offer.offerId)
+			out.pendingFrom.push(offer.fromName)
+		}
+		for (let k = 0; k < offer.files.length; k++) {
+			const file = offer.files[k]
+			const row = new FileRow()
+			row.offerId = offer.offerId
+			row.fromName = offer.fromName
+			row.relpath = file.relpath
+			row.size = file.size
+			row.type = file.type
+			row.dest = file.dest
+			row.awaiting = offer.awaiting
+			row.verdict = file.verdict
+			row.have = file.chunks.size
+			row.count = chunkCount(file.size)
+			row.missingAt = file.missingAt
+			out.rows.push(row)
+			if (file.verdict == 1) {
+				out.verifiedFiles = out.verifiedFiles + 1
+			}
+			if (file.verdict == 2) {
+				out.rejectedFiles = out.rejectedFiles + 1
+			}
+		}
+	}
+	return out
+}
+
+/* ------------------------------------------------------------------ interrupted offers */
+
+/** The same document app/net/receive.py writes as .chuanshu.state.json, so a phone that dies
+ *  mid-transfer re-adopts its own offers the way the PC does. */
+export function stateJson(inbox: Inbox, offerId: string): string {
+	const offer = offerById(inbox, offerId)
+	if (offer == null) {
+		return ''
+	}
+	const files: UTSJSONObject[] = []
+	const received: UTSJSONObject = {}
+	for (let i = 0; i < offer!.files.length; i++) {
+		const file = offer!.files[i]
+		const entry: UTSJSONObject = {
+			id: file.id,
+			relpath: file.relpath,
+			size: file.size,
+			sha256: file.sha256,
+			mtime: file.mtime,
+			type: file.type
+		}
+		files.push(entry)
+		const chunks: UTSJSONObject = {}
+		for (let k = 0; k < chunkCount(file.size); k++) {
+			const digest = file.chunks.get(k)
+			if (digest != null) {
+				chunks.set(k.toString(), digest!)
+			}
+		}
+		received.set(file.id, chunks)
+	}
+	const body: UTSJSONObject = { offer_id: offer!.offerId, files: files, received: received, from_name: offer!.fromName }
+	return JSON.stringify(body)
+}
+
+/** All offers a restart would have to re-adopt, one document each. */
+export function stateAll(inbox: Inbox): string[] {
+	const out: string[] = []
+	for (let i = 0; i < inbox.offers.length; i++) {
+		if (!inbox.offers[i].awaiting) {
+			out.push(stateJson(inbox, inbox.offers[i].offerId))
+		}
+	}
+	return out
+}
+
+export function adopt(inbox: Inbox, text: string): boolean {
+	const body = parseJson(text)
+	if (body == null) {
+		return false
+	}
+	const offerId = body.getString('offer_id', '')
+	const files = body.getArray<UTSJSONObject>('files')
+	if (offerId == '' || files == null || files.length == 0) {
+		return false
+	}
+	if (offerById(inbox, offerId) != null) {
+		return true
+	}
+	const offer = new ROffer()
+	offer.offerId = offerId
+	offer.awaiting = false
+	offer.fromName = body.getString('from_name', '')
+	const received = body.getJSON('received')
+	for (let i = 0; i < files.length; i++) {
+		const entry = files[i]
+		const file = new RFile()
+		file.id = entry.getString('id', '')
+		file.relpath = entry.getString('relpath', '')
+		file.size = Math.floor(entry.getNumber('size', 0))
+		file.sha256 = entry.getString('sha256', '')
+		file.mtime = Math.floor(entry.getNumber('mtime', 0))
+		file.type = entry.getString('type', 'application/octet-stream')
+		file.dest = file.relpath
+		if (received != null) {
+			const chunks = received!.getJSON(file.id)
+			if (chunks != null) {
+				for (let k = 0; k < chunkCount(file.size); k++) {
+					const digest = chunks!.getString(k.toString(), '')
+					if (digest != '') {
+						file.chunks.set(k, digest)
+					}
+				}
+			}
+		}
+		offer.files.push(file)
+	}
+	inbox.offers.push(offer)
+	return true
+}
+
+export function adoptAll(inbox: Inbox, list: string[]): number {
+	let count = 0
+	for (let i = 0; i < list.length; i++) {
+		if (adopt(inbox, list[i])) {
+			count = count + 1
+		}
+	}
+	return count
+}
+
+/** A process restart: sessions and pending transfers leave memory, the trust store does not. That
+ *  asymmetry is the design - the peer re-pairs from its pinned key, so the user notices nothing.
+ *  The pairing material survives too when the build is a static-code one: forgetting it would mint
+ *  a fresh code behind a QR somebody already printed. */
+export function restartLike(inbox: Inbox): void {
+	inbox.tokens = []
+	inbox.nonces = []
+	inbox.fails = []
+	inbox.offers = []
+	inbox.heldBy = ''
+	if (!PAIR_CODE_STATIC) {
+		inbox.pairCode = ''
+		inbox.passphrase = ''
+		inbox.pairCodeUntil = 0
+	}
+}
+
+/** The two secrets in the shape the PC writes as identity/pairing.json, so the same file means the
+ *  same thing on both ends. */
+export function pairingJson(inbox: Inbox, now: number): string {
+	currentPairCode(inbox, now)
+	const body: UTSJSONObject = { code: inbox.pairCode, passphrase: inbox.passphrase }
+	return JSON.stringify(body)
+}
+
+/** Read that document back. Nothing is minted here: a host that has no pairing file simply calls
+ *  currentPairCode(), which mints on the spot and persists whatever it produced. */
+export function adoptPairing(inbox: Inbox, text: string): boolean {
+	const body = parseJson(text)
+	if (body == null) {
+		return false
+	}
+	const code = body.getString('code', '')
+	const passphrase = body.getString('passphrase', '')
+	if (code == '' || passphrase == '') {
+		return false
+	}
+	inbox.pairCode = code
+	inbox.passphrase = passphrase
+	inbox.pairCodeUntil = 0
+	return true
+}

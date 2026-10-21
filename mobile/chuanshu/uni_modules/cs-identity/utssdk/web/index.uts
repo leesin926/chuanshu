@@ -1,0 +1,44 @@
+/**
+ * The Android plugin talks to java.security; a browser has no such thing, and no TCP socket
+ * either, so there is nothing here that can honestly answer the probe's questions. This file
+ * exists so `import ... from '@/uni_modules/cs-identity'` resolves when the project is run on
+ * the web target for UI checking - it says which questions stay unanswered until the phone runs.
+ */
+export function identityProbe(): string {
+	const info = uni.getSystemInfoSync()
+	// A hidden webview reports height 0, and the subtraction below then goes negative; that is
+	// the panel's state, not the page's, so it must be shown as unknown rather than as a size.
+	let viewport = '未知'
+	if (info.windowHeight > 0 && info.windowWidth > 0) {
+		viewport = info.windowWidth + 'x' + info.windowHeight
+	}
+	return '平台=' + info.uniPlatform + ' 系统=' + info.osName + ' ' + info.osVersion + '\n'
+		+ '浏览器=' + info.browserName + ' ' + info.browserVersion + ' 视口='
+		+ viewport + ' dpr=' + info.devicePixelRatio + '\n'
+		+ '\n浏览器没有 java.security：Ed25519 密钥、SPKI 摘要、自签证书这三项无法在这里验证。\n'
+		+ '浏览器也不能开 TCP：TLS 回路自检（自建服务端 + 固定指纹的客户端）必须等真机。\n'
+		+ '本页面只用于检查界面与按钮；上面的结论要在 Android 真机上重跑一遍才算证据。'
+}
+
+export function certProbe(): string {
+	return '浏览器里没有 X.509 构造器，也无法读取证书 DER 字节。\n'
+		+ '手搓的 ~236 字节自签证书只能在真机上验证：平台 CertificateFactory 认不认、'
+		+ 'TLS 能不能用它完成握手。'
+}
+
+export function tlsSelfCheck(): string {
+	return '浏览器无法监听端口，也无法用固定 SPKI 摘要做证书绑定。\n'
+		+ '“信任锚 = SHA-256(SPKI DER)”这条与 PC 端一致的口径，只有真机 + PC 同网段才能证明。'
+}
+
+export function identityProbeAsync(done: (text: string) => void) {
+	done(identityProbe())
+}
+
+export function certProbeAsync(done: (text: string) => void) {
+	done(certProbe())
+}
+
+export function tlsSelfCheckAsync(done: (text: string) => void) {
+	done(tlsSelfCheck())
+}

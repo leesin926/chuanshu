@@ -5,6 +5,7 @@
 /**/__pycache__/
 *.pyc
 .probe/
+/mobile/chuanshu/unpackage/
 # Per-machine tool config
 /.idea/
 /.qoder/

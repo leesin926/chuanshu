@@ -1,0 +1,22 @@
+# HBuilderX / uni-app x build output and caches
+unpackage/
+node_modules/
+.hbuilderx/
+dist/
+
+# Native build scratch for the HarmonyOS and Android targets
+build/
+.gradle/
+*.keystore
+!debug.keystore
+local.properties
+
+# Editor and OS noise
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local logs and throwaway probes
+*.log
+.tmp/

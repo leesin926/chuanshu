@@ -1,0 +1,513 @@
+/** The transfer state machine, with every I/O primitive passed in as a function so the same
+ *  code runs over a pinned TLS socket on Android and over the browser's stand-in peer. This is
+ *  where the protocol lives on this end; the platform files only move bytes. */
+import {
+	CsFile,
+	ChunkPlan,
+	VerifyResult,
+	MAX_FILES_PER_OFFER,
+	PROTOCOL_VERSION,
+	CHUNK_SIZE,
+	chunkCount,
+	chunkSizeAt,
+	codeOf,
+	detailOf,
+	errorText,
+	finalizeResults,
+	formatSize,
+	numList,
+	offerJson,
+	pairJson,
+	pairMessage,
+	parseJson,
+	pathReject,
+	randomHex,
+	statePlans
+} from './cs-protocol.uts'
+
+export type SelfCallback = (peerId: string, name: string, fingerprint: string) => void
+export type SignCallback = (publicKeyB64: string, signatureB64: string) => void
+export type ReplyCallback = (status: number, body: string) => void
+export type MetaCallback = (ok: boolean, id: string, size: number, sha256: string, mtime: number, type: string, message: string) => void
+export type BufferCallback = (buf: ArrayBuffer | null, message: string) => void
+export type HexCallback = (hex: string) => void
+export type Caller = (method: string, path: string, jsonBody: string, token: string, body: ArrayBuffer, sha: string, cb: ReplyCallback) => void
+export type Writer = (line: string) => void
+export type ProgressCallback = (done: number, total: number) => void
+export type FinishCallback = (ok: boolean, summary: string) => void
+/** One row of the file list: where it is in this run. The UI owns the wording, this end only ever
+ *  reports the protocol's own steps. */
+export type FileEvent = (relpath: string, status: string, done: number, total: number) => void
+export type ConnectDone = (ok: boolean, message: string, session: PeerSession | null) => void
+
+export class TransferOptions {
+	host: string = ''
+	port: number = 43720
+	code: string = ''
+	/** The peer's passphrase as typed or scanned. '' leaves the key off the wire entirely, which is
+	 *  how a build without one still pairs (spec §3). */
+	secret: string = ''
+	/** The prefix a peer advertised through discovery. Empty means the user typed an address by
+	 *  hand, so the first hello is what pins it. */
+	pinPrefix: string = ''
+	/** This device's served TLS leaf, when the certificate it hands out is not signed by its own
+	 *  identity key - a Harmony phone's RSA-2048 leaf. '' on the ends whose key signs its own
+	 *  certificate, which is the majority of them and the reason the key stays off the wire. */
+	tlsFingerprint: string = ''
+	paths: string[] = []
+	relpaths: string[] = []
+}
+
+/** A peer this end has said hello to and paired with: enough to send, nothing more. Closing the
+ *  session is the UI's job (the pin itself stays, that is the whole point of TOFU). */
+export class PeerSession {
+	host: string = ''
+	port: number = 0
+	peerName: string = ''
+	peerId: string = ''
+	peerFingerprint: string = ''
+	token: string = ''
+	pinPrefix: string = ''
+	secret: string = ''
+	tlsFingerprint: string = ''
+	resumed: boolean = false
+}
+
+function range(count: number): number[] {
+	const out: number[] = []
+	for (let i = 0; i < count; i++) {
+		out.push(i)
+	}
+	return out
+}
+
+/** A refused certificate is decided by the transport before any endpoint runs, so it is not one
+ *  of the contract's wire codes and has no msgid - it gets its own wording here instead. */
+function pinText(code: string): string {
+	if (code == 'TLS_PIN_MISMATCH') {
+		return '对端证书与已固定的指纹不符，已中止'
+	}
+	return errorText(code)
+}
+
+function pathCheck(opts: TransferOptions): string {
+	if (opts.paths.length != opts.relpaths.length) {
+		return '文件清单和路径对不上'
+	}
+	if (opts.paths.length > MAX_FILES_PER_OFFER) {
+		return '一次最多 ' + MAX_FILES_PER_OFFER.toString() + ' 个文件'
+	}
+	for (let i = 0; i < opts.relpaths.length; i++) {
+		const why = pathReject(opts.relpaths[i])
+		if (why != '') {
+			return '本地就拦下：' + why
+		}
+	}
+	return ''
+}
+
+/** GET /v1/hello, plus the two checks that decide whether this is a peer worth pairing with at all:
+ *  a version both ends speak, and a fingerprint that matches what discovery advertised. */
+function helloPeer(opts: TransferOptions, myFingerprint: string, call: Caller, write: Writer, done: ConnectDone): void {
+	call('GET', '/v1/hello', '', '', new ArrayBuffer(0), '', function (status: number, body: string) {
+		if (status != 200) {
+			done(false, pinText(codeOf(body)), null)
+			return
+		}
+		const hello = parseJson(body)
+		if (hello == null) {
+			done(false, errorText('UNSUPPORTED_PROTOCOL'), null)
+			return
+		}
+		const versions = numList(hello.getArray<number>('compatible_versions'))
+		let compatible = false
+		for (let i = 0; i < versions.length; i++) {
+			if (versions[i] == PROTOCOL_VERSION) {
+				compatible = true
+			}
+		}
+		if (!compatible) {
+			done(false, errorText('UNSUPPORTED_PROTOCOL') + '（对端 ' + Math.floor(hello.getNumber('protocol_version', 0)).toString() + '）', null)
+			return
+		}
+		const session = new PeerSession()
+		session.host = opts.host
+		session.port = opts.port
+		session.pinPrefix = opts.pinPrefix
+		session.secret = opts.secret
+		session.tlsFingerprint = opts.tlsFingerprint
+		session.peerName = hello.getString('name', '')
+		session.peerId = hello.getString('peer_id', '')
+		session.peerFingerprint = hello.getString('fingerprint', '')
+		write('对端 ' + session.peerName + ' fp=' + session.peerFingerprint.substring(0, 16) + '…')
+		if (opts.pinPrefix != '' && !session.peerFingerprint.startsWith(opts.pinPrefix)) {
+			done(false, '指纹前缀与广播不符，已中止：' + opts.pinPrefix, null)
+			return
+		}
+		if (session.peerFingerprint == myFingerprint) {
+			done(false, '对端指纹与本机相同：这是自己连自己，已中止', null)
+			return
+		}
+		done(true, '', session)
+	})
+}
+
+/** POST /v1/pair. An empty code is the signature-only repair the spec allows for a key that is
+ *  already pinned, which is why the code is a parameter rather than a precondition.
+ *
+ *  signPair signs the bytes built here rather than being handed a peer_id and a nonce: which
+ *  message carries the signature is spec §3's decision, and the platform's job is only to sign it. */
+function pairOnce(
+	session: PeerSession,
+	code: string,
+	takeSelf: (cb: SelfCallback) => void,
+	signPair: (message: string, cb: SignCallback) => void,
+	call: Caller,
+	cb: (ok: boolean, message: string) => void
+): void {
+	takeSelf(function (peerId: string, name: string, myFingerprint: string) {
+		const nonce = randomHex(16)
+		const message = pairMessage(peerId, nonce, session.tlsFingerprint)
+		signPair(message, function (publicKeyB64: string, signatureB64: string) {
+			const json = pairJson(peerId, name, nonce, publicKeyB64, signatureB64, code, session.secret, session.tlsFingerprint)
+			call('POST', '/v1/pair', json, '', new ArrayBuffer(0), '', function (status: number, body: string) {
+				const wire = codeOf(body)
+				if (status != 200) {
+					cb(false, pinText(wire != '' ? wire : 'NOT_PAIRED') + ' ' + detailOf(body))
+					return
+				}
+				const reply = parseJson(body)
+				if (reply == null) {
+					cb(false, errorText('UNSUPPORTED_PROTOCOL'))
+					return
+				}
+				if (reply.getString('fingerprint', '') != session.peerFingerprint) {
+					cb(false, '配对应答里的指纹和 hello 不一致，已中止')
+					return
+				}
+				session.token = reply.getString('token', '')
+				session.resumed = reply.getBoolean('resumed', false)
+				cb(true, session.resumed ? '沿用旧指纹' : '首次，已固定指纹')
+			})
+		})
+	})
+}
+
+/** The connect button's whole job: reach the peer, agree on a version, redeem the code, hand back a
+ *  session. Nothing is read from disk here, so a wrong address costs one hello. */
+export function connectPeer(
+	opts: TransferOptions,
+	takeSelf: (cb: SelfCallback) => void,
+	signPair: (message: string, cb: SignCallback) => void,
+	call: Caller,
+	write: Writer,
+	done: ConnectDone
+): void {
+	if (opts.host == '') {
+		done(false, '先扫码或填写对端地址', null)
+		return
+	}
+	if (opts.pinPrefix != '') {
+		write('按二维码里的指纹前缀核对 ' + opts.host)
+	}
+	takeSelf(function (peerId: string, name: string, myFingerprint: string) {
+		write('本机 ' + name + ' fp=' + myFingerprint.substring(0, 16) + '…')
+		helloPeer(opts, myFingerprint, call, write, function (ok: boolean, message: string, session: PeerSession | null) {
+			if (!ok || session == null) {
+				done(false, message, null)
+				return
+			}
+			pairOnce(session, opts.code, takeSelf, signPair, call, function (paired: boolean, why: string) {
+				if (!paired) {
+					done(false, why, session)
+					return
+				}
+				done(true, '已连接 ' + session.peerName + '（' + why + '）', session)
+			})
+		})
+	})
+}
+
+/** Everything after a session exists. The only way back to pairing is a NOT_PAIRED, which the
+ *  spec says this end repairs by signature alone - silently, because the user already confirmed
+ *  this device's fingerprint once.
+ *
+ *  The nested steps are declared innermost-first, which is the one thing this file writes for the
+ *  compiler rather than for the reader: JavaScript hoists a local function above its use and
+ *  Kotlin does not, so offerAll, then pushChunks, then sendOneChunk, then putChunk. */
+export function sendFiles(
+	session: PeerSession,
+	opts: TransferOptions,
+	takeSelf: (cb: SelfCallback) => void,
+	signPair: (message: string, cb: SignCallback) => void,
+	call: Caller,
+	prepareFile: (path: string, relpath: string, cb: MetaCallback) => void,
+	readChunk: (path: string, offset: number, length: number, cb: BufferCallback) => void,
+	digestHex: (buf: ArrayBuffer, cb: HexCallback) => void,
+	write: Writer,
+	progress: ProgressCallback,
+	fileEvent: FileEvent,
+	finish: FinishCallback
+): void {
+	if (opts.paths.length == 0) {
+		finish(false, '还没有选择文件')
+		return
+	}
+	const problem = pathCheck(opts)
+	if (problem != '') {
+		finish(false, problem)
+		return
+	}
+
+	const files: CsFile[] = []
+	/** The manifest is sent *as this device*, so its identity comes from takeSelf, never from the
+	 *  session - that one holds what the peer said about itself. */
+	let selfId = ''
+	let selfName = ''
+
+	/** One request, with the silent re-pair in front of it. `repaired` is the guard: a peer that
+	 *  still says NOT_PAIRED after a signature-only pair genuinely does not know us, and looping
+	 *  there would ask the user for a code they cannot see. */
+	function authed(method: string, path: string, json: string, body: ArrayBuffer, sha: string, repaired: boolean, cb: ReplyCallback): void {
+		call(method, path, json, session.token, body, sha, function (status: number, resp: string) {
+			if (status != 403 || codeOf(resp) != 'NOT_PAIRED' || repaired) {
+				cb(status, resp)
+				return
+			}
+			write('会话失效，用已固定的密钥重新配对')
+			pairOnce(session, '', takeSelf, signPair, call, function (ok: boolean, why: string) {
+				if (!ok) {
+					write('静默重新配对没成功：' + why)
+					cb(status, resp)
+					return
+				}
+				authed(method, path, json, body, sha, true, cb)
+			})
+		})
+	}
+
+	function fileOfId(id: string): CsFile | null {
+		for (let i = 0; i < files.length; i++) {
+			if (files[i].id == id) {
+				return files[i]
+			}
+		}
+		return null
+	}
+
+	function sizeOfId(id: string): number {
+		const found = fileOfId(id)
+		return found == null ? 0 : found!.size
+	}
+
+	function putChunk(path: string, buf: ArrayBuffer, sha: string, attempt: number, cb: (ok: boolean, body: string) => void) {
+		authed('PUT', path, '', buf, sha, false, function (status: number, body: string) {
+			if (status == 200) {
+				cb(true, body)
+				return
+			}
+			const code = codeOf(body)
+			// A rejected chunk is one lost chunk: resend it instead of restarting the file.
+			if (code == 'CHUNK_DIGEST_MISMATCH' && attempt < 2) {
+				write('分块校验失败，重发 ' + path + '（第 ' + (attempt + 1).toString() + ' 次）')
+				putChunk(path, buf, sha, attempt + 1, cb)
+				return
+			}
+			cb(false, body)
+		})
+	}
+
+	function sendOneChunk(
+		offerId: string,
+		plans: ChunkPlan[],
+		planIndex: number,
+		itemIndex: number,
+		done: number,
+		total: number,
+		cb: (ok: boolean, why: string) => void
+	) {
+		if (planIndex >= plans.length) {
+			cb(true, '')
+			return
+		}
+		const plan = plans[planIndex]
+		const found = fileOfId(plan.id)
+		if (found == null) {
+			cb(false, '对端返回了清单里没有的文件 ' + plan.id)
+			return
+		}
+		if (itemIndex >= plan.missing.length) {
+			fileEvent(found!.relpath, '等待校验', plan.missing.length, plan.missing.length)
+			sendOneChunk(offerId, plans, planIndex + 1, 0, done, total, cb)
+			return
+		}
+		const file = found!
+		const index = plan.missing[itemIndex]
+		readChunk(file.path, index * CHUNK_SIZE, chunkSizeAt(file.size, index), function (buf: ArrayBuffer | null, message: string) {
+			if (buf == null) {
+				fileEvent(file.relpath, '读取失败', itemIndex, plan.missing.length)
+				cb(false, '读取 ' + file.relpath + ' 第 ' + index.toString() + ' 块失败：' + message)
+				return
+			}
+			digestHex(buf, function (sha: string) {
+				const path = '/v1/offer/' + offerId + '/chunk/' + file.id + '/' + index.toString()
+				putChunk(path, buf, sha, 0, function (ok: boolean, body: string) {
+					if (!ok) {
+						fileEvent(file.relpath, '推送失败', itemIndex, plan.missing.length)
+						cb(false, pinText(codeOf(body)) + ' ' + detailOf(body))
+						return
+					}
+					const next = done + 1
+					progress(next, total)
+					fileEvent(file.relpath, '推送中', itemIndex + 1, plan.missing.length)
+					if (next % 8 == 0 || next == total) {
+						write(next.toString() + '/' + total.toString() + ' 块 · ' + file.relpath + '#' + index.toString())
+					}
+					sendOneChunk(offerId, plans, planIndex, itemIndex + 1, next, total, cb)
+				})
+			})
+		})
+	}
+
+	function pushChunks(offerId: string, plans: ChunkPlan[], cb: (ok: boolean, why: string) => void) {
+		let total = 0
+		for (let p = 0; p < plans.length; p++) {
+			total = total + plans[p].missing.length
+			const entry = fileOfId(plans[p].id)
+			if (entry != null) {
+				fileEvent(entry!.relpath, '推送中', 0, plans[p].missing.length)
+			}
+		}
+		write('需要推送 ' + total.toString() + ' 个分块')
+		progress(0, total)
+		sendOneChunk(offerId, plans, 0, 0, 0, total, cb)
+	}
+
+	function finalize(offerId: string, isRetry: boolean) {
+		write('请求对方校验整文件')
+		authed('POST', '/v1/offer/' + offerId + '/finalize', '{}', new ArrayBuffer(0), '', false, function (status: number, body: string) {
+			if (status != 200) {
+				finish(false, pinText(codeOf(body)) + ' ' + detailOf(body))
+				return
+			}
+			const results = finalizeResults(body)
+			const broken: VerifyResult[] = []
+			for (let i = 0; i < results.length; i++) {
+				if (!results[i].ok) {
+					broken.push(results[i])
+				}
+			}
+			if (broken.length == 0) {
+				let saved = ''
+				let bytes = 0
+				for (let i = 0; i < results.length; i++) {
+					const entry = fileOfId(results[i].id)
+					if (entry != null) {
+						fileEvent(entry!.relpath, '对方已收下', chunkCount(entry!.size), chunkCount(entry!.size))
+					}
+					if (results[i].path != '') {
+						saved = results[i].path
+					}
+					bytes = bytes + sizeOfId(results[i].id)
+				}
+				finish(true, '对方已收下 ' + results.length.toString() + ' 个文件 / ' + formatSize(bytes)
+					+ (saved != '' ? '，最后落到 ' + saved : ''))
+				return
+			}
+			if (isRetry) {
+				for (let i = 0; i < broken.length; i++) {
+					const entry = fileOfId(broken[i].id)
+					if (entry != null) {
+						fileEvent(entry!.relpath, '校验失败', 0, chunkCount(entry!.size))
+					}
+				}
+				finish(false, errorText('FILE_DIGEST_MISMATCH') + '：' + broken[0].id)
+				return
+			}
+			// No missing chunk but a wrong digest means the bytes on disk drifted, so the whole
+			// file goes again rather than guessing which chunk moved.
+			write(broken.length.toString() + ' 个文件校验没过，整文件重推')
+			const replan: ChunkPlan[] = []
+			for (let i = 0; i < broken.length; i++) {
+				const entry = new ChunkPlan()
+				entry.id = broken[i].id
+				const list = broken[i].missing
+				entry.missing = list.length > 0 ? list : range(chunkCount(sizeOfId(broken[i].id)))
+				replan.push(entry)
+			}
+			pushChunks(offerId, replan, function (ok: boolean, why: string) {
+				if (!ok) {
+					finish(false, why)
+					return
+				}
+				finalize(offerId, true)
+			})
+		})
+	}
+
+	function offerAll() {
+		const offerId = randomHex(8)
+		const json = offerJson(offerId, files, selfId, selfName)
+		write('提交清单：' + files.length.toString() + ' 个文件')
+		// The receiver may hold this open for as long as its user takes to decide, so the
+		// transport timeout has to outlive that window rather than retry the offer.
+		authed('POST', '/v1/offer', json, new ArrayBuffer(0), '', false, function (status: number, body: string) {
+			if (status != 200) {
+				for (let i = 0; i < opts.relpaths.length; i++) {
+					fileEvent(opts.relpaths[i], '被拒绝', 0, 0)
+				}
+				finish(false, pinText(codeOf(body) != '' ? codeOf(body) : 'DECLINED') + ' ' + detailOf(body))
+				return
+			}
+			pushChunks(offerId, statePlans(body), function (ok: boolean, why: string) {
+				if (!ok) {
+					finish(false, why)
+					return
+				}
+				finalize(offerId, false)
+			})
+		})
+	}
+
+	function prepareThenOffer() {
+		let cursor = 0
+		/** A declaration, not a `const` holding a closure: this calls itself, and a local function in
+		 *  Kotlin names itself while a `val` does not exist yet inside its own initialiser. */
+		function step(): void {
+			if (cursor >= opts.paths.length) {
+				offerAll()
+				return
+			}
+			const path = opts.paths[cursor]
+			const relpath = opts.relpaths[cursor]
+			fileEvent(relpath, '计算校验和', 0, 0)
+			prepareFile(path, relpath, function (ok: boolean, id: string, size: number, sha256: string, mtime: number, type: string, message: string) {
+				if (!ok) {
+					fileEvent(relpath, '读取失败', 0, 0)
+					finish(false, '读取 ' + relpath + ' 失败：' + message)
+					return
+				}
+				const file = new CsFile()
+				file.path = path
+				file.relpath = relpath
+				file.id = id
+				file.size = size
+				file.sha256 = sha256
+				file.mtime = mtime
+				file.type = type
+				files.push(file)
+				write('已算校验和 ' + relpath + ' ' + formatSize(size))
+				fileEvent(relpath, '等待对方确认', 0, 0)
+				cursor = cursor + 1
+				step()
+			})
+		}
+		step()
+	}
+
+	takeSelf(function (peerId: string, name: string, myFingerprint: string) {
+		selfId = peerId
+		selfName = name
+		prepareThenOffer()
+	})
+}

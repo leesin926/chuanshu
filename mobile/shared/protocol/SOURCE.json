@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "purpose": "本目录是从 PC 端仓库 vendored 过来的协议契约，手机端只读不改。改协议先去 PC 端改 protocol/，再运行 scripts/vendor_protocol.py 重新 vendor。",
+  "source_repo": "chuanshu-pc",
+  "source_commit": "754b863d04e43bd0203bf0544ea238e56b55cfbc",
+  "source_dirty": true,
+  "protocol_version": 1,
+  "vendored_at": "2026-10-21",
+  "files": {
+    "protocol.json": "1dda8270095e1f63071acc56a01b3b511dd67f8bd2a235399283ec5f447e458f",
+    "spec.md": "17fbcd6b88fa25c581c953a87fd37521f5b816ef40d00c652eef936af8ffd1af"
+  }
+}

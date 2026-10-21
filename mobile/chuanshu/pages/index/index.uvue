@@ -1,0 +1,1503 @@
+<template>
+	<!-- The page body lays its root out at viewport height on Harmony and does not scroll there, so
+	     the cards below the fold - 待发送, 发送, 日志 - are unreachable. Making the root a scroll
+	     container costs nothing on the other ends, which give a height-bounded scroll-view the same
+	     behaviour they already have. -->
+	<scroll-view class="page" scroll-y="true">
+		<view class="card">
+			<view class="head">
+				<text class="h">本机</text>
+				<text class="badge" v-if="mocked">对端是模拟的</text>
+			</view>
+			<text class="big">{{ selfName }}</text>
+			<text class="sub">peer_id {{ selfId }}</text>
+			<text class="sub">指纹 {{ selfFpShort }}</text>
+			<text class="note" v-if="note != ''">{{ note }}</text>
+			<button class="mini mt8" @click="openProbe">平台能力探针</button>
+		</view>
+
+		<view class="card">
+			<view class="head">
+				<text class="h">对端</text>
+				<text class="badge" v-if="connected">已连接</text>
+			</view>
+			<view class="row mt8 wrap">
+				<!-- #ifndef WEB -->
+				<button class="mini" @click="onScan" :disabled="connecting || connected">扫码连接</button>
+				<!-- #endif -->
+				<button class="mini" @click="togglePaste">{{ pasteLabel }}</button>
+				<button class="mini" @click="clearTarget" v-if="targetLabel != ''">清除对端</button>
+				<!-- #ifndef WEB -->
+				<button class="mini" @click="unpin" v-if="pinnedFp != '' && !connected">解除固定</button>
+				<!-- #endif -->
+			</view>
+			<view class="row mt8" v-if="showPaste">
+				<input class="input col1" v-model="pairText" placeholder="粘贴 PC 上二维码的内容 chuanshu://p?…" />
+				<button class="mini" @click="onPaste">解析</button>
+			</view>
+			<view class="row mt8">
+				<input class="input col1" v-model="code" :maxlength="codeDigits" :placeholder="codeHint" />
+				<input class="input col1" v-model="secret" :maxlength="passChars" :placeholder="passHint" />
+			</view>
+			<view class="row mt8 wrap">
+				<button class="mini" @click="onConnect" :disabled="connecting || connected">{{ connectLabel }}</button>
+				<button class="mini" @click="onDisconnect" v-if="connected">断开</button>
+			</view>
+			<text class="sub mt8">{{ targetLabel }}</text>
+			<text class="sub" :class="netClass">{{ netLabel }}</text>
+			<text class="sub">{{ sessionLabel }}</text>
+			<text class="sub mt8">{{ pinnedLabel }}</text>
+			<button class="mini mt8" @click="toggleAdvanced">{{ advancedLabel }}</button>
+			<view class="row mt8" v-if="showAdvanced">
+				<input class="input col1" v-model="host" placeholder="地址，如 192.168.1.12" />
+				<input class="input col2" v-model="port" type="number" :placeholder="TRANSPORT_PORT.toString()" />
+			</view>
+			<text class="note mt8" v-if="showAdvanced">地址和端口通常来自扫码。手输时本机没有可预先核对的指纹，只建议在信任的网络里用。密码留空等于只按配对码握手：对端已经设过密码时会被拒。</text>
+		</view>
+
+		<view class="card">
+			<view class="head">
+				<text class="h">待发送</text>
+				<view class="row">
+					<button class="mini" @click="choose">选择文件</button>
+					<button class="mini" v-if="names.length > 0" @click="clearFiles">清空</button>
+				</view>
+			</view>
+			<text class="sub mt8" v-if="names.length == 0">还没有选择文件。</text>
+			<view class="filerow" v-for="(n, i) in names" :key="i">
+				<view class="col1">
+					<text class="fname">{{ n }}</text>
+					<text class="fsize">{{ meta[i] }}</text>
+					<text class="fstate" :class="stateClass[i]">{{ states[i] }}</text>
+				</view>
+				<button class="mini" @click="removeFile(i)" :disabled="running">移除</button>
+			</view>
+		</view>
+
+		<view class="card">
+			<button class="primary" :disabled="running || !canSend" @click="onSend">{{ sendLabel }}</button>
+			<text class="sub mt8" v-if="!connected && !running">先连上对端才能发送。</text>
+			<view class="bar mt8">
+				<view class="fill" :style="{ width: fillWidth }"></view>
+			</view>
+			<text class="sub mt8">{{ progressLabel }}</text>
+		</view>
+
+		<!-- #ifdef WEB -->
+		<view class="card">
+			<text class="h">演示 PC 端</text>
+			<view class="row mt8 wrap">
+				<button class="mini" @click="loadDemo">填入演示配对码</button>
+				<button class="mini" @click="pasteDemoQr">模拟扫码结果</button>
+				<button class="mini" @click="expireDemoToken">会话失效</button>
+				<button class="mini" @click="restartDemo">模拟重启</button>
+				<button class="mini" @click="unpin">解除固定</button>
+			</view>
+			<text class="sub mt8">故障注入：当前 {{ faultLabel }}</text>
+			<view class="row mt8 wrap">
+				<button class="mini" @click="setFault('')">正常</button>
+				<button class="mini" @click="setFault('BAD_PAIR_CODE')">配对码</button>
+				<button class="mini" @click="setFault('DECLINED')">拒收</button>
+				<button class="mini" @click="setFault('CHUNK_DIGEST_MISMATCH')">分块</button>
+				<button class="mini" @click="setFault('FILE_DIGEST_MISMATCH')">整文件</button>
+			</view>
+		</view>
+		<!-- #endif -->
+
+		<view class="card">
+			<view class="head">
+				<text class="h">接收</text>
+				<text class="badge" v-if="recvAsk != ''">等你决定</text>
+			</view>
+			<text class="big">配对码 {{ recvCodeText }}</text>
+			<text class="big">密码 {{ recvPassText }}</text>
+			<text class="sub">{{ recvCodeLeft }}</text>
+			<view class="row mt8 wrap">
+				<button class="mini" @click="copyPairing">复制配对信息</button>
+				<button class="mini" @click="onRotatePairing">更换配对码和密码</button>
+			</view>
+			<!-- #ifdef APP-ANDROID || APP-HARMONY -->
+			<text class="sub mt8" :class="recvListenClass">{{ recvListen }}</text>
+			<text class="sub" v-for="(a, i) in recvAddrs" :key="i">本机地址 {{ a }}</text>
+			<view class="row mt8 wrap">
+				<button class="mini" @click="onRecvListen" v-if="!recvListening">开始监听</button>
+				<button class="mini" @click="onRecvListenStop" v-else>停止监听</button>
+			</view>
+			<!-- #endif -->
+			<text class="note mt8" v-if="recvAsk != ''">{{ recvAsk }}</text>
+			<view class="row mt8 wrap" v-if="recvAsk != ''">
+				<button class="mini" @click="onRecvAccept">接受</button>
+				<button class="mini" @click="onRecvRefuse">拒绝</button>
+			</view>
+			<text class="sub mt8" v-if="recvNames.length == 0">还没有收到文件。</text>
+			<view class="filerow" v-for="(n, i) in recvNames" :key="i">
+				<view class="col1">
+					<text class="fname">{{ n }}</text>
+					<text class="fsize">{{ recvMeta[i] }}</text>
+					<text class="fstate" :class="recvStateClass[i]">{{ recvStates[i] }}</text>
+				</view>
+			</view>
+			<text class="sub mt8">{{ recvSummary }}</text>
+			<text class="sub">{{ recvPeers }}</text>
+			<text class="note mt8" v-if="recvNote != ''">{{ recvNote }}</text>
+		</view>
+
+		<!-- #ifdef WEB -->
+		<view class="card">
+			<text class="h">演示 PC → 本机（接收方向）</text>
+			<text class="sub mt8">这一端在浏览器里没法真的监听 43720，所以让同页面的 PC 角色走同一套发送状态机，把请求直接交给接收内核。</text>
+			<view class="row mt8 wrap">
+				<button class="mini" @click="pcPairGood">PC 配对（配对码对）</button>
+				<button class="mini" @click="pcPairWrong">PC 配对（配对码错）</button>
+				<button class="mini" @click="pcPairResume">PC 重连（配对码留空）</button>
+				<button class="mini" @click="pcSend">PC 发两个文件</button>
+				<button class="mini" @click="pcBreak" v-if="pcIn">PC 断开</button>
+			</view>
+			<text class="sub mt8">发送端故障：{{ sendFaultLabel }}　接收端故障：{{ recvFaultLabel }}</text>
+			<view class="row mt8 wrap">
+				<button class="mini" @click="pickSendFault('')">发送正常</button>
+				<button class="mini" @click="pickSendFault('BAD_CHUNK')">发坏一块</button>
+				<button class="mini" @click="pickSendFault('BAD_FILE')">发坏整文件</button>
+				<button class="mini" @click="pickRecvFault('')">接收正常</button>
+				<button class="mini" @click="pickRecvFault('STORAGE_FULL')">空间不足</button>
+				<button class="mini" @click="pickRecvFault('WRITE_FAIL')">写入失败</button>
+			</view>
+			<button class="mini mt8" @click="runRecvSelf">接收内核自检</button>
+		</view>
+		<!-- #endif -->
+
+		<view class="card">
+			<text class="h">日志</text>
+			<scroll-view class="log mt8" :scroll-top="scrollTop" scroll-y="true">
+				<text class="logline" v-for="(l, i) in lines" :key="i">{{ l }}</text>
+			</scroll-view>
+		</view>
+	</scroll-view>
+</template>
+
+<script setup lang="uts">
+	import {
+		TransferOptions,
+		PeerSession,
+		connectPeer,
+		sendFiles,
+		SelfCallback,
+		SignCallback,
+		ReplyCallback,
+		MetaCallback,
+		BufferCallback,
+		HexCallback
+	} from '@/uni_modules/cs-transport/utssdk/cs-client.uts'
+	import { TRANSPORT_PORT, PAIR_CODE_DIGITS, PASSPHRASE_CHARS, codeReject, passReject, digitsOnly, formatSize, parsePairUrl } from '@/uni_modules/cs-transport/utssdk/cs-protocol.uts'
+	import { selfInfo, signPair, request, prepareFile, readChunk, digestHex, transportMocked, transportNote, lanCheck } from '@/uni_modules/cs-transport'
+	// #ifdef APP-ANDROID || APP-HARMONY
+	import { pinnedFor, unpinPeer, receiveStart, receiveStop, receiveStatus } from '@/uni_modules/cs-transport'
+	// #endif
+	// #ifdef WEB
+	import { demoPeer, demoQrUrl, demoExpireToken, setDemoFault, demoRestart, demoUnpin, pinnedFingerprint } from '@/uni_modules/cs-transport'
+	import { receiveWrongCode, demoPcConnect, demoPcSend, demoPcDisconnect, demoPcConnected, setSenderFault, setReceiveFault, receiveSelfReport } from '@/uni_modules/cs-transport'
+	// #endif
+	// #ifdef APP-ANDROID
+	import { receiveCode, receivePassphrase, receiveRotatePairing, receiveHoldSlot, receiveSnapshot, receiveDecide } from '@/uni_modules/cs-transport'
+	// #endif
+	// #ifdef APP-HARMONY
+	/** These two lists have no one place to merge into on this platform. The ArkTS half of the module
+	 *  cannot read ../cs-receive.uts at all, so here the state machine is imported from its own path and
+	 *  runs as JavaScript next to the page, and everything it needs from the device arrives as one of the
+	 *  plain functions below. Android keeps the same six names inside the module, because there UTS does
+	 *  compile against Kotlin; the page calls them identically either way. */
+	import {
+		Inbox,
+		Req,
+		LocalPeer,
+		ReceiveSnapshot,
+		newInbox,
+		handleReceive,
+		resolveOffer,
+		settleOffer,
+		snapshot,
+		adoptPairing,
+		pairingJson,
+		currentPairCode,
+		passphraseOf,
+		rotatePairing,
+		holdSlotFor,
+		adoptPin
+	} from '@/uni_modules/cs-transport/utssdk/cs-receive.uts'
+	import {
+		serveBind,
+		serveReply,
+		servedFingerprint,
+		pinForAddress,
+		storePrepareFile,
+		storeWriteAt,
+		storeDigestFile,
+		storeDropFile,
+		digestBytes,
+		fingerprintOfKey,
+		verifySignature,
+		peerIdText,
+		deviceNameText,
+		identityFingerprint,
+		loadPairing,
+		savePairing
+	} from '@/uni_modules/cs-transport'
+
+	/** The inbox the listener feeds, held here rather than in the transport: on this platform the
+	 *  receiver is the page's own object, and ArkTS only ever moves its bytes. */
+	const recvInbox: Inbox = newInbox()
+	let recvSelf: LocalPeer | null = null
+
+	/** The id a POST /v1/offer carries, read before the state machine is asked to register it: the guard
+	 *  that keeps one dialog on screen needs it to tell a second delivery apart from the same delivery
+	 *  being asked about again. */
+	function offerIdOf(json: string): string {
+		const made = JSON.parse(json) as UTSJSONObject | null
+		return made == null ? '' : made!.getString('offer_id', '')
+	}
+
+	function nowSecs(): number {
+		return Math.floor(Date.now() / 1000)
+	}
+
+	/** The pairing material is this device's decision but the device's storage: read it back, mint a
+	 *  pair if this phone never had one, write down whatever came out. */
+	function syncPairing(): void {
+		const saved = loadPairing()
+		if (saved != '' && !adoptPairing(recvInbox, saved)) {
+			log('本机配对文件读不出内容，已重新生成一对码和密码')
+		}
+		currentPairCode(recvInbox, nowSecs())
+		savePairing(pairingJson(recvInbox, nowSecs()))
+	}
+
+	/** The peer this device is to the rest of the network, filled in on the first request: the identity
+	 *  key in `fingerprint` and the name the user gave this phone, both of which a pair reply carries to
+	 *  whoever asked. */
+	function receiverSelf(): LocalPeer {
+		if (recvSelf == null) {
+			const made = new LocalPeer()
+			made.peerId = peerIdText()
+			made.name = deviceNameText()
+			made.fingerprint = identityFingerprint()
+			made.port = TRANSPORT_PORT
+			// #ifdef APP-HARMONY
+			// Measured on this platform's TLS server: a 4 MiB body written faster than one 4 KiB record
+			// every 15 ms arrives whole and wrong, and the process can die on the attempt. Declaring it in
+			// /v1/hello is what keeps the sender from finding that out the hard way, once per transfer.
+			made.chunkPaceMs = 15
+			// #endif
+			recvSelf = made
+		}
+		return recvSelf!
+	}
+
+	/** One request off the listener. Every primitive the state machine asks for is a synchronous ArkTS
+	 *  call, which is the reason this half exists: a browser keeps an offer in memory, and this phone
+	 *  writes the same offer into its own files. */
+	function harmonyReceive(
+		index: number,
+		method: string,
+		path: string,
+		token: string,
+		sha: string,
+		client: string,
+		json: string,
+		body: ArrayBuffer | null
+	): void {
+		const req = new Req()
+		req.method = method
+		req.path = path
+		req.json = json
+		req.token = token
+		req.sha = sha
+		req.client = client
+		req.body = body
+		const now = nowSecs()
+		if (method == 'POST' && path == '/v1/offer') {
+			// One offer waits for the user at a time, but the same manifest is not a new request: the
+			// sender is polling this door for an answer it cannot get on a parked connection, and the
+			// state machine already answers a known offer_id instead of opening a second dialog.
+			const waiting = snapshot(recvInbox, now).pendingOfferIds
+			if (waiting.length > 0 && offerIdOf(json) != waiting[waiting.length - 1]) {
+				serveReply(index, 429, '{"code":"PEER_BUSY","detail":{"reason":"上一条清单还在等人决定"}}')
+				return
+			}
+		}
+		if (method == 'POST' && path == '/v1/pair' && client != '') {
+			// Both directions, one answer. The address this phone dialled out to is the peer it already
+			// trusts, and that same machine dials in from a port it never chose - so without this the
+			// caller which keeps its pin over a restart sends no code, and this door asks for one it
+			// cannot get. Nothing is trusted on an address alone: pairReply still refuses the pair unless
+			// the key behind it signs its own claim.
+			const known = pinForAddress(client, TRANSPORT_PORT)
+			if (known != '') adoptPin(recvInbox, known, '', '')
+		}
+		const reply = handleReceive(recvInbox, receiverSelf(), now, req,
+			digestBytes, fingerprintOfKey, verifySignature,
+			storePrepareFile, storeWriteAt, storeDigestFile, storeDropFile)
+		if (!reply.pending) {
+			serveReply(index, reply.status, reply.body)
+			refreshReceive()
+			return
+		}
+		const ids = snapshot(recvInbox, now).pendingOfferIds
+		if (ids.length == 0) {
+			serveReply(index, 403, '{"code":"DECLINED","detail":{"reason":"状态机没有登记这条清单"}}')
+			return
+		}
+		// The offer is registered and the card below is showing it, but this connection is not held open
+		// for the answer: it is told right now that nobody has decided, and the sender asks again on a
+		// fresh connection until the card is answered.
+		serveReply(index, 200, '{"offer_id":"' + ids[ids.length - 1] + '","accepted":false}')
+		refreshReceive()
+	}
+
+	function receiveCode(): string {
+		syncPairing()
+		return currentPairCode(recvInbox, nowSecs())
+	}
+
+	function receivePassphrase(): string {
+		syncPairing()
+		return passphraseOf(recvInbox, nowSecs())
+	}
+
+	function receiveRotatePairing(): string {
+		rotatePairing(recvInbox, nowSecs())
+		savePairing(pairingJson(recvInbox, nowSecs()))
+		return '已换一组配对码和密码'
+	}
+
+	function receiveHoldSlot(fingerprint: string): void {
+		holdSlotFor(recvInbox, fingerprint)
+	}
+
+	function receiveSnapshot(): ReceiveSnapshot {
+		return snapshot(recvInbox, nowSecs())
+	}
+
+	/** The user's answer. Nothing is written back on the connection that asked: this platform has already
+	 *  freed that TLS session by the time a person taps, so the answer sits in the inbox until the sender
+	 *  asks again on a new connection, which it does every second while the card is up. */
+	function receiveDecide(accepted: boolean): string {
+		const waiting = snapshot(recvInbox, nowSecs()).pendingOfferIds
+		if (waiting.length == 0) {
+			return '现在没有等待决定的传输'
+		}
+		const offerId = waiting[waiting.length - 1]
+		const reply = resolveOffer(recvInbox, offerId, accepted, storePrepareFile, storeDropFile)
+		if (reply.status != 200) {
+			// Remembered by id so the next POST answers the same way instead of asking the user again.
+			settleOffer(recvInbox, offerId, reply.status, reply.body)
+		}
+		const ack = JSON.parse(reply.body) as UTSJSONObject | null
+		const code = ack == null ? '' : ack!.getString('code', '')
+		refreshReceive()
+		return code == '' ? '已应答 ' + reply.status.toString() : code + '（' + reply.status.toString() + '）'
+	}
+	// #endif
+
+	const selfName = ref('读取中…')
+	const selfId = ref('')
+	const selfFpShort = ref('')
+	const mocked = ref(false)
+	const note = ref('')
+
+	const host = ref('')
+	const port = ref('43720')
+	const code = ref('')
+	const codeDigits = PAIR_CODE_DIGITS.toString()
+	const codeHint = ref(PAIR_CODE_DIGITS.toString() + ' 位配对码')
+	const secret = ref('')
+	const passChars = PASSPHRASE_CHARS.toString()
+	const passHint = ref(PASSPHRASE_CHARS.toString() + ' 位配对密码')
+	const pinnedLabel = ref('尚未固定任何对端')
+	/** Full fingerprint this device already trusts, '' on platforms whose trust store is not built
+	 *  yet. It is what makes an empty pair code safe: the transport refuses any peer that does not
+	 *  match it, so a blank code can only ever mean "the one I already know". */
+	const pinnedFp = ref('')
+
+	const showPaste = ref(false)
+	const showAdvanced = ref(false)
+	const pairText = ref('')
+	const pasteLabel = ref('粘贴配对信息')
+	const advancedLabel = ref('高级：地址 / 端口')
+	/** What the scanned or pasted payload said about where the peer lives and which key it must have.
+	 *  Empty means the user is typing an address, which nothing can vouch for in advance. */
+	const targetLabel = ref('')
+	const scannedFp = ref('')
+	/** What this device's own network interfaces say about the peer address, filled in by lanCheck.
+	 *  A connect attempt that has already been shown to be impossible costs a handshake nobody waits for. */
+	const netLabel = ref('')
+	const netClass = ref('stateWait')
+
+	const connecting = ref(false)
+	const connected = ref(false)
+	const connectLabel = ref('连接')
+	const sessionLabel = ref('未连接')
+
+	const names = ref<string[]>([])
+	const meta = ref<string[]>([])
+	const states = ref<string[]>([])
+	const stateClass = ref<string[]>([])
+
+	const running = ref(false)
+	const canSend = ref(false)
+	const sendLabel = ref('发送')
+	const progressLabel = ref('未开始')
+	const fillWidth = ref('0px')
+	const lines = ref<string[]>([])
+	const scrollTop = ref(0)
+	const faultLabel = ref('正常')
+
+	/* ------------------------------------------------------------------ receive panel */
+	const recvAsk = ref('')
+	const recvCodeText = ref('')
+	const recvPassText = ref('')
+	const recvCodeLeft = ref('')
+	const recvNames = ref<string[]>([])
+	const recvMeta = ref<string[]>([])
+	const recvStates = ref<string[]>([])
+	const recvStateClass = ref<string[]>([])
+	const recvSummary = ref('')
+	/** Who holds a session on this device right now, in either direction - the same list the desktop
+	 *  calls 已连接设备. Pinned-but-absent peers are not on it. */
+	const recvPeers = ref('现在没有对端连着')
+	const pcIn = ref(false)
+	const sendFaultLabel = ref('正常')
+	const recvFaultLabel = ref('正常')
+	/** The receive card's honest footer. It differs per platform, so each build fills it in its own
+	 *  #ifdef branch below rather than pretending the browser's in-memory stand-in is a real disk. */
+	const recvNote = ref('')
+	// #ifdef APP-ANDROID || APP-HARMONY
+	/** Whether this device's TLS listener is up, and where a peer would reach it. The PC needs an address
+	 *  to type, so the phone has to show its own - the pair code alone is not enough. */
+	const recvListening = ref(false)
+	const recvListen = ref('还没开始监听')
+	const recvListenClass = ref('sub mt8')
+	const recvAddrs = ref<string[]>([])
+	/** The listener's own fingerprint in full. The short one is for reading, this one is for the
+	 *  pairing text a peer can paste instead of scanning. */
+	const recvSelfFp = ref('')
+	// #endif
+
+	/** The picked files live here rather than in the rendered refs so every list edit ends as one
+	 *  whole-array assignment - the views only ever see a new array. */
+	let pickedPaths: string[] = []
+	let pickedNames: string[] = []
+	let pickedRel: string[] = []
+	let pickedSizes: number[] = []
+	/** Held outside the reactive block on purpose: a session is a transport object, not a view model,
+	 *  and the page only ever mirrors its state into connected/sessionLabel. */
+	let activeSession: PeerSession | null = null
+
+	function filtered(src: string[], skip: number): string[] {
+		const out: string[] = []
+		for (let i = 0; i < src.length; i++) {
+			if (i != skip) {
+				out.push(src[i])
+			}
+		}
+		return out
+	}
+
+	/* These three are the smallest helpers on the page, and they sit first for a compiler reason
+	   rather than a readable one: JavaScript hoists a function above its use and Kotlin does not,
+	   so anything a body calls has to already have been declared. */
+	function log(line: string) {
+		const next: string[] = []
+		for (let i = 0; i < lines.value.length; i++) {
+			next.push(lines.value[i])
+		}
+		next.push(line)
+		lines.value = next
+		scrollTop.value = scrollTop.value + 400
+	}
+
+	function syncSendable() {
+		canSend.value = connected.value && pickedPaths.length > 0
+	}
+
+	function stateStyle(status: string): string {
+		if (status == '对方已收下') {
+			return 'stateOk'
+		}
+		if (status.indexOf('失败') >= 0 || status == '被拒绝') {
+			return 'stateBad'
+		}
+		return 'stateRun'
+	}
+
+	function refreshList() {
+		const a: string[] = []
+		const b: string[] = []
+		const c: string[] = []
+		const d: string[] = []
+		for (let i = 0; i < pickedPaths.length; i++) {
+			a.push(pickedNames[i])
+			b.push(formatSize(pickedSizes[i]) + ' → ' + pickedRel[i])
+			c.push(i < states.value.length ? states.value[i] : '等待中')
+			d.push(i < stateClass.value.length ? stateClass.value[i] : 'stateWait')
+		}
+		names.value = a
+		meta.value = b
+		states.value = c
+		stateClass.value = d
+		syncSendable()
+	}
+
+	function clearFiles() {
+		pickedPaths = []
+		pickedNames = []
+		pickedRel = []
+		pickedSizes = []
+		states.value = []
+		stateClass.value = []
+		refreshList()
+	}
+
+	function removeFile(at: number) {
+		pickedPaths = filtered(pickedPaths, at)
+		pickedNames = filtered(pickedNames, at)
+		pickedRel = filtered(pickedRel, at)
+		states.value = filtered(states.value, at)
+		stateClass.value = filtered(stateClass.value, at)
+		const kept: number[] = []
+		for (let i = 0; i < pickedSizes.length; i++) {
+			if (i != at) {
+				kept.push(pickedSizes[i])
+			}
+		}
+		pickedSizes = kept
+		refreshList()
+	}
+
+	/** The status a row shows is protocol state, so it belongs to the same array the relpath lives in:
+	 *  a directory pick can produce names the chooser never displayed. */
+	function onFileState(relpath: string, status: string, done: number, total: number) {
+		let at = -1
+		for (let i = 0; i < pickedRel.length; i++) {
+			if (pickedRel[i] == relpath) {
+				at = i
+			}
+		}
+		if (at < 0) {
+			return
+		}
+		const label = total > 0 ? status + ' ' + done.toString() + '/' + total.toString() + ' 块' : status
+		const next: string[] = []
+		const style: string[] = []
+		for (let i = 0; i < pickedRel.length; i++) {
+			next.push(i == at ? label : (i < states.value.length ? states.value[i] : '等待中'))
+			style.push(i == at ? stateStyle(status) : (i < stateClass.value.length ? stateClass.value[i] : 'stateWait'))
+		}
+		states.value = next
+		stateClass.value = style
+	}
+
+	function openProbe() {
+		uni.navigateTo({ url: '/pages/probe/probe' })
+	}
+
+	function choose() {
+		uni.chooseFile({
+			count: 20,
+			type: 'all',
+			success: (res) => {
+				const list = res.tempFiles
+				for (let i = 0; i < list.length; i++) {
+					const f = list[i]
+					pickedPaths.push(f.path)
+					pickedNames.push(f.name)
+					pickedRel.push(f.name)
+					pickedSizes.push(f.size)
+				}
+				refreshList()
+				log('已选择 ' + list.length.toString() + ' 个文件')
+			},
+			fail: (err) => {
+				log('选择文件失败：' + err.errMsg)
+			}
+		})
+	}
+
+	function onProgress(done: number, total: number) {
+		if (total <= 0) {
+			fillWidth.value = '0px'
+			progressLabel.value = done.toString() + ' 块'
+			return
+		}
+		fillWidth.value = Math.floor(done * 240 / total).toString() + 'px'
+		progressLabel.value = done.toString() + ' / ' + total.toString() + ' 块 · ' + Math.floor(done * 100 / total).toString() + '%'
+	}
+
+	/* ------------------------------------------------------------------ the peer */
+
+	function togglePaste() {
+		showPaste.value = !showPaste.value
+		pasteLabel.value = showPaste.value ? '收起粘贴' : '粘贴配对信息'
+	}
+
+	function toggleAdvanced() {
+		showAdvanced.value = !showAdvanced.value
+		advancedLabel.value = showAdvanced.value ? '收起地址 / 端口' : '高级：地址 / 端口'
+	}
+
+	let netLevel = ''
+
+	/** Four answers, and the page shows all of them: same network, provably not, reachable but odd,
+	 *  or nothing to compare against. Collapsing the last one into "fine" would let the phone sit on
+	 *  a cellular connection while the log claims the peer looks reachable. */
+	function showNet(level: string, text: string) {
+		netLevel = level
+		netLabel.value = text
+		if (level == 'ok') {
+			netClass.value = 'stateOk'
+		} else if (level == 'bad') {
+			netClass.value = 'stateBad'
+		} else {
+			netClass.value = 'stateWait'
+		}
+	}
+
+	/** One parser for both ways in: the camera on a phone, a pasted string everywhere. */
+	function applyConnectText(text: string): boolean {
+		const target = parsePairUrl(text)
+		if (target.reject != '') {
+			log('配对信息读不出来：' + target.reject)
+			return false
+		}
+		host.value = target.host
+		port.value = target.port == '' ? TRANSPORT_PORT.toString() : target.port
+		if (target.code != '') {
+			code.value = target.code
+		}
+		if (target.secret != '') {
+			secret.value = target.secret
+		}
+		scannedFp.value = target.fingerprint
+		targetLabel.value = '来自配对二维码：' + target.host + ':' + port.value + '　指纹 ' + target.fingerprint.substring(0, 16) + '…'
+		showAdvanced.value = false
+		log(target.secret == ''
+			? '已读入配对信息，核对配对码后点连接'
+			: '已读入配对信息（含密码），核对后点连接')
+		lanCheck(target.host, function (level: string, text: string): void {
+			showNet(level, text)
+		})
+		syncSendable()
+		return true
+	}
+
+	// #ifndef WEB
+	function onScan() {
+		uni.scanCode({
+			success: (res) => {
+				applyConnectText(res.result)
+			},
+			fail: (err) => {
+				// ScanCodeFail has no fields on Android - the camera either gives a result or it does not.
+				log('扫码没成功（可改用粘贴）')
+			}
+		})
+	}
+	// #endif
+
+	function onPaste() {
+		applyConnectText(pairText.value.trim())
+	}
+
+	function clearTarget() {
+		host.value = ''
+		port.value = TRANSPORT_PORT.toString()
+		code.value = ''
+		secret.value = ''
+		scannedFp.value = ''
+		pairText.value = ''
+		targetLabel.value = ''
+		netLabel.value = ''
+		netLevel = ''
+		syncSendable()
+	}
+
+	function buildOptions(): TransferOptions {
+		const opts = new TransferOptions()
+		opts.host = host.value.trim()
+		const declaredPort = parseFloat(port.value)
+		opts.port = declaredPort > 0 ? Math.floor(declaredPort) : TRANSPORT_PORT
+		opts.code = digitsOnly(code.value)
+		// Whitespace either side is a paste artifact; the case is not touched, because the peer
+		// compares these bytes for equality.
+		opts.secret = secret.value.trim()
+		opts.pinPrefix = scannedFp.value
+		// #ifdef APP-HARMONY
+		// This phone's TLS listener answers under an RSA leaf, not under the Ed25519 identity that
+		// signed the pair message, so §3 says both numbers: the peer pins the first and knows to
+		// expect the second on the socket. '' on the ends whose own key signs its certificate.
+		opts.tlsFingerprint = servedFingerprint()
+		// #endif
+		return opts
+	}
+
+	let activeOptions = new TransferOptions()
+
+	/** Every request goes through here so the fingerprint the QR promised is the one the transport
+	 *  pins - a typed address has none, and that difference is exactly what the user is warned about. */
+	function callWire(
+		method: string,
+		path: string,
+		jsonBody: string,
+		token: string,
+		body: ArrayBuffer,
+		sha: string,
+		cb: ReplyCallback
+	): void {
+		request(method, activeOptions.host, activeOptions.port, path, jsonBody, token, scannedFp.value, body, sha, cb)
+	}
+
+	// #ifdef WEB
+	/** The browser's trust store is the demo peer's, so it has one answer for every address. */
+	function refreshPinned() {
+		const fp = pinnedFingerprint()
+		pinnedFp.value = fp
+		pinnedLabel.value = fp == '' ? '尚未固定对端：首次配对时固定' : '已固定对端 ' + fp.substring(0, 16) + '…'
+		codeHint.value = fp == '' ? PAIR_CODE_DIGITS.toString() + ' 位配对码' : '配对码（已固定过，留空即可用密钥重连）'
+		passHint.value = fp == ''
+			? PASSPHRASE_CHARS.toString() + ' 位配对密码'
+			: '配对密码（已固定过，留空即可）'
+	}
+	// #endif
+
+	// #ifdef APP-ANDROID || APP-HARMONY
+	/** On the phone the pin is per address, and reading it is a round trip to the keystore, so this
+	 *  is a callback rather than a value: the labels only change once the answer arrives. */
+	function refreshPinned() {
+		const where = host.value.trim()
+		if (where == '') {
+			pinnedFp.value = ''
+			pinnedLabel.value = '尚未固定对端：首次配对时固定'
+			codeHint.value = PAIR_CODE_DIGITS.toString() + ' 位配对码'
+			passHint.value = PASSPHRASE_CHARS.toString() + ' 位配对密码'
+			return
+		}
+		pinnedFor(where, buildOptions().port, function (fp: string): void {
+			pinnedFp.value = fp
+			pinnedLabel.value = fp == ''
+				? where + ' 还没有固定过：首次配对时固定它的证书指纹'
+				: '已固定 ' + where + ' 的指纹 ' + fp.substring(0, 16) + '…'
+			codeHint.value = fp == ''
+				? PAIR_CODE_DIGITS.toString() + ' 位配对码'
+				: '配对码（已固定过，留空即可用密钥重连）'
+			// Once a peer is pinned, its key alone is enough to reconnect - the code and the password
+			// only stand between us and a stranger, so leaving either out is not an error here.
+			passHint.value = fp == ''
+				? PASSPHRASE_CHARS.toString() + ' 位配对密码'
+				: '配对密码（已固定过，留空即可）'
+		})
+	}
+	// #endif
+
+	function markConnected(session: PeerSession, message: string) {
+		activeSession = session
+		connected.value = true
+		connectLabel.value = '已连接'
+		sessionLabel.value = message
+		// This end dialled out, so our own receiver has to know who already occupies the single
+		// session slot - the inbound half never sees this handshake (spec §3).
+		receiveHoldSlot(session.peerFingerprint)
+		refreshPinned()
+		syncSendable()
+	}
+
+	function markDisconnected(message: string) {
+		activeSession = null
+		connected.value = false
+		connectLabel.value = '连接'
+		sessionLabel.value = message
+		receiveHoldSlot('')
+		syncSendable()
+	}
+
+	/** The handshake itself, one step past every check the button makes. */
+	function startConnect() {
+		connecting.value = true
+		connectLabel.value = '连接中…'
+		log('→ 连接 ' + activeOptions.host + ':' + activeOptions.port.toString())
+		connectPeer(
+			activeOptions,
+			(cb: SelfCallback): void => {
+				selfInfo(cb)
+			},
+			(message: string, cb: SignCallback): void => {
+				signPair(message, cb)
+			},
+			callWire,
+			(line: string): void => {
+				log(line)
+			},
+			(ok: boolean, message: string, session: PeerSession | null): void => {
+				connecting.value = false
+				if (!ok || session == null) {
+					markDisconnected(message)
+					log('连接失败：' + message)
+					return
+				}
+				markConnected(session, message)
+				log(message)
+			}
+		)
+	}
+
+	/** The second half of the connect button, once the page knows what the pin store says about this
+	 *  address. */
+	function checkCodeAndNetwork() {
+		if (activeOptions.code != '' || pinnedFp.value == '') {
+			const why = codeReject(activeOptions.code)
+			if (why != '') {
+				log('配对码：' + why)
+				return
+			}
+		} else {
+			log('留空配对码：用已固定的密钥重连')
+		}
+		const passWhy = passReject(activeOptions.secret)
+		if (passWhy != '') {
+			log('配对密码：' + passWhy)
+			return
+		}
+		lanCheck(activeOptions.host, function (level: string, text: string): void {
+			showNet(level, text)
+			if (level == 'bad') {
+				log('没有连接：' + text)
+				return
+			}
+			startConnect()
+		})
+	}
+
+	/** The connect button: check the code, check the network, then spend a handshake. In that order,
+	 *  because a phone on the wrong network would otherwise wait out a TLS timeout for a peer it could
+	 *  never have reached. */
+	function onConnect() {
+		if (connecting.value || connected.value) {
+			return
+		}
+		activeOptions = buildOptions()
+		// Whether a blank code is enough is the pin store's answer, not this page's memory of the last
+		// handshake: the peer stays pinned across a restart, and 留空重连 has to work for it then too.
+		// #ifdef APP-ANDROID || APP-HARMONY
+		pinnedFor(activeOptions.host, activeOptions.port, function (fp: string): void {
+			pinnedFp.value = fp
+			checkCodeAndNetwork()
+		})
+		// #endif
+		// #ifdef WEB
+		pinnedFp.value = pinnedFingerprint()
+		checkCodeAndNetwork()
+		// #endif
+	}
+
+	function onDisconnect() {
+		const session = activeSession
+		if (session == null) {
+			return
+		}
+		markDisconnected(pinnedFp.value == ''
+			? '已断开：本机还没有固定这台对端，下次连上要重新核对配对码'
+			: '已断开：指纹仍然固定，下次连上不用再核对配对码')
+		log('已断开 ' + session.peerName)
+	}
+
+	function onFinished(ok: boolean, summary: string) {
+		running.value = false
+		sendLabel.value = '发送'
+		progressLabel.value = (ok ? '完成：' : '失败：') + summary
+		refreshPinned()
+		syncSendable()
+	}
+
+	function onSend() {
+		if (running.value) {
+			return
+		}
+		const session = activeSession
+		if (session == null) {
+			log('先连上对端')
+			return
+		}
+		if (pickedPaths.length == 0) {
+			log('先选择文件')
+			return
+		}
+		running.value = true
+		sendLabel.value = '传输中…'
+		progressLabel.value = '准备中'
+		fillWidth.value = '0px'
+		syncSendable()
+
+		activeOptions = buildOptions()
+		for (let i = 0; i < pickedPaths.length; i++) {
+			activeOptions.paths.push(pickedPaths[i])
+			activeOptions.relpaths.push(pickedRel[i])
+		}
+		for (let i = 0; i < pickedRel.length; i++) {
+			onFileState(pickedRel[i], '排队中', 0, 0)
+		}
+
+		sendFiles(
+			session,
+			activeOptions,
+			(cb: SelfCallback): void => {
+				selfInfo(cb)
+			},
+			(message: string, cb: SignCallback): void => {
+				signPair(message, cb)
+			},
+			callWire,
+			(path: string, relpath: string, cb: MetaCallback): void => {
+				prepareFile(path, relpath, cb)
+			},
+			(path: string, offset: number, length: number, cb: BufferCallback): void => {
+				readChunk(path, offset, length, cb)
+			},
+			(buf: ArrayBuffer, cb: HexCallback): void => {
+				digestHex(buf, cb)
+			},
+			(line: string): void => {
+				log(line)
+			},
+			(done: number, total: number): void => {
+				onProgress(done, total)
+			},
+			(relpath: string, status: string, done: number, total: number): void => {
+				onFileState(relpath, status, done, total)
+			},
+			(ok: boolean, summary: string): void => {
+				onFinished(ok, summary)
+			}
+		)
+	}
+
+	// #ifdef WEB
+	function loadDemo() {
+		const d = demoPeer()
+		code.value = d.getString('code', '')
+		secret.value = d.getString('passphrase', '')
+		host.value = d.getString('host', '127.0.0.1')
+		port.value = d.getNumber('port', TRANSPORT_PORT).toString()
+		log('演示机配对码 ' + code.value + '　密码 ' + secret.value + '（手输路径，没有预先核对的指纹）')
+		syncSendable()
+	}
+
+	/** The same string a phone would get out of the camera, so the browser exercises the parse-and-pin
+	 *  path rather than only the happy typed one. */
+	function pasteDemoQr() {
+		pairText.value = demoQrUrl()
+		applyConnectText(pairText.value)
+	}
+
+	function expireDemoToken() {
+		demoExpireToken()
+		log('演示机丢了会话令牌：下一次发送应当静默重新配对，日志里不该再问你要配对码')
+	}
+
+	function restartDemo() {
+		demoRestart()
+		const d = demoPeer()
+		code.value = d.getString('code', '')
+		log('演示机已重启：新指纹 ' + d.getString('fingerprint', '').substring(0, 16) + '…，本机固定仍是旧的')
+		refreshPinned()
+	}
+
+	function unpin() {
+		demoUnpin()
+		refreshPinned()
+		markDisconnected('已解除固定，下次连接重新核对配对码')
+		log('已解除固定，下次配对重新固定')
+	}
+
+	function setFault(fault: string) {
+		setDemoFault(fault)
+		faultLabel.value = fault == '' ? '正常' : fault
+	}
+	// #endif
+
+	/** The receive card mirrors the kernel's snapshot. Every number and status word here is what
+	 *  the state machine reported - the page keeps no progress idea of its own, so a row cannot
+	 *  say "done" before the whole-file digest has actually been re-read. */
+	function refreshReceive() {
+		const snap = receiveSnapshot()
+		recvCodeText.value = snap.pairCode == '' ? '还没有' : snap.pairCode
+		recvPassText.value = snap.passphrase == '' ? '还没有' : snap.passphrase
+		recvCodeLeft.value = snap.staticCode
+			? '固定的一组，点「更换配对码和密码」才会换'
+			: '有效还剩 ' + snap.codeSecondsLeft.toString() + ' 秒，过期自动换一个'
+		recvAsk.value = snap.pendingOfferIds.length > 0
+			? '来自 ' + (snap.pendingFrom[0] == '' ? '对端' : snap.pendingFrom[0]) + ' 的传输在等你决定。PC 那条提交清单的请求一直挂着，直到你点接受或拒绝。'
+			: ''
+		const a: string[] = []
+		const b: string[] = []
+		const c: string[] = []
+		const d: string[] = []
+		for (let i = 0; i < snap.rows.length; i++) {
+			const row = snap.rows[i]
+			a.push(row.relpath)
+			b.push(formatSize(row.size) + ' · 来自 ' + (row.fromName == '' ? '对端' : row.fromName))
+			let label = ''
+			let style = 'stateWait'
+			if (row.awaiting) {
+				label = '等你决定'
+			} else if (row.verdict == 1) {
+				label = '已校验' + (row.dest == '' ? '' : '，落到 ' + row.dest)
+				style = 'stateOk'
+			} else if (row.verdict == 2) {
+				label = '整文件校验没过' + (row.missingAt > 0 ? '（还缺 ' + row.missingAt.toString() + ' 块）' : '')
+				style = 'stateBad'
+			} else if (row.have <= 0) {
+				label = '已接受，还没收到分块'
+			} else if (row.have < row.count) {
+				label = '收到 ' + row.have.toString() + '/' + row.count.toString() + ' 块'
+				style = 'stateRun'
+			} else {
+				label = '收齐了，等整文件校验'
+				style = 'stateRun'
+			}
+			c.push(label)
+			d.push(style)
+		}
+		recvNames.value = a
+		recvMeta.value = b
+		recvStates.value = c
+		recvStateClass.value = d
+		recvSummary.value = '已验证 ' + snap.verifiedFiles.toString() + ' 个 · 没通过 ' + snap.rejectedFiles.toString() + ' 个 · 固定对端 ' + snap.peers.toString() + ' 台'
+		recvPeers.value = snap.connectedNames.length == 0
+			? '现在没有对端连着'
+			: '连着这台设备的对端：' + snap.connectedNames.join('、')
+		// #ifdef WEB
+		pcIn.value = demoPcConnected()
+		// #endif
+	}
+
+	function recvTimerTick() {
+		// Schedule before reading: one bad tick must not silence the panel until the next reload.
+		setTimeout(function (): void {
+			recvTimerTick()
+		}, 1000)
+		try {
+			refreshReceive()
+		} catch (e) {
+			log('刷新接收面板失败：' + e)
+		}
+	}
+
+	function onRecvAccept() {
+		log(receiveDecide(true))
+		refreshReceive()
+	}
+
+	function onRecvRefuse() {
+		log(receiveDecide(false))
+		refreshReceive()
+	}
+
+	// #ifdef APP-ANDROID || APP-HARMONY
+	/** The address a peer would type, pulled out of the interface list the listener reported - that
+	 *  list is formatted for reading (addr/prefix（iface）), not for the wire. */
+	function lanIp(): string {
+		if (recvAddrs.value.length == 0) {
+			return ''
+		}
+		const raw = recvAddrs.value[0]
+		const slash = raw.indexOf('/')
+		const head = slash >= 0 ? raw.substring(0, slash) : raw
+		const paren = head.indexOf('（')
+		return paren >= 0 ? head.substring(0, paren) : head
+	}
+	// #endif
+
+	/** What this device promises the other side, in one line the user can hand over. There is no QR
+	 *  image on the phone yet, so this is the same payload a scan would give - address, port, the key
+	 *  to pin, code and password - and the desktop can paste it into 添加设备 instead. On Android the
+	 *  certificate the listener hands out is signed by this device's own identity key, so `f` really
+	 *  is this fingerprint; that is what lets the two ends agree on one number per device. */
+	function copyPairing() {
+		let text = '配对码 ' + recvCodeText.value + '　密码 ' + recvPassText.value
+		// #ifdef APP-ANDROID || APP-HARMONY
+		if (recvListening.value) {
+			for (let i = 0; i < recvAddrs.value.length; i++) {
+				text = text + '　地址 ' + recvAddrs.value[i]
+			}
+			text = text + '　端口 ' + TRANSPORT_PORT.toString()
+			const ip = lanIp()
+			if (ip != '' && recvSelfFp.value != '' && recvPassText.value != '还没有') {
+				text = 'chuanshu://p?h=' + ip + '&p=' + TRANSPORT_PORT.toString() +
+					'&v=1&f=' + recvSelfFp.value + '&c=' + recvCodeText.value + '&k=' + recvPassText.value
+			}
+		}
+		// #endif
+		uni.setClipboardData({
+			data: text,
+			success: () => {
+				log('已复制本机配对信息：' + text)
+			},
+			fail: (err) => {
+				log('复制没成功：' + err.errMsg + '　' + text)
+			}
+		})
+	}
+
+	/** Fresh material by the user's hand only. Pinned peers and a live session keep working - this
+	 *  changes what a stranger has to get right, not what this device already vouched for. */
+	function onRotatePairing() {
+		log(receiveRotatePairing())
+		refreshReceive()
+	}
+
+	// #ifdef WEB
+	function initReceivePanel() {
+		recvNote.value = '这一端的落盘是内存里的模拟：浏览器既不能监听 43720，也不能写文件。接收状态机本身在 cs-receive.uts，和 app-android 那半边共用同一份。'
+		recvTimerTick()
+	}
+
+	/* The PC role, so the receiving half is testable without a second device: it drives the same
+	   cs-client state machine a real sender uses, only aimed at this page's own kernel. */
+	function pcPairGood() {
+		demoPcConnect(receiveCode(), (line: string): void => {
+			log('PC：' + line)
+		}, function (ok: boolean, message: string, session: PeerSession | null): void {
+			log((ok ? 'PC 已配对：' : 'PC 配对失败：') + message)
+			refreshReceive()
+		})
+	}
+
+	function pcPairWrong() {
+		demoPcConnect(receiveWrongCode(), (line: string): void => {
+			log('PC：' + line)
+		}, function (ok: boolean, message: string, session: PeerSession | null): void {
+			log((ok ? '不对：PC 用错配对码也连上了 ' : 'PC 配对被拒（预期）：' + message) + '　多点几次应当变成 PEER_BUSY')
+			refreshReceive()
+		})
+	}
+
+	/** The signature-only repair the contract allows a peer whose key this end already pinned: no code
+	 *  crosses the wire, and the answer says 沿用旧指纹. This is the whole reason a phone that dropped
+	 *  and reconnected should never ask the user to read out six digits again. */
+	function pcPairResume() {
+		demoPcConnect('', (line: string): void => {
+			log('PC：' + line)
+		}, function (ok: boolean, message: string, session: PeerSession | null): void {
+			log((ok ? 'PC 用已固定的密钥重连：' : 'PC 重连失败：') + message)
+			refreshReceive()
+		})
+	}
+
+	function pcSend() {
+		log('PC 开始发两个文件，清单会在上面的接收卡片里等你决定')
+		demoPcSend(
+			(line: string): void => {
+				log('PC：' + line)
+			},
+			(done: number, total: number): void => {
+				if (total > 0 && done == total) {
+					log('PC 推完 ' + total.toString() + ' 块')
+				}
+			},
+			(relpath: string, status: string, done: number, total: number): void => {
+				// 发送端的逐文件状态在接收这一侧都由内核的行状态体现，这里不重复刷屏。
+			},
+			function (ok: boolean, summary: string): void {
+				log('PC → 本机：' + (ok ? '完成 ' : '失败 ') + summary)
+				refreshReceive()
+			}
+		)
+		// The offer parks inside that call, so the decision has to be on screen the moment it
+		// returns. The 1 s ticker is only a fallback: a hidden browser tab throttles setTimeout to
+		// about once a minute, and an offer that arrived would otherwise sit unseen.
+		refreshReceive()
+	}
+
+	function pcBreak() {
+		demoPcDisconnect()
+		pcIn.value = false
+		log('PC 已断开：本机对它的固定还在，重连不用再核对配对码')
+	}
+
+	function pickSendFault(fault: string) {
+		setSenderFault(fault)
+		sendFaultLabel.value = fault == '' ? '正常' : fault
+		log('发送端故障 = ' + sendFaultLabel.value)
+	}
+
+	function pickRecvFault(fault: string) {
+		setReceiveFault(fault)
+		recvFaultLabel.value = fault == '' ? '正常' : fault
+		log('接收端故障 = ' + recvFaultLabel.value + '（影响下一次点接受，或下一次写分块）')
+	}
+
+	function runRecvSelf() {
+		const parts = receiveSelfReport().split('\n')
+		for (let i = 0; i < parts.length; i++) {
+			log(parts[i])
+		}
+	}
+	// #endif
+
+	// #ifdef APP-ANDROID || APP-HARMONY
+	/** The listener's own words, mirrored onto the card. The addresses are what the PC has to type, so
+	 *  this is the line the user reads out across the desk - and it is only honest because CsWire.lan()
+	 *  enumerated the real interfaces rather than guessing. */
+	function applyListen(text: string) {
+		const made = JSON.parse(text) as UTSJSONObject | null
+		if (made == null) {
+			return
+		}
+		recvListening.value = made!.getBoolean('listening') ?? false
+		const root = made!.getString('root', '') ?? ''
+		const fp = made!.getString('fingerprint', '') ?? ''
+		recvSelfFp.value = fp
+		recvListen.value = recvListening.value
+			? '正在监听 ' + (made!.getNumber('port') ?? 0).toString() + '，收到的文件落在 ' + root
+			: '没有监听：' + (made!.getString('note', '') ?? '')
+		recvListenClass.value = recvListening.value ? 'sub mt8 stateOk' : 'sub mt8 stateBad'
+		recvNote.value = '本机指纹 ' + (fp == '' ? '读不出来' : fp.substring(0, 16) + '…') + '，对端首次配对时固定它。'
+		const list = made!.getArray('addrs')
+		const out: string[] = []
+		if (list != null) {
+			for (let i = 0; i < list!.length; i++) {
+				out.push(list![i].toString())
+			}
+		}
+		recvAddrs.value = out
+	}
+
+	function onRecvListen() {
+		receiveStart(function (ok: boolean, message: string): void {
+			log((ok ? '接收已打开：' : '接收没能打开：') + message)
+			applyListen(receiveStatus())
+		})
+	}
+
+	function onRecvListenStop() {
+		log(receiveStop())
+		applyListen(receiveStatus())
+	}
+
+	function initReceivePanel() {
+		// #ifdef APP-HARMONY
+		// The listener refuses to open with nobody to hand requests to, and it must be able to answer a
+		// pair the moment the port is up - so the handler and the code both come first.
+		serveBind(harmonyReceive)
+		syncPairing()
+		// #endif
+		onRecvListen()
+		recvTimerTick()
+	}
+
+	function unpin() {
+		const where = host.value.trim()
+		if (where == '') {
+			log('还没有对端地址，没有可解除的固定')
+			return
+		}
+		unpinPeer(where, buildOptions().port, function (dropped: boolean, message: string): void {
+			if (message != '') {
+				log('解除固定失败：' + message)
+				return
+			}
+			log(dropped ? '已解除 ' + where + ' 的固定：下次配对要重新核对配对码' : where + ' 本来就没有固定过')
+			refreshPinned()
+			if (dropped) {
+				markDisconnected('已解除固定，下次连接重新核对配对码')
+			}
+		})
+	}
+	// #endif
+
+	mocked.value = transportMocked()
+	note.value = transportNote()
+	code.value = ''
+	selfInfo(function (peerId: string, name: string, fp: string): void {
+		selfId.value = peerId
+		selfName.value = name
+		// A device whose Ed25519 provider is missing has no fingerprint to show, and saying so here is
+		// better than a blank line the user reads as "still loading".
+		selfFpShort.value = fp == '' ? '读不出来：这台机器做不了本机密钥' : fp.substring(0, 16) + '…'
+	})
+	refreshPinned()
+	initReceivePanel()
+	syncSendable()
+	log('就绪')
+</script>
+
+<style>
+	.page {
+		flex-direction: column;
+		/*  Both, because neither alone bounds the scroll-view on Harmony: the page container is
+		    sized by its content, so `100%` resolves to that content and nothing scrolls, and `flex: 1`
+		    has no definite parent height to grow into. Together they give the scroll-view the viewport. */
+		flex: 1;
+		height: 100%;
+		padding: 12px;
+		background-color: #f2f3f5;
+	}
+
+	.card {
+		flex-direction: column;
+		background-color: #ffffff;
+		border-radius: 10px;
+		padding: 12px;
+		margin-bottom: 12px;
+	}
+
+	.head {
+		flex-direction: row;
+		justify-content: space-between;
+		align-items: center;
+	}
+
+	.h {
+		font-size: 14px;
+		font-weight: bold;
+		color: #1f2329;
+	}
+
+	.badge {
+		font-size: 11px;
+		color: #d46b08;
+		background-color: #fff7e8;
+		border-radius: 4px;
+		padding: 2px 6px;
+	}
+
+	.big {
+		margin-top: 6px;
+		font-size: 15px;
+		color: #1f2329;
+	}
+
+	.sub {
+		margin-top: 4px;
+		font-size: 12px;
+		color: #8a9099;
+	}
+
+	.note {
+		margin-top: 6px;
+		font-size: 12px;
+		color: #6b7280;
+		line-height: 18px;
+	}
+
+	.row {
+		flex-direction: row;
+		align-items: center;
+	}
+
+	.wrap {
+		flex-wrap: wrap;
+	}
+
+	.mt8 {
+		margin-top: 8px;
+	}
+
+	.col1 {
+		flex: 1;
+		flex-direction: column;
+	}
+
+	.col2 {
+		width: 80px;
+		flex-direction: column;
+	}
+
+	.input {
+		height: 38px;
+		font-size: 13px;
+		background-color: #f5f6f8;
+		border-radius: 6px;
+		padding: 0 8px;
+		margin-right: 8px;
+	}
+
+	.filerow {
+		flex-direction: row;
+		align-items: center;
+		margin-top: 8px;
+	}
+
+	.fname {
+		font-size: 13px;
+		color: #1f2329;
+	}
+
+	.fsize {
+		font-size: 11px;
+		color: #8a9099;
+		margin-top: 2px;
+	}
+
+	.fstate {
+		font-size: 11px;
+		margin-top: 2px;
+	}
+
+	.stateWait {
+		color: #8a9099;
+	}
+
+	.stateRun {
+		color: #1456f0;
+	}
+
+	.stateOk {
+		color: #2e9b57;
+	}
+
+	.stateBad {
+		color: #d4380d;
+	}
+
+	.mini {
+		font-size: 12px;
+		background-color: #f0f2f5;
+		color: #1f2329;
+		border-radius: 6px;
+		padding: 4px 10px;
+		margin: 0 4px 4px 0;
+	}
+
+	.primary {
+		font-size: 15px;
+		background-color: #1456f0;
+		color: #ffffff;
+		border-radius: 8px;
+	}
+
+	.bar {
+		height: 8px;
+		background-color: #eef0f3;
+		border-radius: 4px;
+		width: 240px;
+		overflow: hidden;
+	}
+
+	.fill {
+		height: 8px;
+		background-color: #1456f0;
+		border-radius: 4px;
+	}
+
+	.log {
+		height: 240px;
+		background-color: #f7f8fa;
+		border-radius: 6px;
+		padding: 8px;
+	}
+
+	.logline {
+		font-size: 12px;
+		color: #41474f;
+		line-height: 19px;
+	}
+</style>

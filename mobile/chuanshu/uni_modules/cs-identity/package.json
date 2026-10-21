@@ -1,0 +1,57 @@
+{
+  "id": "cs-identity",
+  "displayName": "cs-identity",
+  "version": "0.0.1",
+  "description": "传书手机端身份探针：Ed25519 密钥、SPKI 摘要、自签与 TLS 组件在真机上到底哪一步可用",
+  "repository": "",
+  "engines": {
+    "HBuilderX": "^4.25"
+  },
+  "dcloudext": {
+    "type": "uts",
+    "sale": {
+      "regular": {
+        "price": "0.00"
+      },
+      "sourcecode": {
+        "price": "0.00"
+      }
+    },
+    "contact": {
+      "qq": ""
+    },
+    "declaration": {
+      "ads": "无",
+      "data": "插件不采集任何数据",
+      "permissions": "无"
+    },
+    "npmurl": ""
+  },
+  "uni_modules": {
+    "dependencies": [],
+    "encrypt": [],
+    "platforms": {
+      "cloud": {
+        "tcb": "n",
+        "aliyun": "n"
+      },
+      "client": {
+        "Vue": {
+          "vue2": "n",
+          "vue3": "y"
+        },
+        "App": {
+          "app-android": {
+            "minVersion": "21"
+          }
+        },
+        "H5-pc": {
+          "Chrome": "y"
+        },
+        "H5-mobile": {
+          "Chrome": "y"
+        }
+      }
+    }
+  }
+}

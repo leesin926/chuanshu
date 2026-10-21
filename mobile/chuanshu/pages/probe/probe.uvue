@@ -1,0 +1,136 @@
+<template>
+	<view class="page">
+		<text class="title">传书 · 平台能力探针</text>
+		<text class="hint">这几项回答的是"这台设备到底能不能做证书固定和被连进来"。浏览器里跑出来的只是页面自述，不能当作 Android 证据。</text>
+		<view class="row">
+			<button class="btn" @click="runIdentity">运行环境</button>
+			<button class="btn" @click="runCert">证书</button>
+			<button class="btn" @click="runTls">TLS 自检</button>
+		</view>
+		<!-- #ifdef APP-HARMONY -->
+		<view class="row">
+			<button class="btn" @click="runAlg">密钥算法 TLS</button>
+			<button class="btn" @click="runPc">连 PC</button>
+		</view>
+		<view class="row">
+			<button class="btn" @click="runHold">监听起来</button>
+			<button class="btn" @click="runHoldLog">监听日志</button>
+			<button class="btn" @click="runBulk">客户端读大块</button>
+		</view>
+		<!-- #endif -->
+		<!-- #ifdef WEB -->
+		<button class="btn mt12" @click="runSha">SHA-256 自检</button>
+		<!-- #endif -->
+		<text class="lines">{{ lines }}</text>
+	</view>
+</template>
+
+<script setup lang="uts">
+	import { identityProbeAsync, certProbeAsync, tlsSelfCheckAsync } from '@/uni_modules/cs-identity'
+	// #ifdef APP-HARMONY
+	import { tlsAlgProbeAsync, pcDialProbe, holdListener, holdListenerLog, bulkReadProbe } from '@/uni_modules/cs-identity'
+	// #endif
+
+	/** Where `py .probe/bulkserver.py 300000 4096 0` is listening. A dev-tool address on purpose: this
+	 *  button measures the platform, not the product, and the machine running it changes per bench. */
+	const BULK_HOST = '192.168.2.233'
+	const BULK_PORT = 43799
+	// #ifdef WEB
+	import { shaSelfTest } from '@/uni_modules/cs-transport'
+	// #endif
+
+	const lines = ref('还没有运行。')
+	// #ifdef APP-HARMONY
+	const bulkHost = ref(BULK_HOST)
+	const bulkPort = ref(BULK_PORT)
+	// #endif
+
+	function show(text: string) {
+		lines.value = text
+	}
+
+	function runIdentity() {
+		lines.value = '运行中……'
+		identityProbeAsync(show)
+	}
+
+	function runCert() {
+		lines.value = '运行中……'
+		certProbeAsync(show)
+	}
+
+	function runTls() {
+		lines.value = '运行中……'
+		tlsSelfCheckAsync(show)
+	}
+
+	// #ifdef APP-HARMONY
+	function runAlg() {
+		lines.value = '三种密钥算法各跑一次回路 TLS，最长约半分钟……'
+		tlsAlgProbeAsync(show)
+	}
+
+	function runPc() {
+		lines.value = '拨号 PC 侧的两个监听（Ed25519 / RSA），最长约半分钟……'
+		pcDialProbe(show)
+	}
+
+	function runHold() {
+		lines.value = '正在起监听……'
+		holdListener(show)
+	}
+
+	function runHoldLog() {
+		holdListenerLog(show)
+	}
+
+	function runBulk() {
+		lines.value = '正在从 ' + bulkHost.value + ' 读 300000 字节……'
+		bulkReadProbe(bulkHost.value, bulkPort.value, 300000, show)
+	}
+	// #endif
+
+	// #ifdef WEB
+	function runSha() {
+		lines.value = shaSelfTest()
+	}
+	// #endif
+</script>
+
+<style>
+	.mt12 {
+		margin-top: 12px;
+	}
+	.page {
+		flex-direction: column;
+		padding: 16px;
+	}
+
+	.title {
+		font-size: 17px;
+		font-weight: bold;
+		margin-bottom: 8px;
+	}
+
+	.hint {
+		font-size: 12px;
+		color: #8a9099;
+		margin-bottom: 12px;
+	}
+
+	.row {
+		flex-direction: row;
+	}
+
+	.btn {
+		flex: 1;
+		margin: 0 4px;
+		font-size: 13px;
+	}
+
+	.lines {
+		margin-top: 12px;
+		font-size: 12px;
+		color: #555555;
+	}
+</style>

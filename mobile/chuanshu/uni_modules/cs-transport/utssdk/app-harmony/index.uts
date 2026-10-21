@@ -1,0 +1,2194 @@
+/** The HarmonyOS half of the transport: a pinned TLS client, real files, and the local interfaces
+ *  that decide whether a peer address can be reached at all.
+ *
+ *  The protocol does not live here. It lives in ../cs-client.uts and ../cs-protocol.uts, which the page
+ *  runs as JavaScript on this platform; this file only moves bytes, and every capability the state
+ *  machine needs arrives as one of the exported functions below - the same names, the same arguments
+ *  and the same failure vocabulary as app-android/index.uts.
+ *
+ *  It is one file rather than three because a UTS plugin on Harmony is compiled as its own ArkTS
+ *  module: imports between sibling platform files would have to resolve a `.uts` path that ArkTS does
+ *  not know. What has to match the other platforms is the byte format, not the file layout - the same
+ *  44-byte SubjectPublicKeyInfo, the same 32-byte raw pair key, the same SHA-256 over the same DER. */
+import cryptoFramework from '@ohos.security.cryptoFramework'
+import socket from '@ohos.net.socket'
+import cert from '@ohos.security.cert'
+import connection from '@ohos.net.connection'
+import deviceInfo from '@ohos.deviceInfo'
+import fs from '@ohos.file.fs'
+import util from '@ohos.util'
+
+/** Must equal TRANSPORT_PORT in ../cs-protocol.uts; restated here because this file cannot import it. */
+const TRANSPORT_PORT: number = 43720
+const HEXD = '0123456789abcdef'
+/** The application-level sandbox directory. It is the same path for every module of this bundle, so a
+ *  key written here survives a page change but not an uninstall - exactly like filesDir on Android. */
+const KEY_DIR = '/data/storage/el2/base/files'
+const PUB_FILE = 'chuanshu-ed25519.spki'
+const PRI_FILE = 'chuanshu-ed25519.pk8'
+const ID_FILE = 'chuanshu-peer-id.txt'
+const TRUST_FILE = 'chuanshu-trusted.json'
+/** The three pieces of the certificate this device serves, kept together because the fingerprint a
+ *  peer pins has to survive a restart: the leaf is rebuilt from these bytes rather than re-keyed. */
+const TLS_SPKI_FILE = 'chuanshu-tls-rsa.spki'
+const TLS_PRI_FILE = 'chuanshu-tls-rsa.pk8'
+const TLS_CERT_FILE = 'chuanshu-tls-rsa.der'
+/** Where a receiving phone puts the bytes - the same shape as `<filesDir>/chuanshu-receive` on
+ *  Android, and just as disposable on uninstall. */
+const RECV_DIR = KEY_DIR + '/chuanshu-receive'
+const PAIR_FILE = 'chuanshu-pairing.json'
+const TRACE_FILE = 'chuanshu-serve.log'
+/** DER for SubjectPublicKeyInfo{ ed25519 OID, 32-byte key }. The pair message carries only the raw 32
+ *  bytes, so this is what has to go back in front of them before the digest is taken. */
+const SPKI_HEAD: Uint8Array = new Uint8Array([0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00])
+
+type ReplyCb = (status: number, body: string) => void
+type MetaCb = (ok: boolean, id: string, size: number, sha256: string, mtime: number, type: string, message: string) => void
+type BufCb = (buf: ArrayBuffer | null, message: string) => void
+type HexCb = (hex: string) => void
+type LanCb = (level: string, text: string) => void
+
+/* --------------------------------------------------------------------------- bytes and text */
+
+/** ArkTS gives the catch variable no type of its own, so the error is taken here as an Error - which is
+ *  what a BusinessError already is. */
+function errText(e: Error): string {
+	return e.message
+}
+
+function hexOf(b: Uint8Array): string {
+	let s = ''
+	for (let i = 0; i < b.length; i++) {
+		const v = b[i] & 0xff
+		s = s + HEXD.charAt(v >> 4) + HEXD.charAt(v & 15)
+	}
+	return s
+}
+
+function b64Of(b: Uint8Array): string {
+	return new util.Base64Helper().encodeToStringSync(b)
+}
+
+function bytesFromB64(text: string): Uint8Array {
+	return new util.Base64Helper().decodeSync(text)
+}
+
+function bytesOf(text: string): Uint8Array {
+	return new util.TextEncoder().encodeInto(text)
+}
+
+function textOfBytes(b: Uint8Array): string {
+	return util.TextDecoder.create('utf-8').decodeToString(b)
+}
+
+/** A Uint8Array as an ArrayBuffer without a cast: the socket and the file API both want a real buffer,
+ *  and `.buffer` on a view whose length was sliced is the whole underlying allocation. */
+function bufOf(b: Uint8Array): ArrayBuffer {
+	const ab = new ArrayBuffer(b.length)
+	const view = new Uint8Array(ab)
+	for (let i = 0; i < b.length; i++) {
+		view[i] = b[i]
+	}
+	return ab
+}
+
+function cat(a: Uint8Array, b: Uint8Array): Uint8Array {
+	const out = new Uint8Array(a.length + b.length)
+	out.set(a, 0)
+	out.set(b, a.length)
+	return out
+}
+
+function sliceBytes(b: Uint8Array, from: number, len: number): Uint8Array {
+	/* Clamped, not padded: reading past the end here handed back zeros, and a caller asking for a 48-byte
+	 *  prefix of a 47-byte event got a NUL glued onto its own text. */
+	const n = len > 0 && from + len > b.length ? b.length - from : len
+	const out = new Uint8Array(n > 0 ? n : 0)
+	for (let i = 0; i < n; i++) {
+		out[i] = b[from + i]
+	}
+	return out
+}
+
+function randomBytes(n: number): Uint8Array {
+	const out = new Uint8Array(n)
+	for (let i = 0; i < n; i++) {
+		out[i] = Math.floor(Math.random() * 256) & 0xff
+	}
+	return out
+}
+
+function sha256Hex(b: Uint8Array): string {
+	const md = cryptoFramework.createMd('SHA256')
+	const blob: cryptoFramework.DataBlob = { data: b }
+	md.updateSync(blob)
+	return hexOf(md.digestSync().data)
+}
+
+/** The only JSON this file writes by hand. Every value that comes from a peer or from a device name
+ *  goes through here, because an unescaped quote in an error line would be read back as a field. */
+function jsonText(value: string): string {
+	let out = ''
+	for (let i = 0; i < value.length; i++) {
+		const c = value.charAt(i)
+		if (c == '"') {
+			out = out + '\\"'
+		} else if (c == '\\') {
+			out = out + '\\\\'
+		} else if (c == '\n') {
+			out = out + '\\n'
+		} else if (c == '\r') {
+			out = out + '\\r'
+		} else if (c == '\t') {
+			out = out + '\\t'
+		} else {
+			out = out + c
+		}
+	}
+	return out
+}
+
+/* ---------------------------------------------------------------------- certificate DER */
+
+class Elem {
+	tag: number = 0
+	body: number = 0
+	next: number = 0
+	len: number = 0
+}
+
+function readTlv(der: Uint8Array, at: number): Elem | null {
+	if (at + 2 > der.length) {
+		return null
+	}
+	const e = new Elem()
+	e.tag = der[at] & 0xff
+	let head = 2
+	const first = der[at + 1] & 0xff
+	if (first < 0x80) {
+		e.len = first
+	} else if (first == 0x81) {
+		e.len = der[at + 2] & 0xff
+		head = 3
+	} else if (first == 0x82) {
+		e.len = ((der[at + 2] & 0xff) << 8) | (der[at + 3] & 0xff)
+		head = 4
+	} else {
+		return null
+	}
+	e.body = at + head
+	e.next = e.body + e.len
+	if (e.next > der.length) {
+		return null
+	}
+	return e
+}
+
+/** The SubjectPublicKeyInfo inside a certificate - the exact bytes the fingerprint hashes. Harmony
+ *  hands the transport the peer's DER and nothing else: there is no platform object that will read a
+ *  public key out of a certificate, so the walk is done here, one element at a time. */
+function spkiOf(der: Uint8Array): Uint8Array | null {
+	const outer = readTlv(der, 0)
+	if (outer == null || outer.tag != 0x30) {
+		return null
+	}
+	const tbs = readTlv(der, outer.body)
+	if (tbs == null || tbs.tag != 0x30) {
+		return null
+	}
+	let at = tbs.body
+	for (let step = 0; step < 6; step++) {
+		const e = readTlv(der, at)
+		if (e == null) {
+			return null
+		}
+		at = e.next
+	}
+	const spki = readTlv(der, at)
+	if (spki == null || spki.tag != 0x30) {
+		return null
+	}
+	return sliceBytes(der, at, spki.next - at)
+}
+
+function fpOfCertDer(der: Uint8Array): string {
+	const spki = spkiOf(der)
+	return spki == null ? '' : sha256Hex(spki!)
+}
+
+/* ---------------------------------------------------------------- building a certificate */
+
+function tlv(tag: number, body: Uint8Array): Uint8Array {
+	const n = body.length
+	let head: Uint8Array
+	if (n < 0x80) {
+		head = new Uint8Array([tag, n])
+	} else if (n < 0x100) {
+		head = new Uint8Array([tag, 0x81, n])
+	} else {
+		head = new Uint8Array([tag, 0x82, (n >> 8) & 0xff, n & 0xff])
+	}
+	return cat(head, body)
+}
+
+function seqOf(parts: Uint8Array[]): Uint8Array {
+	let body = new Uint8Array(0)
+	for (let i = 0; i < parts.length; i++) {
+		body = cat(body, parts[i])
+	}
+	return tlv(0x30, body)
+}
+
+/** Subject: CN=<peer id>, nothing else. The name a peer shows is read from the pair request, never
+ *  from the certificate, so the subject only has to be a string the log recognises. */
+function cnName(cn: string): Uint8Array {
+	const oid = new Uint8Array([0x06, 0x03, 0x55, 0x04, 0x03])
+	const utf8 = tlv(0x0c, bytesOf(cn))
+	return seqOf([tlv(0x31, seqOf([oid, utf8]))])
+}
+
+function pad2(n: number): string {
+	return n < 10 ? '0' + n.toString() : n.toString()
+}
+
+/** UTCTime - the one validity form both this builder and the PC's OpenSSL reader accept. */
+function utcTime(millis: number): Uint8Array {
+	const d = new Date(millis)
+	const s = pad2(d.getUTCFullYear() % 100) + pad2(d.getUTCMonth() + 1) + pad2(d.getUTCDate())
+		+ pad2(d.getUTCHours()) + pad2(d.getUTCMinutes()) + pad2(d.getUTCSeconds()) + 'Z'
+	return tlv(0x17, bytesOf(s))
+}
+
+/** A positive INTEGER body: DER needs the high bit clear, so a leading zero goes in when it is set. */
+function intBody(bytes: Uint8Array): Uint8Array {
+	if ((bytes[0] & 0x80) != 0) {
+		return cat(new Uint8Array([0x00]), bytes)
+	}
+	return bytes
+}
+
+function pemOf(label: string, der: Uint8Array): string {
+	const b64 = b64Of(der)
+	let body = ''
+	for (let i = 0; i < b64.length; i += 64) {
+		body = body + b64.substring(i, i + 64 > b64.length ? b64.length : i + 64) + '\n'
+	}
+	return '-----BEGIN ' + label + '-----\n' + body + '-----END ' + label + '-----\n'
+}
+
+/** sha256WithRSAEncryption. The listener's leaf is signed with this because the sweep in cs-identity
+ *  showed this platform's server side will not present an Ed25519 leaf at all - the handshake simply
+ *  never completes - while the RSA one works end to end against the PC. */
+const ALG_RSA_SHA256: Uint8Array = new Uint8Array([
+	0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05, 0x00])
+
+/* -------------------------------------------------------------------------- keys and trust */
+
+function signWith(pri: cryptoFramework.PriKey, msg: Uint8Array): Uint8Array {
+	const signer = cryptoFramework.createSign('Ed25519')
+	signer.initSync(pri)
+	const blob: cryptoFramework.DataBlob = { data: msg }
+	return signer.signSync(blob).data
+}
+
+function rawOfKey(publicKeyB64: string): Uint8Array | null {
+	try {
+		const made = bytesFromB64(publicKeyB64)
+		if (made.length == 32) {
+			return made
+		}
+		// A peer that sends the whole SubjectPublicKeyInfo instead of the raw point is reading the same
+		// field but meaning a different number of bytes; take the tail it cannot get wrong.
+		if (made.length == 44) {
+			return sliceBytes(made, 12, 32)
+		}
+		return null
+	} catch (e) {
+		return null
+	}
+}
+
+function pubOfRaw(raw: Uint8Array): cryptoFramework.PubKey | null {
+	try {
+		// Every object literal this platform takes as an argument is declared with its type first:
+		// written inline, UTS reads it as a UTSJSONObject and the ArkTS compiler refuses the call.
+		const spki: cryptoFramework.DataBlob = { data: cat(SPKI_HEAD, raw) }
+		const pair = cryptoFramework.createAsyKeyGenerator('Ed25519')
+			.convertKeySync(spki, null)
+		return pair.pubKey
+	} catch (e) {
+		return null
+	}
+}
+
+/** The trust record for one address, as one line of the store file. The digest is the anchor; the two
+ *  names after it are what the page shows later and are never believed. */
+class Pinned {
+	fp: string = ''
+	host: string = ''
+	port: number = 0
+	peerId: string = ''
+	name: string = ''
+}
+
+function pathOf(file: string): string {
+	return KEY_DIR + '/' + file
+}
+
+function ensureDir(): void {
+	if (!fs.accessSync(KEY_DIR)) {
+		fs.mkdirSync(KEY_DIR, true)
+	}
+}
+
+function readBytesOfFile(file: string): Uint8Array | null {
+	try {
+		const f = fs.openSync(pathOf(file), fs.OpenMode.READ_ONLY)
+		try {
+			const st = fs.statSync(f.fd)
+			const ab = new ArrayBuffer(st.size)
+			const n = fs.readSync(f.fd, ab)
+			return sliceBytes(new Uint8Array(ab), 0, n)
+		} finally {
+			fs.closeSync(f)
+		}
+	} catch (e) {
+		return null
+	}
+}
+
+function readTextFile(file: string): string {
+	const made = readBytesOfFile(file)
+	return made == null ? '' : textOfBytes(made!)
+}
+
+function writeBytesOfFile(file: string, data: Uint8Array): void {
+	ensureDir()
+	const f = fs.openSync(pathOf(file), fs.OpenMode.WRITE_ONLY | fs.OpenMode.CREATE | fs.OpenMode.TRUNC)
+	try {
+		fs.writeSync(f.fd, bufOf(data))
+	} finally {
+		fs.closeSync(f)
+	}
+}
+
+/** One string field of a JSON object, taken by name. The transport only ever reads text the peer chose
+ *  to send about itself, so a missing field is simply '' and nothing downstream depends on it. */
+function fieldOf(json: string, key: string): string {
+	const at = json.indexOf('"' + key + '"')
+	if (at < 0) {
+		return ''
+	}
+	const colon = json.indexOf(':', at + key.length + 2)
+	if (colon < 0) {
+		return ''
+	}
+	let i = colon + 1
+	while (i < json.length) {
+		const skip = json.charAt(i)
+		if (skip != ' ' && skip != '\t' && skip != '\n' && skip != '\r') {
+			break
+		}
+		i = i + 1
+	}
+	if (i >= json.length || json.charAt(i) != '"') {
+		return ''
+	}
+	let out = ''
+	i = i + 1
+	while (i < json.length) {
+		const c = json.charAt(i)
+		if (c == '\\' && i + 1 < json.length) {
+			const next = json.charAt(i + 1)
+			out = out + (next == 'n' ? '\n' : next)
+			i = i + 2
+			continue
+		}
+		if (c == '"') {
+			return out
+		}
+		out = out + c
+		i = i + 1
+	}
+	return ''
+}
+
+/** A name is only ever stored so the page can show it again, and the store file is line-oriented, so
+ *  the characters that would move a field into the next record are taken out on the way in. */
+function oneLine(text: string): string {
+	let out = ''
+	for (let i = 0; i < text.length; i++) {
+		const c = text.charAt(i)
+		if (c != '|' && c != '\n' && c != '\r') {
+			out = out + c
+		}
+	}
+	return out
+}
+
+function loadPins(): Pinned[] {
+	const lines = readTextFile(TRUST_FILE).split('\n')
+	const out: Pinned[] = []
+	for (let i = 0; i < lines.length; i++) {
+		const parts = lines[i].split('|')
+		if (parts.length < 4 || parts[0].length != 64) {
+			continue
+		}
+		const p = new Pinned()
+		p.fp = parts[0]
+		p.host = parts[1]
+		p.port = parseInt(parts[2])
+		p.peerId = parts[3]
+		p.name = parts.length > 4 ? parts[4] : ''
+		out.push(p)
+	}
+	return out
+}
+
+function savePins(list: Pinned[]): void {
+	let text = ''
+	for (let i = 0; i < list.length; i++) {
+		text = text + list[i].fp + '|' + list[i].host + '|' + list[i].port.toString() + '|' +
+			list[i].peerId + '|' + list[i].name + '\n'
+	}
+	writeBytesOfFile(TRUST_FILE, bytesOf(text))
+}
+
+/** The pair the store is keyed by: the address text the user or the QR gave us, plus the port. Two
+ *  records can share a fingerprint and still mean two peers, which is why the digest alone is not the
+ *  key here - and why an address that has been met before is pinned whether or not a code was typed. */
+function pinFor(host: string, port: number): string {
+	const list = loadPins()
+	for (let i = 0; i < list.length; i++) {
+		if (list[i].host == host && list[i].port == port) {
+			return list[i].fp
+		}
+	}
+	return ''
+}
+
+function addPin(host: string, port: number, fp: string, peerId: string, name: string): void {
+	if (fp.length != 64) {
+		return
+	}
+	const list = loadPins()
+	let found: Pinned | null = null
+	for (let i = 0; i < list.length; i++) {
+		if (list[i].host == host && list[i].port == port) {
+			found = list[i]
+		}
+	}
+	if (found == null) {
+		const p = new Pinned()
+		p.fp = fp
+		p.host = host
+		p.port = port
+		p.peerId = peerId
+		p.name = oneLine(name)
+		list.push(p)
+	} else {
+		found!.fp = fp
+		found!.peerId = peerId
+		found!.name = oneLine(name)
+	}
+	savePins(list)
+}
+
+function dropPin(host: string, port: number): number {
+	const list = loadPins()
+	const kept: Pinned[] = []
+	for (let i = 0; i < list.length; i++) {
+		if (list[i].host == host && list[i].port == port) {
+			continue
+		}
+		kept.push(list[i])
+	}
+	const gone = list.length - kept.length
+	if (gone > 0) {
+		savePins(kept)
+	}
+	return gone
+}
+
+class NodeKey {
+	spki: Uint8Array
+	pri: cryptoFramework.PriKey
+	fp: string
+	constructor(spki: Uint8Array, pri: cryptoFramework.PriKey, fp: string) {
+		this.spki = spki
+		this.pri = pri
+		this.fp = fp
+	}
+}
+
+/** `nodeKey()` either holds the key or says why it cannot, so no caller has to guess which of the two
+ *  it was handed. */
+class KeyResult {
+	error: string = ''
+	key: NodeKey | null = null
+}
+
+/** The one Ed25519 key this install lives with. It is made once and read back from the sandbox after
+ *  that, because a key that changes every launch would make every pairing a first one. */
+function nodeKey(): KeyResult {
+	const out = new KeyResult()
+	const spki = readBytesOfFile(PUB_FILE)
+	const pk8 = readBytesOfFile(PRI_FILE)
+	if (spki != null && pk8 != null && spki!.length == 44 && pk8!.length > 0) {
+		try {
+			const spkiBlob: cryptoFramework.DataBlob = { data: spki! }
+			const pk8Blob: cryptoFramework.DataBlob = { data: pk8! }
+			const pair = cryptoFramework.createAsyKeyGenerator('Ed25519')
+				.convertKeySync(spkiBlob, pk8Blob)
+			out.key = new NodeKey(spki!, pair.priKey, sha256Hex(spki!))
+			return out
+		} catch (e) {
+			out.error = '本机密钥读不出来：' + errText(e)
+			return out
+		}
+	}
+	try {
+		const kp = cryptoFramework.createAsyKeyGenerator('Ed25519').generateKeyPairSync()
+		const made = kp.pubKey.getEncoded().data
+		const priv = kp.priKey.getEncoded().data
+		writeBytesOfFile(PUB_FILE, made)
+		writeBytesOfFile(PRI_FILE, priv)
+		out.key = new NodeKey(made, kp.priKey, sha256Hex(made))
+	} catch (e) {
+		out.error = '本机密钥没能生成：' + errText(e)
+	}
+	return out
+}
+
+function peerIdOf(): string {
+	let id = readTextFile(ID_FILE)
+	if (id.length != 32) {
+		id = hexOf(randomBytes(16))
+		writeBytesOfFile(ID_FILE, bytesOf(id))
+	}
+	return id
+}
+
+function deviceName(): string {
+	const model = deviceInfo.marketName != '' ? deviceInfo.marketName : deviceInfo.productModel
+	return model == '' ? '鸿蒙手机' : '手机 · ' + model
+}
+
+class SelfInfo {
+	error: string = ''
+	peerId: string = ''
+	name: string = ''
+	fingerprint: string = ''
+}
+
+function takeSelf(): SelfInfo {
+	const out = new SelfInfo()
+	const made = nodeKey()
+	if (made.key == null) {
+		out.error = made.error == '' ? '本机密钥读不出来' : made.error
+		return out
+	}
+	out.peerId = peerIdOf()
+	out.name = deviceName()
+	out.fingerprint = made.key!.fp
+	return out
+}
+
+class PairSig {
+	error: string = ''
+	publicKeyB64: string = ''
+	signatureB64: string = ''
+}
+
+/** The pair request's two crypto fields, signed over whatever bytes the caller hands in. Which message
+ *  that is belongs to spec §3 and to ../cs-protocol.uts, which the page runs as JavaScript - this file
+ *  cannot import it, so it must not invent the shape either. */
+function makePairSig(message: string): PairSig {
+	const out = new PairSig()
+	const made = nodeKey()
+	if (made.key == null) {
+		out.error = made.error == '' ? '本机密钥读不出来' : made.error
+		return out
+	}
+	try {
+		const sig = signWith(made.key!.pri, bytesOf(message))
+		out.publicKeyB64 = b64Of(sliceBytes(made.key!.spki, 12, 32))
+		out.signatureB64 = b64Of(sig)
+	} catch (e) {
+		out.error = errText(e)
+	}
+	return out
+}
+
+function fpOfKeyB64(publicKeyB64: string): string {
+	const raw = rawOfKey(publicKeyB64)
+	return raw == null ? '' : sha256Hex(cat(SPKI_HEAD, raw!))
+}
+
+function verifyKey(publicKeyB64: string, message: string, signatureB64: string): boolean {
+	const raw = rawOfKey(publicKeyB64)
+	if (raw == null) {
+		return false
+	}
+	const pub = pubOfRaw(raw!)
+	if (pub == null) {
+		return false
+	}
+	try {
+		const checker = cryptoFramework.createVerify('Ed25519')
+		checker.initSync(pub!)
+		const blob: cryptoFramework.DataBlob = { data: bytesOf(message) }
+		const sig: cryptoFramework.DataBlob = { data: bytesFromB64(signatureB64) }
+		return checker.verifySync(blob, sig)
+	} catch (e) {
+		return false
+	}
+}
+
+/* ------------------------------------------------------- the certificate this device serves */
+
+/** The listener's leaf, its private key, and the two numbers a peer ends up holding: `fp` is the
+ *  SHA-256 of this certificate's SubjectPublicKeyInfo, which is what the PC stores under
+ *  `tls_fingerprint` once the pair signature ties it to the Ed25519 identity. */
+class ServedPair {
+	error: string = ''
+	spki: Uint8Array = new Uint8Array(0)
+	der: Uint8Array = new Uint8Array(0)
+	pri: cryptoFramework.PriKey | null = null
+	fp: string = ''
+}
+
+let servedCache: ServedPair | null = null
+
+function servedPem(p: ServedPair): socket.TLSSecureOptions {
+	const sec: socket.TLSSecureOptions = {
+		cert: pemOf('CERTIFICATE', p.der),
+		key: pemOf('PRIVATE KEY', p.pri!.getEncoded().data)
+	}
+	return sec
+}
+
+/** Read the leaf back from the sandbox, or make it once and write it down.
+ *
+ *  RSA-2048 and not the device's own Ed25519 key for one reason, recorded in cs-identity: this
+ *  platform's TLS server aborts the handshake on an Ed25519 leaf. The identity key still signs every
+ *  pair message, so the certificate is only what the socket hands out - and §3's `tls_fingerprint`
+ *  field exists to say exactly that in the wire, which is why a second number per device is not a
+ *  second trust decision. */
+function servedPair(): ServedPair {
+	if (servedCache != null && servedCache!.fp != '') {
+		return servedCache!
+	}
+	const out = new ServedPair()
+	const gen = cryptoFramework.createAsyKeyGenerator('RSA2048')
+	const spki = readBytesOfFile(TLS_SPKI_FILE)
+	const pk8 = readBytesOfFile(TLS_PRI_FILE)
+	const der = readBytesOfFile(TLS_CERT_FILE)
+	if (spki != null && pk8 != null && der != null && der!.length > 0) {
+		try {
+			const spkiBlob: cryptoFramework.DataBlob = { data: spki! }
+			const pk8Blob: cryptoFramework.DataBlob = { data: pk8! }
+			const pair = gen.convertKeySync(spkiBlob, pk8Blob)
+			out.spki = spki!
+			out.der = der!
+			out.pri = pair.priKey
+			out.fp = sha256Hex(spki!)
+			servedCache = out
+			return out
+		} catch (e) {
+			out.error = '本机服务证书读不出来：' + errText(e)
+			return out
+		}
+	}
+	try {
+		// Synchronous, and on first run it holds this thread for about a second. That is the price of
+		// not having a worker thread here; it happens once, before the port is opened.
+		const kp = gen.generateKeyPairSync()
+		const enc = kp.pubKey.getEncoded().data
+		const now = Date.now()
+		const tbs = seqOf([
+			tlv(0xa0, tlv(0x02, new Uint8Array([0x02]))),
+			tlv(0x02, intBody(randomBytes(8))),
+			ALG_RSA_SHA256,
+			cnName(peerIdOf()),
+			seqOf([utcTime(now - 86400000), utcTime(now + 365 * 86400000)]),
+			cnName(peerIdOf()),
+			enc
+		])
+		const signer = cryptoFramework.createSign('RSA2048|SHA256|PKCS1')
+		signer.initSync(kp.priKey)
+		const blob: cryptoFramework.DataBlob = { data: tbs }
+		const sig = signer.signSync(blob).data
+		const made = seqOf([tbs, ALG_RSA_SHA256, tlv(0x03, cat(new Uint8Array([0x00]), sig))])
+		writeBytesOfFile(TLS_SPKI_FILE, enc)
+		writeBytesOfFile(TLS_PRI_FILE, kp.priKey.getEncoded().data)
+		writeBytesOfFile(TLS_CERT_FILE, made)
+		out.spki = enc
+		out.der = made
+		out.pri = kp.priKey
+		out.fp = sha256Hex(enc)
+		servedCache = out
+	} catch (e) {
+		out.error = '本机服务证书没能生成：' + errText(e)
+	}
+	return out
+}
+
+/** The number this device declares as `tls_fingerprint` in a signed pair message, and the one the
+ *  page shows next to the address. '' means the key never got made, which is a broken receiver
+ *  rather than a peer without a certificate. */
+export function servedFingerprint(): string {
+	return servedPair().fp
+}
+
+/* ------------------------------------------------------------------------- outgoing files */
+
+const MIME_BY_EXT: Map<string, string> = new Map<string, string>()
+let mimeReady = false
+
+/** There is no MimeTypeMap on this platform, and the type an offer carries is a hint the receiver shows
+ *  rather than something it trusts, so a short table plus a default is the honest size of it. */
+function mimeOf(name: string): string {
+	if (!mimeReady) {
+		mimeReady = true
+		MIME_BY_EXT.set('txt', 'text/plain')
+		MIME_BY_EXT.set('md', 'text/plain')
+		MIME_BY_EXT.set('log', 'text/plain')
+		MIME_BY_EXT.set('json', 'application/json')
+		MIME_BY_EXT.set('csv', 'text/csv')
+		MIME_BY_EXT.set('html', 'text/html')
+		MIME_BY_EXT.set('xml', 'text/xml')
+		MIME_BY_EXT.set('pdf', 'application/pdf')
+		MIME_BY_EXT.set('zip', 'application/zip')
+		MIME_BY_EXT.set('png', 'image/png')
+		MIME_BY_EXT.set('jpg', 'image/jpeg')
+		MIME_BY_EXT.set('jpeg', 'image/jpeg')
+		MIME_BY_EXT.set('gif', 'image/gif')
+		MIME_BY_EXT.set('webp', 'image/webp')
+		MIME_BY_EXT.set('bmp', 'image/bmp')
+		MIME_BY_EXT.set('heic', 'image/heic')
+		MIME_BY_EXT.set('mp4', 'video/mp4')
+		MIME_BY_EXT.set('mov', 'video/quicktime')
+		MIME_BY_EXT.set('mkv', 'video/x-matroska')
+		MIME_BY_EXT.set('mp3', 'audio/mpeg')
+		MIME_BY_EXT.set('m4a', 'audio/mp4')
+		MIME_BY_EXT.set('wav', 'audio/wav')
+		MIME_BY_EXT.set('doc', 'application/msword')
+		MIME_BY_EXT.set('docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+		MIME_BY_EXT.set('xls', 'application/vnd.ms-excel')
+		MIME_BY_EXT.set('xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+		MIME_BY_EXT.set('ppt', 'application/vnd.ms-powerpoint')
+		MIME_BY_EXT.set('apk', 'application/vnd.android.package-archive')
+	}
+	const dot = name.lastIndexOf('.')
+	if (dot < 0 || dot == name.length - 1) {
+		return 'application/octet-stream'
+	}
+	const made = MIME_BY_EXT.get(name.substring(dot + 1).toLowerCase())
+	return made == undefined ? 'application/octet-stream' : made!
+}
+
+/** The last thing that went wrong on a read, kept because a null slice has to say why: the page shows
+ *  this text in the file row instead of a bare "读不出来". */
+let lastRead = ''
+
+function displayName(path: string): string {
+	const cut = path.indexOf('?')
+	const clean = cut < 0 ? path : path.substring(0, cut)
+	const slash = clean.lastIndexOf('/')
+	const tail = slash < 0 ? clean : clean.substring(slash + 1)
+	try {
+		return decodeURIComponent(tail)
+	} catch (e) {
+		return tail
+	}
+}
+
+function openRead(path: string): fs.File | null {
+	lastRead = ''
+	try {
+		return fs.openSync(path, fs.OpenMode.READ_ONLY)
+	} catch (e) {
+		lastRead = errText(e)
+		return null
+	}
+}
+
+class FileMeta {
+	error: string = ''
+	size: number = 0
+	sha256: string = ''
+	mtime: number = 0
+	name: string = ''
+	type: string = ''
+}
+
+/** The offer row for one picked file: its length, the SHA-256 of the whole thing, a modification time
+ *  and a MIME type. The digest is taken in 256 KB slices because the file can be larger than this
+ *  thread should hold at once. */
+function prepareOne(path: string): FileMeta {
+	const out = new FileMeta()
+	const f = openRead(path)
+	if (f == null) {
+		out.error = lastRead == '' ? '打不开这个文件' : lastRead
+		return out
+	}
+	try {
+		const st = fs.statSync(f.fd)
+		out.size = st.size
+		// fs.Stat.mtime is already in seconds, which is the unit the contract's manifest carries.
+		out.mtime = st.mtime
+		out.name = displayName(path)
+		out.type = mimeOf(out.name)
+		const md = cryptoFramework.createMd('SHA256')
+		const step = 256 * 1024
+		let at = 0
+		while (at < out.size) {
+			const want = out.size - at < step ? out.size - at : step
+			const ab = new ArrayBuffer(want)
+			fs.lseek(f.fd, at)
+			const n = fs.readSync(f.fd, ab)
+			if (n <= 0) {
+				break
+			}
+			const blob: cryptoFramework.DataBlob = { data: new Uint8Array(ab) }
+			md.updateSync(blob)
+			at = at + n
+		}
+		out.sha256 = hexOf(md.digestSync().data)
+	} catch (e) {
+		out.error = errText(e)
+	} finally {
+		fs.closeSync(f)
+	}
+	return out
+}
+
+function readSlice(path: string, offset: number, length: number): ArrayBuffer | null {
+	const f = openRead(path)
+	if (f == null) {
+		return null
+	}
+	try {
+		const ab = new ArrayBuffer(length)
+		fs.lseek(f.fd, offset)
+		const n = fs.readSync(f.fd, ab)
+		if (n == length) {
+			return ab
+		}
+		// A short read is the file ending under us; the chunk that goes on the wire has to be the
+		// bytes that were actually there, not the buffer the caller asked for.
+		const out = new ArrayBuffer(n > 0 ? n : 0)
+		const src = new Uint8Array(ab)
+		const dst = new Uint8Array(out)
+		for (let i = 0; i < n; i++) {
+			dst[i] = src[i]
+		}
+		return out
+	} catch (e) {
+		lastRead = errText(e)
+		return null
+	} finally {
+		fs.closeSync(f)
+	}
+}
+
+function newId(): string {
+	return hexOf(randomBytes(8))
+}
+
+/* ---------------------------------------------------------------- receiving bytes on disk */
+
+/** Whether a manifest's relative path may be joined onto the receive directory.
+ *
+ *  The state machine already refuses the escapes it knows about (`pathReject`); this is the second
+ *  guard, because a receiver must not have to trust the code that calls it. There is no canonical-path
+ *  call on this platform, so the rule is structural: nothing empty, nothing dotted, no separator or
+ *  drive letter that could mean a different tree. */
+function relOk(relpath: string): boolean {
+	if (relpath.length == 0) {
+		return false
+	}
+	if (relpath.indexOf('\\') >= 0 || relpath.indexOf(':') >= 0) {
+		return false
+	}
+	const parts = relpath.split('/')
+	for (let i = 0; i < parts.length; i++) {
+		const one = parts[i]
+		if (one.length == 0 || one == '.' || one == '..') {
+			return false
+		}
+		const code = one.charCodeAt(0)
+		if (code < 32) {
+			return false
+		}
+	}
+	return true
+}
+
+function recvPath(relpath: string): string {
+	return relOk(relpath) == false ? '' : RECV_DIR + '/' + relpath
+}
+
+/** Where the bytes go, or '' - which the state machine turns into STORAGE_FULL rather than a quiet
+ *  truncate, the same as on Android. */
+function storePrepare(relpath: string, size: number): string {
+	const where = recvPath(relpath)
+	if (where == '') {
+		return ''
+	}
+	try {
+		const parent = where.substring(0, where.lastIndexOf('/'))
+		if (!fs.accessSync(parent)) {
+			fs.mkdirSync(parent, true)
+		}
+		const f = fs.openSync(where, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE)
+		try {
+			fs.truncateSync(f.fd, size > 0 ? size : 0)
+		} finally {
+			fs.closeSync(f)
+		}
+		return where
+	} catch (e) {
+		return ''
+	}
+}
+
+/** '' on success, the reason otherwise. A chunk landing at the wrong offset has to fail loudly: the
+ *  sender's per-chunk digest would still match whatever was stored. */
+function storeWrite(relpath: string, offset: number, data: ArrayBuffer): string {
+	const where = recvPath(relpath)
+	if (where == '') {
+		return '这个路径不在接收目录里'
+	}
+	if (offset < 0) {
+		return '偏移是负数'
+	}
+	try {
+		const f = fs.openSync(where, fs.OpenMode.READ_WRITE)
+		try {
+			const st = fs.statSync(f.fd)
+			if (offset + data.byteLength > st.size) {
+				return '写入超出文件末尾'
+			}
+			fs.lseek(f.fd, offset)
+			const n = fs.writeSync(f.fd, data)
+			if (n != data.byteLength) {
+				return '只写进去 ' + n.toString() + ' 字节'
+			}
+			return ''
+		} finally {
+			fs.closeSync(f)
+		}
+	} catch (e) {
+		return '写入失败：' + errText(e)
+	}
+}
+
+/** The whole file read back off the disk. finalize() trusts this and nothing else: per-chunk digests
+ *  say the transfer was consistent, only a re-read says the file is there. */
+function storeDigest(relpath: string): string {
+	const where = recvPath(relpath)
+	if (where == '' || !fs.accessSync(where)) {
+		return ''
+	}
+	let f: fs.File | null = null
+	try {
+		f = fs.openSync(where, fs.OpenMode.READ_ONLY)
+		const md = cryptoFramework.createMd('SHA256')
+		const step = 256 * 1024
+		const st = fs.statSync(f.fd)
+		let at = 0
+		while (at < st.size) {
+			const want = st.size - at < step ? st.size - at : step
+			const ab = new ArrayBuffer(want)
+			fs.lseek(f.fd, at)
+			const n = fs.readSync(f.fd, ab)
+			if (n <= 0) {
+				break
+			}
+			const blob: cryptoFramework.DataBlob = { data: new Uint8Array(ab, 0, n) }
+			md.updateSync(blob)
+			at = at + n
+		}
+		return hexOf(md.digestSync().data)
+	} catch (e) {
+		return ''
+	} finally {
+		if (f != null) {
+			fs.closeSync(f!)
+		}
+	}
+}
+
+/** Delete a file this end no longer owns, then the directories it leaves behind - an aborted offer
+ *  must not stay as a folder full of nothing. */
+function storeDrop(relpath: string): void {
+	const where = recvPath(relpath)
+	if (where == '') {
+		return
+	}
+	try {
+		if (fs.accessSync(where)) {
+			fs.unlinkSync(where)
+		}
+	} catch (e) {
+		return
+	}
+	let dir = where.substring(0, where.lastIndexOf('/'))
+	while (dir.length > RECV_DIR.length) {
+		try {
+			if (!fs.accessSync(dir)) {
+				break
+			}
+			if (fs.listFileSync(dir).length != 0) {
+				break
+			}
+			fs.rmdirSync(dir)
+		} catch (e) {
+			break
+		}
+		dir = dir.substring(0, dir.lastIndexOf('/'))
+	}
+}
+
+/* --------------------------------------------------------------------- pairing persistence */
+
+/** The receiver's decision, stored in the device's own files: the same document the PC keeps as
+ *  .chuanshu.pair.json and Android writes through CsIdentity.savePairing, so a phone that restarts
+ *  still answers the code the screen has been showing. */
+export function loadPairing(): string {
+	return readTextFile(PAIR_FILE)
+}
+
+export function savePairing(text: string): void {
+	writeBytesOfFile(PAIR_FILE, bytesOf(text))
+}
+
+/* --------------------------------------------------------------------------- same-network */
+
+class NetAddr {
+	addr: string = ''
+	prefix: number = 24
+	iface: string = ''
+}
+
+class LanInfo {
+	error: string = ''
+	addrs: NetAddr[] = []
+}
+
+/** Every IPv4 this device is actually joined to. The transport needs it before it spends a handshake,
+ *  because "the peer is not on my network" is a different answer from "the peer refused us". */
+function lanInfo(): LanInfo {
+	const out = new LanInfo()
+	try {
+		const nets = connection.getAllNetsSync()
+		for (let i = 0; i < nets.length; i++) {
+			let props: connection.ConnectionProperties | null = null
+			try {
+				props = connection.getConnectionPropertiesSync(nets[i])
+			} catch (e) {
+				continue
+			}
+			if (props == null) {
+				continue
+			}
+			const links = props!.linkAddresses
+			for (let j = 0; j < links.length; j++) {
+				const text = links[j].address.address
+				// An IPv6 address has no dots, and the comparison below is IPv4 arithmetic.
+				if (text.indexOf('.') < 0) {
+					continue
+				}
+				const one = new NetAddr()
+				one.addr = text
+				one.prefix = links[j].prefixLength
+				one.iface = props!.interfaceName
+				out.addrs.push(one)
+			}
+		}
+	} catch (e) {
+		out.error = errText(e)
+	}
+	return out
+}
+
+const DIGITS = '0123456789'
+
+function ipToNumber(text: string): number {
+	const parts = text.split('.')
+	if (parts.length != 4) {
+		return -1
+	}
+	let out = 0
+	for (let i = 0; i < 4; i++) {
+		const raw = parts[i]
+		if (raw.length == 0 || raw.length > 3) {
+			return -1
+		}
+		let octet = 0
+		for (let j = 0; j < raw.length; j++) {
+			const value = DIGITS.indexOf(raw.charAt(j))
+			if (value < 0) {
+				return -1
+			}
+			octet = octet * 10 + value
+		}
+		if (octet > 255) {
+			return -1
+		}
+		out = out * 256 + octet
+	}
+	return out
+}
+
+function inSameNet(local: number, prefix: number, peer: number): boolean {
+	const shift = 32 - prefix
+	if (shift <= 0) {
+		return true
+	}
+	const mask = Math.pow(2, shift)
+	return Math.floor(local / mask) == Math.floor(peer / mask)
+}
+
+/* ---------------------------------------------------------------------------- TLS client */
+
+class HttpResult {
+	status: number = 0
+	body: string = ''
+	fp: string = ''
+	error: string = ''
+	detail: string = ''
+}
+
+/** A failure the client already knows how to read: a transport error becomes a wire-shaped body, with
+ *  the reason in an object, so codeOf/detailOf/pinText say the same thing whether the peer refused us
+ *  or the socket never opened. */
+function transportError(code: string, detail: string): string {
+	return '{"code":"' + code + '","detail":{"reason":"' + jsonText(detail) + '"}}'
+}
+
+function reply(code: string, detail: string, cb: ReplyCb): void {
+	cb(0, transportError(code, detail))
+}
+
+/** A human decides whether an offer is accepted, so that one request has to stay open for however long
+ *  they take; every other one should fail fast enough to be retried. */
+function timeoutOf(method: string, path: string): number {
+	if (method == 'POST' && (path == '/v1/offer' || path.endsWith('/finalize'))) {
+		return 180000
+	}
+	if (method == 'PUT') {
+		return 90000
+	}
+	return 20000
+}
+
+function statusOf(head: string): number {
+	const line = head.split('\n')[0].replace('\r', '')
+	const parts = line.split(' ')
+	if (parts.length < 2) {
+		return 0
+	}
+	const code = parseInt(parts[1])
+	return isNaN(code) ? 0 : code
+}
+
+function declaredOf(head: string): number {
+	const at = head.toLowerCase().indexOf('content-length:')
+	if (at < 0) {
+		return -1
+	}
+	let out = ''
+	for (let i = at + 15; i < head.length; i++) {
+		const c = head.charAt(i)
+		if (c >= '0' && c <= '9') {
+			out = out + c
+		} else if (out != '') {
+			break
+		}
+	}
+	return out == '' ? -1 : parseInt(out)
+}
+
+/** Where the header block ends: the index of the \r\n\r\n that the body starts one past, or -1 while
+ *  the headers are still arriving. */
+function findHeadEnd(acc: Uint8Array): number {
+	for (let i = 3; i < acc.length; i++) {
+		if (acc[i - 3] == 0x0d && acc[i - 2] == 0x0a && acc[i - 1] == 0x0d && acc[i] == 0x0a) {
+			return i - 3
+		}
+	}
+	return -1
+}
+
+/** One request over one connection.
+ *
+ *  The order is the whole design: bind, connect without the platform's own certificate validation, read
+ *  the peer's DER, hash its SubjectPublicKeyInfo, and only then write a single byte. A peer whose digest
+ *  is not the one this device pinned therefore never sees the request, which is what makes the pin a
+ *  decision rather than a post-mortem. The read handlers are registered after connect() resolved,
+ *  because on this platform one registered earlier is silently dropped. */
+function httpRun(
+	method: string,
+	host: string,
+	port: number,
+	path: string,
+	json: string,
+	token: string,
+	expected: string,
+	body: ArrayBuffer,
+	sha: string,
+	timeoutMs: number,
+	cb: (r: HttpResult) => void
+): void {
+	const out = new HttpResult()
+	const cli = socket.constructTLSSocketInstance()
+	let finished = false
+	let timer = 0
+	let stage = '绑定本地端口'
+	let acc = new Uint8Array(0)
+	let headEnd = -1
+	let declared = -1
+
+	const stop = (): void => {
+		if (timer != 0) {
+			clearTimeout(timer)
+			timer = 0
+		}
+	}
+	const shut = (): void => {
+		cli.close().then((): void => {
+		}).catch((e: Error): void => {
+		})
+	}
+	const fail = (code: string, detail: string): void => {
+		if (finished) {
+			return
+		}
+		finished = true
+		stop()
+		out.error = code
+		out.detail = detail
+		shut()
+		cb(out)
+	}
+	const take = (): void => {
+		if (finished) {
+			return
+		}
+		finished = true
+		stop()
+		out.status = statusOf(textOfBytes(sliceBytes(acc, 0, headEnd)))
+		out.body = textOfBytes(sliceBytes(acc, headEnd + 4, acc.length - headEnd - 4))
+		shut()
+		cb(out)
+	}
+	/** A response with no Content-Length has only the end of the stream to tell it apart, and this
+	 *  platform's 'close' event never arrives, so whatever actually came is the answer. */
+	const endStream = (): void => {
+		if (finished) {
+			return
+		}
+		if (headEnd < 0) {
+			fail('PROTOCOL', '对端没答话')
+			return
+		}
+		if (declared < 0) {
+			declared = acc.length - headEnd - 4
+		}
+		if (acc.length >= headEnd + 4 + declared) {
+			take()
+			return
+		}
+		fail('PROTOCOL', '应答不完整，只收到 ' + (acc.length - headEnd - 4).toString() + ' 字节')
+	}
+	const onBytes = (info: socket.SocketMessageInfo): void => {
+		try {
+			acc = cat(acc, new Uint8Array(info.message))
+			if (headEnd < 0) {
+				headEnd = findHeadEnd(acc)
+				if (headEnd < 0) {
+					return
+				}
+				declared = declaredOf(textOfBytes(sliceBytes(acc, 0, headEnd)))
+			}
+			if (declared >= 0 && acc.length >= headEnd + 4 + declared) {
+				take()
+			}
+		} catch (e) {
+			fail('IO', '读应答时出错：' + errText(e))
+		}
+	}
+	const sendPayload = (data: ArrayBuffer): void => {
+		cli.send(data).then((): void => {
+		}).catch((e: Error): void => {
+			fail('IO', '请求体没写出去：' + errText(e))
+		})
+	}
+
+	let header = method + ' ' + path + ' HTTP/1.1\r\n'
+	header = header + 'Host: ' + host + ':' + port.toString() + '\r\n'
+	header = header + 'User-Agent: chuanshu-harmony\r\n'
+	header = header + 'Accept: application/json\r\n'
+	// No "Connection: close" here on purpose: asking for it makes the peer tear the socket down the
+	// moment it has written the reply, and on this device the record that carries the body is then lost
+	// to that teardown — the head arrives, the bytes it declares never do, and neither 'close' nor
+	// 'error' fires to say so. The Android half leaves the connection open for the same reason, and
+	// this side closes it itself once the reply is complete.
+	if (token != '') {
+		header = header + 'X-Chuanshu-Auth: ' + token + '\r\n'
+	}
+	if (sha != '') {
+		header = header + 'X-Sha256: ' + sha + '\r\n'
+	}
+	const jsonBytes = json == '' ? new Uint8Array(0) : bytesOf(json)
+	// A PUT carries the chunk itself; every other request carries the JSON. The two are never both, which
+	// is the same rule the Android half applies, so one peer sees one Content-Length it can trust.
+	const payload = body.byteLength > 0 ? body : bufOf(jsonBytes)
+	header = header + 'Content-Length: ' + payload.byteLength.toString() + '\r\n\r\n'
+	const headBuf = bufOf(bytesOf(header))
+
+	const local: socket.NetAddress = { family: 1, port: 0, address: '0.0.0.0' }
+	const remote: socket.NetAddress = { family: 1, port: port, address: host }
+	const sec: socket.TLSSecureOptions = {}
+	const opt: socket.TLSConnectOptions = { address: remote, secureOptions: sec, skipRemoteValidation: true }
+
+	timer = setTimeout((): void => {
+		if (finished) {
+			return
+		}
+		if (headEnd >= 0 && declared >= 0 && acc.length >= headEnd + 4 + declared) {
+			take()
+			return
+		}
+		// Which of the three ways a reply can be missing this is decides what to fix, so say which one it
+		// was: nothing at all, a header block still in pieces, or a body that stopped short.
+		fail('IO', '对端在 ' + timeoutMs.toString() + ' 毫秒内没有答完（' + stage + '：收到 '
+			+ acc.length.toString() + ' 字节，应答头 ' + (headEnd < 0 ? '未见' : '已见')
+			+ '，声明 ' + (declared < 0 ? '未知' : declared.toString()) + ' 字节）')
+	}, timeoutMs)
+
+	cli.on('error', (e: Error): void => {
+		// Before any byte of a reply has been seen, an error is the handshake failing; afterwards it is
+		// this platform's stand-in for the end of the stream, because 'close' never fires here.
+		if (acc.length == 0) {
+			fail('IO', stage + '：' + errText(e))
+			return
+		}
+		endStream()
+	})
+	cli.bind(local).then((): Promise<void> => {
+		stage = '连接 ' + host + ':' + port.toString()
+		return cli.connect(opt)
+	}).then((): Promise<cert.EncodingBlob> => {
+		stage = '读取对端证书'
+		cli.on('message', onBytes)
+		cli.on('close', (): void => {
+			endStream()
+		})
+		return cli.getRemoteCertificate()
+	}).then((peer: cert.EncodingBlob): void => {
+		const seen = fpOfCertDer(peer.data)
+		if (seen == '') {
+			fail('TLS_PIN_MISMATCH', '对端证书的公钥段读不出来')
+			return
+		}
+		if (expected != '' && seen != expected) {
+			fail('TLS_PIN_MISMATCH', '已固定 ' + expected.substring(0, 16) + '…，这台是 ' + seen.substring(0, 16) + '…')
+			return
+		}
+		out.fp = seen
+		stage = '写出请求头'
+		cli.send(headBuf).then((): void => {
+			if (payload.byteLength == 0) {
+				return
+			}
+			stage = '写出请求体'
+			sendPayload(payload)
+		}).catch((e: Error): void => {
+			fail('IO', '请求头没写出去：' + errText(e))
+		})
+	}).catch((e: Error): void => {
+		if (finished) {
+			return
+		}
+		fail('IO', stage + '：' + errText(e))
+	})
+}
+
+/* ================================================== the platform entry the page calls */
+
+export function transportMocked(): boolean {
+	return false
+}
+
+/** Shown under the transport card, so the difference between "this build is the browser demo" and "this
+ *  build talks to a real socket" is on screen instead of in a commit message - including the one thing
+ *  this half does differently from Android: there is no I/O dispatcher here, so the bytes move on the
+ *  thread that asked for them. */
+export function transportNote(): string {
+	return '鸿蒙真机传输：TLS 客户端逐连接核对对端证书的 SPKI 指纹，指纹不符就在写出第一个字节之前中止；' +
+		'文件来自系统选取器（含 file:// 句柄），清单校验和按 256 KB 分块整读。本机密钥与已固定对端存在应用沙箱目录，卸载即失效。' +
+		'这一端的收发在界面线程上跑，大文件会让界面短暂无响应。' +
+		'接收半边已实装：这台设备的服务端出 RSA-2048 叶证书（拿不出 Ed25519 叶），配对签名里带上这张叶证书的指纹（合同 §3 的 t 字段），身份键仍是 Ed25519。' +
+		'系统：' + deviceInfo.osFullName + '，API ' + deviceInfo.sdkApiVersion.toString()
+}
+
+export function selfInfo(cb: (peerId: string, name: string, fingerprint: string) => void): void {
+	const made = takeSelf()
+	if (made.fingerprint == '') {
+		cb('', made.error, '')
+		return
+	}
+	cb(made.peerId, made.name, made.fingerprint)
+}
+
+export function signPair(message: string, cb: (publicKeyB64: string, signatureB64: string) => void): void {
+	const made = makePairSig(message)
+	cb(made.publicKeyB64, made.signatureB64)
+}
+
+export function digestHex(buf: ArrayBuffer, cb: HexCb): void {
+	cb(sha256Hex(new Uint8Array(buf)))
+}
+
+export function prepareFile(path: string, relpath: string, cb: MetaCb): void {
+	const made = prepareOne(path)
+	if (made.error != '') {
+		cb(false, '', 0, '', 0, '', made.error)
+		return
+	}
+	cb(true, newId(), made.size, made.sha256, made.mtime, made.type, '')
+}
+
+export function readChunk(path: string, offset: number, length: number, cb: BufCb): void {
+	const slice = readSlice(path, offset, length)
+	if (slice == null) {
+		cb(null, lastRead == '' ? '这个文件读不出内容' : lastRead)
+		return
+	}
+	cb(slice, '')
+}
+
+export function request(
+	method: string,
+	host: string,
+	port: number,
+	path: string,
+	jsonBody: string,
+	token: string,
+	pinFpHex: string,
+	body: ArrayBuffer,
+	sha: string,
+	cb: ReplyCb
+): void {
+	// An address we already met is pinned whether or not the QR handed us the digest: that is what makes
+	// an empty pair code mean "the peer I already know" rather than "whoever answers".
+	const expected = pinFpHex != '' ? pinFpHex : pinFor(host, port)
+	httpRun(method, host, port, path, jsonBody, token, expected, body, sha, timeoutOf(method, path),
+		(r: HttpResult): void => {
+			if (r.error != '') {
+				reply(r.error, r.detail, cb)
+				return
+			}
+			// A pair that succeeded is the moment the peer becomes someone we trust: record the key the
+			// handshake actually saw, together with what the peer said its id and name are.
+			if (r.status == 200 && method == 'POST' && path == '/v1/pair' && r.fp != '') {
+				addPin(host, port, r.fp, fieldOf(r.body, 'peer_id'), fieldOf(r.body, 'name'))
+			}
+			cb(r.status, r.body)
+		})
+}
+
+export function lanCheck(host: string, cb: LanCb): void {
+	const info = lanInfo()
+	if (info.error != '') {
+		cb('unknown', '手机的网卡信息读不出来：' + info.error)
+		return
+	}
+	if (host == '') {
+		cb('unknown', '还没有对端地址')
+		return
+	}
+	const peer = ipToNumber(host)
+	if (peer == -1) {
+		cb('unknown', '对端是「' + host + '」这样的名字，不是 IP，没法核对是否同一网络')
+		return
+	}
+	if (peer >= 2130706432 && peer <= 2130706687) {
+		cb('bad', '对端地址是 127.0.0.1：真机上这指向手机自己。请填电脑上传书显示的局域网 IP')
+		return
+	}
+	if (info.addrs.length == 0) {
+		cb('bad', '手机现在没有拿到任何局域网 IPv4 地址：先连上和电脑同一个 Wi-Fi')
+		return
+	}
+	let names = ''
+	let best = ''
+	let matched = false
+	let linkLocal = false
+	for (let i = 0; i < info.addrs.length; i++) {
+		const one = info.addrs[i]
+		const value = ipToNumber(one.addr)
+		if (value == -1) {
+			continue
+		}
+		names = names + (names == '' ? '' : '、') + one.addr + '/' + one.prefix.toString() + '（' + one.iface + '）'
+		if (value >= 2851995648 && value <= 2852061183) {
+			linkLocal = true
+		}
+		if (inSameNet(value, one.prefix, peer)) {
+			matched = true
+			best = one.addr + '/' + one.prefix.toString()
+		}
+	}
+	if (matched) {
+		cb('ok', '同一网络：手机在 ' + best + '，对端 ' + host + ' 与它同网段')
+		return
+	}
+	if (linkLocal) {
+		cb('warn', '手机只有 169.254 地址（' + names + '）：Wi-Fi 可能没拿到 IP，对端 ' + host + ' 未必连得通')
+		return
+	}
+	cb('bad', '不在同一网络：手机在 ' + names + '，对端 ' + host + ' 不属于任何一个本机网段')
+}
+
+export function pinnedFor(host: string, port: number, cb: (fp: string) => void): void {
+	cb(pinFor(host, port))
+}
+
+/** The same answer without the round trip, for the listener: a request dials in from an address, and
+ *  the receive half decides about a pair code inside that one synchronous call. What is pinned for an
+ *  address is the digest this device saw while dialling *out* to it - which for a peer that serves its
+ *  identity key is also the digest its pair message signs, and the receiver only ever matches on that. */
+export function pinForAddress(host: string, port: number): string {
+	return pinFor(host, port)
+}
+
+/** Undo the pin for one address - the phone's half of the PC's "撤销已配对设备". The next connection
+ *  there is a first contact again and has to redeem a code. */
+export function unpinPeer(host: string, port: number, cb: (dropped: boolean, message: string) => void): void {
+	cb(dropPin(host, port) > 0, '')
+}
+
+/* ================================================== this device as a receiver */
+
+/** One parsed request, handed to the state machine the page runs as JavaScript.
+ *
+ *  The state machine cannot live here: ArkTS resolves no sibling `.uts` file, so ../cs-receive.uts is
+ *  unreachable from this module while the page can import it directly. So the split is the same one the
+ *  sender side already uses - this file moves bytes, the page decides - and the answer does not come
+ *  back as a return value. The handler calls serveReply() with the index it was given, either before it
+ *  returns (every request but one) or some minutes later (an offer waiting on a person). That is why
+ *  nothing here has to encode a reply in a string. */
+type ServeFn = (index: number, method: string, path: string, token: string, sha: string, client: string, json: string, body: ArrayBuffer | null) => void
+
+/** One accepted connection and the request being read off it. `index` is the request currently on it,
+ *  and `waiting` keeps the connection alive after that request has been handed to the page.
+ *  The body is not accumulated in `acc`: a 4 MiB chunk arrives as dozens of TLS records and re-copying
+ *  what is already buffered for each one is quadratic, which froze the UI thread on the first real
+ *  transfer. `acc` only ever holds bytes while the header block is still open; once it has ended, the
+ *  declared length is allocated once and each record is written straight into it. */
+class Conn {
+	id: number = 0
+	conn: socket.TLSSocketConnection | null = null
+	ip: string = ''
+	acc: Uint8Array = new Uint8Array(0)
+	head: string = ''
+	declared: number = -1
+	body: ArrayBuffer | null = null
+	view: Uint8Array | null = null
+	written: number = 0
+	/** Every byte the platform handed this connection for its body, including the ones past the declared
+	 *  length that `takeBody` dropped. `written` alone cannot tell a body that arrived complete from one
+	 *  where a record was delivered twice and the surplus fell off the end - the counts match, the content
+	 *  does not, and that is exactly the failure a 300 KB chunk showed while 50 KB and 1 MB were fine. */
+	inflow: number = 0
+	index: number = 0
+	seen: number = 0
+	handled: boolean = false
+	done: boolean = false
+	evs: number = 0
+	t0: number = 0
+	armed: boolean = false
+	notified: number = -1
+}
+
+let serveFn: ServeFn | null = null
+let listener: socket.TLSSocketServer | null = null
+let listening = false
+let listenPort = 0
+let startNote = '还没开始监听'
+let reqCounter = 1
+/** Not conn.clientId: on this device every accepted connection reports clientId 1, and closeConn() keys
+ *  its bookkeeping off that number, so one hang-up erased every other connection from the register.
+ *  The accept counter is the only id here that is actually unique. */
+let connCounter = 0
+const openConns: Conn[] = []
+const waitingConns: Conn[] = []
+const serveNotes: string[] = []
+
+/** One line appended under the app's own files directory. The panel only re-reads serveNotes() once a
+ *  request has been answered, and console.log from this runtime does not reach hilog, so a request that
+ *  stalls halfway through its body is invisible from outside unless it is written down - `hdc file recv`
+ *  of /data/app/el2/100/base/com.chuanshu.app/files/chuanshu-serve.log reads it back. */
+/* The lines wait here until a timer can take them to the disk. `trace` runs inside the TLS server's
+ *  message callback, and a synchronous open/write/close in that callback was measured to be the thing
+ *  that stops this platform's read pump for the connection: every record of the body reached the kernel
+ *  (hilog's `revc message` counts them all) while JS got exactly one message event and never a second.
+ *  One open per burst keeps the trace and keeps the socket fed. */
+let pendingTrace = ''
+let traceQueued = false
+
+/* Flipped off to measure whether this trace is itself the thing that breaks the read pump: the flush
+ *  runs on the same JS thread that the socket callbacks are dispatched on, and a synchronous write there
+ *  delays every record that arrives behind it. */
+const TRACE_TO_DISK: boolean = true
+
+function flushTrace(): void {
+	traceQueued = false
+	const data = pendingTrace
+	pendingTrace = ''
+	if (data.length == 0 || !TRACE_TO_DISK) {
+		return
+	}
+	try {
+		/* APPEND rather than lseek to a stat-derived size: writeSync is allowed to hand back a short count,
+		 *  and a run measured exactly that - 39 of 132 bytes written, then the next line landed where the
+		 *  previous one stopped and overwrote it. The trace lost the lines that would have explained a
+		 *  stall, which is worse than no trace at all. */
+		const f = fs.openSync(KEY_DIR + '/' + TRACE_FILE, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.APPEND)
+		try {
+			fs.writeSync(f.fd, data)
+		} finally {
+			fs.closeSync(f)
+		}
+	} catch (e) {
+	}
+}
+
+function trace(text: string): void {
+	pendingTrace = pendingTrace + text.split('\u0000').join('?') + '\n'
+	if (traceQueued) {
+		return
+	}
+	traceQueued = true
+	setTimeout((): void => {
+		flushTrace()
+	}, 150)
+}
+
+function note(text: string): void {
+	trace(text)
+	serveNotes.push(text)
+	while (serveNotes.length > 24) {
+		serveNotes.splice(0, 1)
+	}
+}
+
+/** A parked offer nobody ever answered is a leaked socket. Half an hour is far outside any reaction this
+ *  protocol expects, and the sender has given up long before - the Android half waits exactly this long
+ *  on a queue, and here the same limit is checked when the next request arrives. */
+const PARK_LIMIT_MS: number = 30 * 60 * 1000
+
+function dropStale(): void {
+	const now = Date.now()
+	for (let i = waitingConns.length - 1; i >= 0; i--) {
+		const c = waitingConns[i]
+		if (now - c.seen > PARK_LIMIT_MS) {
+			note('这条清单等满了半小时也没人决定')
+			writeBack(c, 403, '{"code":"DECLINED","detail":{"reason":"no decision"}}')
+			closeConn(c)
+		}
+	}
+}
+
+function reasonOf(status: number): string {
+	if (status == 200) {
+		return 'OK'
+	}
+	if (status == 400) {
+		return 'Bad Request'
+	}
+	if (status == 403) {
+		return 'Forbidden'
+	}
+	if (status == 404) {
+		return 'Not Found'
+	}
+	if (status == 422) {
+		return 'Unprocessable Entity'
+	}
+	if (status == 429) {
+		return 'Too Many Requests'
+	}
+	if (status == 507) {
+		return 'Insufficient Storage'
+	}
+	return 'Status'
+}
+
+/** The response, in the same shape Android's CsServe writes: status line, JSON content type, an explicit
+ *  length, and no `Connection: close`. That last omission is a workaround this device has to have: when
+ *  the phone asks for the connection to be closed, the record carrying the body is lost in the teardown
+ *  and the peer sees the header block with none of the bytes it declared. This end closes the socket
+ *  itself, a moment after the write was accepted. */
+function writeBack(c: Conn, status: number, body: string): void {
+	const conn = c.conn
+	if (conn == null) {
+		return
+	}
+	const raw = bytesOf(body)
+	const head = 'HTTP/1.1 ' + status.toString() + ' ' + reasonOf(status) + '\r\n'
+		+ 'Content-Type: application/json\r\n'
+		+ 'Content-Length: ' + raw.length.toString() + '\r\n\r\n'
+	const payload = cat(bytesOf(head), raw)
+	conn.send(bufOf(payload)).then((): void => {
+		note('应答已写出：' + status.toString() + ' 给连接' + c.id.toString())
+		closeLater(c)
+	}).catch((e: Error): void => {
+		/* The socket kit's errors often have no message and only a code, and this one is the difference
+		 *  between a reply that reached nobody and a reply that was never attempted. */
+		note('应答没写出去：' + errText(e) + ' 原始=' + JSON.stringify(e) + ' 连接' + c.id.toString()
+			+ ' 已关=' + c.done.toString())
+		closeConn(c)
+	})
+}
+
+function closeConn(c: Conn): void {
+	if (c.done) {
+		return
+	}
+	c.done = true
+	for (let i = waitingConns.length - 1; i >= 0; i--) {
+		if (waitingConns[i].id == c.id) {
+			waitingConns.splice(i, 1)
+		}
+	}
+	for (let i = openConns.length - 1; i >= 0; i--) {
+		if (openConns[i].id == c.id) {
+			openConns.splice(i, 1)
+		}
+	}
+	const conn = c.conn
+	if (conn != null) {
+		conn.close().then((): void => {
+		}).catch((e: Error): void => {
+		})
+	}
+}
+
+/** The small delay is the other half of leaving `Connection: close` off: the send promise resolving only
+ *  means the TLS session took the bytes, and a teardown issued in the same tick has been seen to cut a
+ *  finalize reply short. 300 ms is far longer than this device needs to flush and far shorter than any
+ *  sender's patience. */
+function closeLater(c: Conn): void {
+	setTimeout((): void => {
+		closeConn(c)
+	}, 300)
+}
+
+/** One header from the block, taken by its lowercase name. Only ever read from bytes this protocol
+ *  defines, so a name that appears twice is a malformed request rather than a puzzle. */
+function headerOf(head: string, name: string): string {
+	const at = head.toLowerCase().indexOf(name)
+	if (at < 0) {
+		return ''
+	}
+	const nl = head.indexOf('\n', at)
+	const tail = nl < 0 ? head.substring(at + name.length) : head.substring(at + name.length, nl)
+	return tail.replace('\r', '').trim()
+}
+
+/** Undo `X-Chunk-Escape: stu`, the encoding a sender uses because this platform's TLS server hands
+ *  JavaScript only the bytes in front of the first 0x00 and then never reads that connection again
+ *  (`.probe/nul.py`: 600 B and 4 MiB with no zero byte both land whole, the same body with a zero planted
+ *  at 300 stalls at 300). ESC ESC stands for one ESC and ESC 'B' for a zero; every other byte is literal.
+ *  Only a body whose header declared the encoding is read this way, so a raw chunk from an older sender
+ *  goes through untouched. */
+function stuBytes(data: Uint8Array): Uint8Array {
+	const ESC: number = 0x1B
+	const B: number = 0x42
+	const out = new Uint8Array(data.length)
+	let n = 0
+	for (let i = 0; i < data.length; i++) {
+		const byte = data[i]
+		if (byte != ESC) {
+			out[n] = byte
+			n = n + 1
+			continue
+		}
+		const next = i + 1 < data.length ? data[i + 1] : -1
+		if (next == ESC || next == B) {
+			out[n] = next == B ? 0 : ESC
+			n = n + 1
+			i = i + 1
+			continue
+		}
+		out[n] = ESC
+		n = n + 1
+	}
+	return out.subarray(0, n)
+}
+
+/** The whole request has arrived: cut it into the six fields the state machine reads and hand it over.
+ *  A PUT carries the chunk as bytes and nothing else, so the buffer goes across as an ArrayBuffer rather
+ *  than as base64 inside a JSON the sender's digest was not taken over. */
+function dispatch(c: Conn): void {
+	if (c.handled) {
+		return
+	}
+	c.handled = true
+	dropStale()
+	const head = c.head
+	const bits = head.split('\r\n')[0].split(' ')
+	if (bits.length < 2) {
+		note('请求行读不出方法：' + head.split('\r\n')[0])
+		closeConn(c)
+		return
+	}
+	const method = bits[0]
+	const path = bits[1]
+	const escape = headerOf(head, 'x-chunk-escape:')
+	if (escape != '' && method == 'PUT' && c.declared > 0 && c.view != null) {
+		/* Both digests, so a rejected chunk says which half of this end is wrong: if the wire digest
+		 *  matches what the sender hashed over its escaped bytes, the bytes came through and the decode is
+		 *  at fault; if it does not, the platform handed this connection a body that was not what went on
+		 *  the wire - and `written`/`inflow` say whether a record was counted twice. */
+		const onWire = digestBytes(c.body!)
+		const plain = stuBytes(c.view!)
+		const after = digestBytes(bufOf(plain))
+		note('反解 ' + escape + '：收到 ' + c.inflow.toString() + ' 用了 ' + c.written.toString()
+			+ ' 解出 ' + plain.length.toString() + ' 包数 ' + c.evs.toString()
+			+ ' 线上=' + onWire.substring(0, 12) + ' 解后=' + after.substring(0, 12))
+		c.body = bufOf(plain)
+		c.view = plain
+		c.declared = plain.length
+	}
+	const size = c.declared > 0 ? c.declared : 0
+	const body = c.body
+	const view = c.view
+	const json = size == 0 || method == 'PUT' ? '' : textOfBytes(view != null ? view : new Uint8Array(0))
+	const index = reqCounter
+	reqCounter = reqCounter + 1
+	c.index = index
+	c.seen = Date.now()
+	waitingConns.push(c)
+	if (serveFn == null) {
+		note('页面还没有登记接收处理器')
+		writeBack(c, 400, '{"code":"UNSUPPORTED_PROTOCOL","detail":{"reason":"no handler"}}')
+		return
+	}
+	serveFn!(index, method, path,
+		headerOf(head, 'x-chuanshu-auth:'),
+		headerOf(head, 'x-sha256:'),
+		c.ip == '' ? c.id.toString() : c.ip,
+		json,
+		method == 'PUT' && size > 0 ? body : null)
+}
+
+/** Write the next record into the declared body in place. Anything past the declared length is dropped -
+ *  this end answers one request per connection, so trailing bytes belong to a keep-alive nobody uses. */
+function takeBody(c: Conn, part: Uint8Array): void {
+	c.inflow = c.inflow + part.length
+	const view = c.view
+	if (view == null || part.length == 0 || c.written >= c.declared) {
+		return
+	}
+	const room = c.declared - c.written
+	const n = part.length < room ? part.length : room
+	view.set(part.subarray(0, n), c.written)
+	c.written = c.written + n
+}
+
+/** One stall report per quiet connection, three seconds after the last event. Counting in memory and
+ *  writing only when the stream goes quiet is the difference between measuring this platform's read pump
+ *  and being the thing that stops it. */
+function armWatch(c: Conn): void {
+	if (c.armed) {
+		return
+	}
+	c.armed = true
+	setTimeout((): void => {
+		c.armed = false
+		if (c.handled || c.done) {
+			return
+		}
+		/* Re-arm while the number still moves. One report only tells you a connection went quiet; a series
+		 *  of them is the delivery curve, and the curve is what separates a hard per-connection cap from
+		 *  a pump that merely runs out of steam. */
+		const moved = c.written != c.notified
+		c.notified = c.written
+		note('连接' + c.id.toString() + ' 停在 ' + c.written.toString() + '/' + c.declared.toString()
+			+ ' 第' + c.evs.toString() + '包 用 ' + (Date.now() - c.t0).toString() + 'ms'
+			+ (moved ? ' 仍在推进' : ' 不再推进'))
+		if (moved) {
+			armWatch(c)
+		}
+	}, 3000)
+}
+
+/** Nothing is a request until the header block has ended and the length it declared has landed - the same
+ *  rule the client half follows, only with the body going into a buffer allocated once. */
+function onBytes(c: Conn, info: socket.SocketMessageInfo): void {
+	if (c.handled || c.done) {
+		// One request per connection, exactly like the Android half: whatever arrives after it was
+		// answered is either a keep-alive nobody uses or the sender hanging up.
+		return
+	}
+	try {
+		const chunk = new Uint8Array(info.message)
+		c.evs = c.evs + 1
+		if (c.t0 == 0) {
+			c.t0 = Date.now()
+		}
+		if (c.evs <= 3) {
+			// The arrival order of the records is the open question: http.client writes the header block
+			// and the body as two SSL_writes, and a request that stalls has the body's bytes sitting in
+			// front of the request line. Logging each event's own prefix, before anything is concatenated,
+			// is the only way to tell that apart from a bug in this file.
+			note('连接' + c.id.toString() + ' 第' + c.evs.toString() + '包 ' + chunk.length.toString()
+				+ '字节 [' + textOfBytes(sliceBytes(chunk, 0, 48)) + ']')
+		} else if (c.declared > 0 && c.evs == 4) {
+			// Exactly one line about the body's shape. Everything past this point is a counter in memory:
+			// a synchronous file write per event was measured to be slow enough that the platform's read
+			// pump stopped feeding this connection, which is how the previous run "stalled".
+			note('连接' + c.id.toString() + ' 第4包 ' + chunk.length.toString() + '字节 累计 ' + c.written.toString())
+		}
+		if (c.declared < 0) {
+			const merged = cat(c.acc, chunk)
+			const at = findHeadEnd(merged)
+			if (at < 0) {
+				c.acc = merged
+				return
+			}
+			c.head = textOfBytes(merged.subarray(0, at))
+			const want = declaredOf(c.head)
+			// A request with no Content-Length has nothing after the header block; GET and DELETE
+			// arrive like this from a hand-typed peer, so it is complete as it stands.
+			c.declared = want > 0 ? want : 0
+			c.body = new ArrayBuffer(c.declared)
+			c.view = new Uint8Array(c.body!)
+			c.acc = new Uint8Array(0)
+			note('请求头：' + c.head.split('\r\n')[0] + ' 声明 ' + c.declared.toString()
+				+ '，首包 ' + merged.length.toString() + ' at=' + at.toString()
+				+ ' 原始=[' + textOfBytes(sliceBytes(merged, 0, 72)) + ']')
+			takeBody(c, merged.subarray(at + 4, merged.length))
+		} else {
+			takeBody(c, chunk)
+		}
+		if (c.written >= c.declared) {
+			dispatch(c)
+		} else {
+			armWatch(c)
+		}
+	} catch (e) {
+		note('读请求时出错：' + errText(e))
+		closeConn(c)
+	}
+}
+
+function onAccept(conn: socket.TLSSocketConnection): void {
+	const c = new Conn()
+	c.conn = conn
+	connCounter = connCounter + 1
+	c.id = connCounter
+	openConns.push(c)
+	note('连接进来 ' + c.id.toString() + '，当前开着 ' + openConns.length.toString())
+	// The address is what the failed-code lockout counts per, so it is worth one promise even though
+	// nothing on this wire needs it before the request does.
+	conn.getRemoteAddress().then((where: socket.NetAddress): void => {
+		c.ip = where.address
+	}).catch((e: Error): void => {
+	})
+	conn.on('message', (info: socket.SocketMessageInfo): void => {
+		onBytes(c, info)
+	})
+	conn.on('error', (e: Error): void => {
+		// 'close' never fires on this platform, so an error is the end of the stream. The counters say
+		// whether a stalled body was cut off by the peer hanging up or simply never continued.
+		note('这条连接断了：' + errText(e) + ' 已收 ' + c.written.toString() + '/' + c.declared.toString()
+			+ ' 第' + c.evs.toString() + '包')
+		closeConn(c)
+	})
+}
+
+/** Answer a request the handler deferred. True means a connection was still there to answer, which is
+ *  the difference between "the user declined" reaching the sender and reaching nobody. */
+export function serveReply(index: number, status: number, body: string): boolean {
+	for (let i = waitingConns.length - 1; i >= 0; i--) {
+		const c = waitingConns[i]
+		if (c.index == index) {
+			waitingConns.splice(i, 1)
+			writeBack(c, status, body)
+			return true
+		}
+	}
+	return false
+}
+
+export function serveIsRunning(): boolean {
+	return listening
+}
+
+export function servePort(): number {
+	return listenPort
+}
+
+export function serveNoteLog(): string {
+	return JSON.stringify(serveNotes)
+}
+
+/** Open the port a peer dials. The leaf here is the RSA one, and the fingerprint that goes into a pair
+ *  message is this certificate's, not the Ed25519 identity's - see servedPair(). */
+export function receiveStart(cb: (ok: boolean, message: string) => void): void {
+	if (listening) {
+		cb(true, startNote)
+		return
+	}
+	if (serveFn == null) {
+		cb(false, '页面还没把接收处理器交进来')
+		return
+	}
+	const pair = servedPair()
+	if (pair.pri == null) {
+		startNote = pair.error == '' ? '本机服务证书读不出来' : pair.error
+		cb(false, startNote)
+		return
+	}
+	dropStale()
+	const srv = socket.constructTLSSocketServerInstance()
+	const addr: socket.NetAddress = { family: 1, port: TRANSPORT_PORT, address: '0.0.0.0' }
+	const opt: socket.TLSConnectOptions = { address: addr, secureOptions: servedPem(pair) }
+	srv.listen(opt).then((): void => {
+		// Only a handler registered past this promise receives anything: the sweep in cs-identity
+		// registered the same event on both sides of it and saw only the later one fire.
+		srv.on('connect', (conn: socket.TLSSocketConnection): void => {
+			onAccept(conn)
+		})
+		srv.on('error', (e: Error): void => {
+			note('监听出错：' + errText(e) + ' 原始=' + JSON.stringify(e) + ' 开着 ' + openConns.length.toString())
+		})
+		listener = srv
+		listening = true
+		listenPort = TRANSPORT_PORT
+		startNote = '正在监听 ' + TRANSPORT_PORT.toString() + '，收到的文件落在 ' + RECV_DIR
+		cb(true, startNote)
+	}).catch((e: Error): void => {
+		startNote = '监听没能起来：' + errText(e)
+		cb(false, startNote)
+	})
+}
+
+/** Closing the listener tears the parked offers down with an explicit refusal, so a sender is never
+ *  left holding a connection after this end decided to stop - the same reply Android's stop() delivers. */
+export function receiveStop(): string {
+	listening = false
+	const parked: Conn[] = []
+	for (let i = 0; i < waitingConns.length; i++) {
+		parked.push(waitingConns[i])
+	}
+	let closed = 0
+	for (let i = 0; i < parked.length; i++) {
+		const c = parked[i]
+		writeBack(c, 403, '{"code":"DECLINED","detail":{"reason":"receiver stopped"}}')
+		closed = closed + 1
+	}
+	waitingConns.splice(0, waitingConns.length)
+	for (let i = openConns.length - 1; i >= 0; i--) {
+		closeConn(openConns[i])
+	}
+	const srv = listener
+	if (srv != null) {
+		srv.close().then((): void => {
+		}).catch((e: Error): void => {
+		})
+		listener = null
+	}
+	startNote = closed > 0 ? ('不再监听，' + closed.toString() + ' 条等决定的清单已经回拒') : '不再监听'
+	return startNote
+}
+
+/** The handler the page's JavaScript state machine runs against. Registered before receiveStart(),
+ *  because the listener refuses to open without someone to hand requests to. */
+export function serveBind(fn: ServeFn): void {
+	serveFn = fn
+}
+
+/* ------------------------------------------------------------------- the primitives it needs */
+
+export function storeRoot(): string {
+	return RECV_DIR
+}
+
+export function storePrepareFile(relpath: string, size: number): string {
+	return storePrepare(relpath, size)
+}
+
+export function storeWriteAt(relpath: string, offset: number, data: ArrayBuffer): string {
+	return storeWrite(relpath, offset, data)
+}
+
+export function storeDigestFile(relpath: string): string {
+	return storeDigest(relpath)
+}
+
+export function storeDropFile(relpath: string): void {
+	storeDrop(relpath)
+}
+
+/** The chunk's digest, taken over the exact bytes that arrived. Synchronous because the state machine
+ *  asks for it in the middle of a request and has no way to wait for an answer. */
+export function digestBytes(buf: ArrayBuffer): string {
+	return sha256Hex(new Uint8Array(buf))
+}
+
+export function fingerprintOfKey(publicKeyB64: string): string {
+	return fpOfKeyB64(publicKeyB64)
+}
+
+/** A real Ed25519 verify. Without it, "the peer re-paired from its pinned key" would be a claim about a
+ *  string rather than about a key. */
+export function verifySignature(publicKeyB64: string, message: string, signatureB64: string): boolean {
+	return verifyKey(publicKeyB64, message, signatureB64)
+}
+
+/** What the receiver says about itself in /v1/hello and in a pair reply, in three synchronous reads.
+ *  The page owns the state machine, and the state machine cannot be handed a promise. */
+export function peerIdText(): string {
+	return peerIdOf()
+}
+
+export function deviceNameText(): string {
+	return deviceName()
+}
+
+export function identityFingerprint(): string {
+	return takeSelf().fingerprint
+}
+
+function addrList(): string {
+	const info = lanInfo()
+	let out = ''
+	for (let i = 0; i < info.addrs.length; i++) {
+		out = out + (out == '' ? '' : ',') + '"' + jsonText(info.addrs[i].addr + '/' +
+			info.addrs[i].prefix.toString() + '（' + info.addrs[i].iface + '）') + '"'
+	}
+	return out
+}
+
+/** What the page shows next to the pair code. Hand-built JSON, because the only reader of it is the
+ *  page's own card and nothing in this file parses it back.
+ *
+ *  `fingerprint` is the identity key and `served` is the TLS leaf. They are two different numbers here
+ *  and the page has to know which one belongs in which field of a pair message: the first is what a
+ *  peer pins as who it is talking to, the second is what it expects the socket to present. */
+export function receiveStatus(): string {
+	return '{"listening":' + (listening ? 'true' : 'false') + ',"port":' + listenPort.toString()
+		+ ',"root":"' + jsonText(RECV_DIR) + '","note":"' + jsonText(startNote)
+		+ '","fingerprint":"' + jsonText(identityFingerprint())
+		+ '","served":"' + jsonText(servedFingerprint())
+		+ '","addrs":[' + addrList() + '],"notes":' + serveNoteLog() + '}'
+}

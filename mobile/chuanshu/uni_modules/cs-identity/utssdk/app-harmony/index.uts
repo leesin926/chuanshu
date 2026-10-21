@@ -1,0 +1,787 @@
+/** Harmony's half of the probe: the same three questions the Android file asks - can this device
+ *  make an Ed25519 identity, can it hand-build the X.509 that carries it, can its TLS stack complete
+ *  a handshake against that certificate and show us the peer's DER - answered with ArkTS instead of
+ *  java.security.
+ *
+ *  Every line is written *before* the step that produces it, because on a new platform the useful
+ *  answer is not "it works" but "it stopped at this line". */
+import cryptoFramework from '@ohos.security.cryptoFramework'
+import cert from '@ohos.security.cert'
+import socket from '@ohos.net.socket'
+import util from '@ohos.util'
+import deviceInfo from '@ohos.deviceInfo'
+
+const HEXD = '0123456789abcdef'
+
+/* ArkTS bans `any` everywhere and forbids an annotation on the catch variable, so the error arrives
+   here already typed as Error - which is what a BusinessError actually is. */
+function errText(e: Error): string {
+	return e.message
+}
+
+function hexOf(b: Uint8Array): string {
+	let s = ''
+	for (let i = 0; i < b.length; i++) {
+		const v = b[i] & 0xff
+		s = s + HEXD.charAt(v >> 4) + HEXD.charAt(v & 15)
+	}
+	return s
+}
+
+function b64Of(b: Uint8Array): string {
+	return new util.Base64Helper().encodeToStringSync(b)
+}
+
+function bytesOf(text: string): Uint8Array {
+	return new util.TextEncoder().encodeInto(text)
+}
+
+function textOf(buf: ArrayBuffer): string {
+	return util.TextDecoder.create('utf-8').decodeToString(new Uint8Array(buf))
+}
+
+// --------------------------------------------------------------------------- DER
+
+function cat(a: Uint8Array, b: Uint8Array): Uint8Array {
+	const out = new Uint8Array(a.length + b.length)
+	out.set(a, 0)
+	out.set(b, a.length)
+	return out
+}
+
+function tlv(tag: number, body: Uint8Array): Uint8Array {
+	const n = body.length
+	let head: Uint8Array
+	if (n < 0x80) {
+		head = new Uint8Array([tag, n])
+	} else if (n < 0x100) {
+		head = new Uint8Array([tag, 0x81, n])
+	} else {
+		head = new Uint8Array([tag, 0x82, (n >> 8) & 0xff, n & 0xff])
+	}
+	return cat(head, body)
+}
+
+function seqOf(parts: Uint8Array[]): Uint8Array {
+	let body = new Uint8Array(0)
+	for (let i = 0; i < parts.length; i++) {
+		body = cat(body, parts[i])
+	}
+	return tlv(0x30, body)
+}
+
+const DER_ED25519_ALG: Uint8Array = seqOf([new Uint8Array([0x06, 0x03, 0x2b, 0x65, 0x70])])
+
+function cnName(cn: string): Uint8Array {
+	const oid = new Uint8Array([0x06, 0x03, 0x55, 0x04, 0x03])
+	const utf8 = tlv(0x0c, bytesOf(cn))
+	return seqOf([tlv(0x31, seqOf([oid, utf8]))])
+}
+
+function pad2(n: number): string {
+	return n < 10 ? '0' + n.toString() : n.toString()
+}
+
+/** UTCTime, the one GeneralizedTime-free form both our PC peer and this builder accept. */
+function utcTime(millis: number): Uint8Array {
+	const d = new Date(millis)
+	const s = pad2(d.getUTCFullYear() % 100) + pad2(d.getUTCMonth() + 1) + pad2(d.getUTCDate())
+		+ pad2(d.getUTCHours()) + pad2(d.getUTCMinutes()) + pad2(d.getUTCSeconds()) + 'Z'
+	return tlv(0x17, bytesOf(s))
+}
+
+/** A positive INTEGER body: DER needs the high bit clear, so a leading zero goes in when it is set. */
+function intBody(bytes: Uint8Array): Uint8Array {
+	if ((bytes[0] & 0x80) != 0) {
+		return cat(new Uint8Array([0x00]), bytes)
+	}
+	return bytes
+}
+
+function randomBytes(n: number): Uint8Array {
+	const out = new Uint8Array(n)
+	for (let i = 0; i < n; i++) {
+		out[i] = Math.floor(Math.random() * 256) & 0xff
+	}
+	return out
+}
+
+/** One TLV at `at`: its tag, its body range, and where the next element starts. */
+class Elem {
+	tag: number = 0
+	body: number = 0
+	next: number = 0
+	len: number = 0
+}
+
+function readTlv(der: Uint8Array, at: number): Elem | null {
+	if (at + 2 > der.length) {
+		return null
+	}
+	const e = new Elem()
+	e.tag = der[at] & 0xff
+	let head = 2
+	const first = der[at + 1] & 0xff
+	if (first < 0x80) {
+		e.len = first
+	} else if (first == 0x81) {
+		e.len = der[at + 2] & 0xff
+		head = 3
+	} else if (first == 0x82) {
+		e.len = ((der[at + 2] & 0xff) << 8) | (der[at + 3] & 0xff)
+		head = 4
+	} else {
+		return null
+	}
+	e.body = at + head
+	e.next = e.body + e.len
+	if (e.next > der.length) {
+		return null
+	}
+	return e
+}
+
+/** The SubjectPublicKeyInfo inside a certificate - the exact bytes the fingerprint hashes.
+ *  The transport needs this because Harmony hands out the peer's DER and nothing else: there is no
+ *  platform object that will read a public key out of a certificate for us. */
+function spkiOf(der: Uint8Array): Uint8Array | null {
+	const outer = readTlv(der, 0)
+	if (outer == null || outer.tag != 0x30) {
+		return null
+	}
+	const tbs = readTlv(der, outer.body)
+	if (tbs == null || tbs.tag != 0x30) {
+		return null
+	}
+	let at = tbs.body
+	for (let step = 0; step < 6; step++) {
+		const e = readTlv(der, at)
+		if (e == null) {
+			return null
+		}
+		at = e.next
+	}
+	const spki = readTlv(der, at)
+	if (spki == null || spki.tag != 0x30) {
+		return null
+	}
+	const slice = new Uint8Array(spki.next - at)
+	for (let i = at; i < spki.next; i++) {
+		slice[i - at] = der[i]
+	}
+	return slice
+}
+
+function pemOf(label: string, der: Uint8Array): string {
+	const b64 = b64Of(der)
+	let body = ''
+	for (let i = 0; i < b64.length; i += 64) {
+		body = body + b64.substring(i, i + 64 > b64.length ? b64.length : i + 64) + '\n'
+	}
+	return '-----BEGIN ' + label + '-----\n' + body + '-----END ' + label + '-----\n'
+}
+
+class NodeKey {
+	spki: Uint8Array
+	der: Uint8Array
+	fp: string
+	pub: cryptoFramework.PubKey
+	pri: cryptoFramework.PriKey
+	constructor(pub: cryptoFramework.PubKey, pri: cryptoFramework.PriKey, spki: Uint8Array, der: Uint8Array, fp: string) {
+		this.pub = pub
+		this.pri = pri
+		this.spki = spki
+		this.der = der
+		this.fp = fp
+	}
+}
+
+function sha256Hex(b: Uint8Array): string {
+	const md = cryptoFramework.createMd('SHA256')
+	const blob: cryptoFramework.DataBlob = { data: b }
+	md.updateSync(blob)
+	return hexOf(md.digestSync().data)
+}
+
+function signWith(pri: cryptoFramework.PriKey, msg: Uint8Array): Uint8Array {
+	const signer = cryptoFramework.createSign('Ed25519')
+	signer.initSync(pri)
+	const blob: cryptoFramework.DataBlob = { data: msg }
+	return signer.signSync(blob).data
+}
+
+function verifyWith(pub: cryptoFramework.PubKey, msg: Uint8Array, sig: Uint8Array): boolean {
+	const checker = cryptoFramework.createVerify('Ed25519')
+	checker.initSync(pub)
+	const blob: cryptoFramework.DataBlob = { data: msg }
+	const sigBlob: cryptoFramework.DataBlob = { data: sig }
+	return checker.verifySync(blob, sigBlob)
+}
+
+/** The certificate, built the same byte sequence the Android half builds so both ends hash the same
+ *  SubjectPublicKeyInfo and the PC reads either one without knowing which device made it. */
+export function buildNodeKey(peerId: string): NodeKey {
+	const gen = cryptoFramework.createAsyKeyGenerator('Ed25519')
+	const kp = gen.generateKeyPairSync()
+	const spki = kp.pubKey.getEncoded().data
+	const serial = intBody(randomBytes(8))
+	const now = Date.now()
+	const tbs = seqOf([
+		tlv(0xa0, tlv(0x02, new Uint8Array([0x02]))),
+		tlv(0x02, serial),
+		DER_ED25519_ALG,
+		cnName(peerId),
+		seqOf([utcTime(now - 86400000), utcTime(now + 3650 * 86400000)]),
+		cnName(peerId),
+		spki
+	])
+	const der = seqOf([tbs, DER_ED25519_ALG, tlv(0x03, cat(new Uint8Array([0x00]), signWith(kp.priKey, tbs)))])
+	return new NodeKey(kp.pubKey, kp.priKey, spki, der, sha256Hex(spki))
+}
+
+export function identityProbe(): string {
+	let out = ''
+	out = out + 'os=' + deviceInfo.osFullName + ' sdkApi=' + deviceInfo.sdkApiVersion + '\n'
+	try {
+		const gen = cryptoFramework.createAsyKeyGenerator('Ed25519')
+		const kp = gen.generateKeyPairSync()
+		const spki = kp.pubKey.getEncoded().data
+		out = out + 'keygen ok spki bytes=' + spki.length.toString() + '\n'
+		out = out + 'spki b64=' + b64Of(spki) + '\n'
+		out = out + 'fp=' + sha256Hex(spki) + '\n'
+		const msg = bytesOf('chuanshu-probe')
+		const sig = signWith(kp.priKey, msg)
+		out = out + 'sig bytes=' + sig.length + ' verify=' + verifyWith(kp.pubKey, msg, sig) + '\n'
+		const stranger = cryptoFramework.createAsyKeyGenerator('Ed25519').generateKeyPairSync()
+		out = out + 'stranger verify=' + verifyWith(stranger.pubKey, msg, sig) + '\n'
+		out = out + 'pri pkcs8 bytes=' + kp.priKey.getEncoded().data.length + '\n'
+		out = out + 'md len=' + cryptoFramework.createMd('SHA256').getMdLength().toString() + '\n'
+	} catch (e) {
+		out = out + 'stopped here: ' + errText(e) + '\n'
+	}
+	return out
+}
+
+export function certProbe(peerId: string): string {
+	let out = ''
+	try {
+		const nk = buildNodeKey(peerId)
+		out = out + 'cert der bytes=' + nk.der.length + '\n'
+		const back = spkiOf(nk.der)
+		if (back == null) {
+			out = out + 'spki walk FAILED\n'
+		} else {
+			out = out + 'spki walk matches keygen: ' + (hexOf(back) == hexOf(nk.spki)) + '\n'
+		}
+		const tbs = seqOf([
+			tlv(0xa0, tlv(0x02, new Uint8Array([0x02]))),
+			tlv(0x02, intBody(randomBytes(8))),
+			DER_ED25519_ALG,
+			cnName(peerId),
+			seqOf([utcTime(Date.now() - 86400000), utcTime(Date.now() + 86400000)]),
+			cnName(peerId),
+			nk.spki
+		])
+		out = out + 'sign over own tbs verify=' + verifyWith(nk.pub, tbs, signWith(nk.pri, tbs)) + '\n'
+		const stranger = cryptoFramework.createAsyKeyGenerator('Ed25519').generateKeyPairSync()
+		out = out + 'stranger key accepted? ' + verifyWith(stranger.pubKey, tbs, signWith(nk.pri, tbs)) + '\n'
+		out = out + 'fp=' + nk.fp + ' pem lines=' + pemOf('CERTIFICATE', nk.der).split('\n').length.toString() + '\n'
+	} catch (e) {
+		out = out + 'stopped here: ' + errText(e) + '\n'
+	}
+	return out
+}
+
+// --------------------------------------------------------------------------- TLS loopback
+
+let serverLog = ''
+/** Whatever the last client round was handed by the platform as the peer's certificate. The dial probe
+ *  feeds it back as a trust anchor on the next round, which is the only way to pin a certificate this
+ *  module did not build. */
+let lastPeerDer: Uint8Array | null = null
+
+/** One accepted connection: report what the platform says the peer presented, then answer one
+ *  request line. This is the same shape the receiving transport will have, so a failure here names
+ *  the API that is missing rather than a bug in the protocol. */
+function serveConnection(conn: socket.TLSSocketConnection, body: string) {
+	// Everything in here is logged, including the entry line and any throw, because a handler that
+	// dies on its first statement is otherwise indistinguishable from a server that never accepted:
+	// that is exactly how "accepted nothing" read for three rounds.
+	serverLog = serverLog + 'accepted\n'
+	try {
+		serverLog = serverLog + ' client=' + conn.clientId.toString() + '\n'
+	} catch (e) {
+		serverLog = serverLog + ' clientId: ' + errText(e) + '\n'
+	}
+	try {
+		conn.getRemoteCertificate().then((peer: cert.EncodingBlob) => {
+			serverLog = serverLog + 'client cert bytes=' + peer.data.length + '\n'
+		}).catch((e: Error) => {
+			// No client certificate exists in this protocol, so this line is expected to fail.
+			serverLog = serverLog + 'client cert: ' + e.message + '\n'
+		})
+		conn.getCipherSuite().then((suites: Array<string>) => {
+			serverLog = serverLog + 'cipher suites=' + suites.length.toString() + ' first=' + suites[0] + '\n'
+		}).catch((e: Error) => {
+			serverLog = serverLog + 'cipher: ' + e.message + '\n'
+		})
+		conn.on('message', (info: socket.SocketMessageInfo): void => {
+			serverLog = serverLog + 'served req=' + info.message.byteLength.toString() + '\n'
+			const buf = bytesOf(body).buffer as ArrayBuffer
+			conn.send(buf).then((): void => {
+				// The promise resolving is the write being accepted by the TLS session; whether the peer
+				// read it is a separate question, and the client side cannot answer it for itself.
+				serverLog = serverLog + 'sent ok ' + buf.byteLength.toString() + 'B\n'
+			}).catch((e: Error) => {
+				serverLog = serverLog + 'send failed: ' + e.message + '\n'
+			})
+		})
+		conn.on('close', (): void => {
+			serverLog = serverLog + 'closed\n'
+		})
+		conn.on('error', (e: Error): void => {
+			serverLog = serverLog + 'conn error: ' + e.message + '\n'
+		})
+	} catch (e) {
+		serverLog = serverLog + 'setup threw: ' + errText(e) + '\n'
+	}
+}
+
+const HELLO_REQ = 'GET /v1/hello HTTP/1.1\r\nHost: chuanshu\r\n\r\n'
+
+/** One client run, reported as a single line. Three of them answer the three questions the transport
+ *  depends on: does the platform take our hand-built certificate as a trust anchor at all, does it
+ *  hand back the peer's DER so the fingerprint can be computed here, and does a *different* anchor
+ *  get refused - a pin that refuses nothing is a pin that is decorative. */
+function oneClient(label: string, port: number, pinDer: Uint8Array | null, skip: boolean, cb: (line: string) => void): void {
+	let line = label + ': '
+	let ended = false
+	const cli = socket.constructTLSSocketInstance()
+	const finishWith = (text: string): void => {
+		if (ended) {
+			return
+		}
+		ended = true
+		cli.close().then(() => {
+			cb(text)
+		}).catch((e: Error) => {
+			cb(text + ' (close: ' + e.message + ')')
+		})
+	}
+	cli.on('error', (e: Error): void => {
+		finishWith(line + 'socket error: ' + e.message)
+	})
+	// The server side proved that this platform drops a 'connect' handler registered before listen()
+	// resolved, so the reply is taken through a handler registered after connect() as well. Whichever
+	// tag reaches the screen says which registration the client's read loop actually honours.
+	const takeReply = (tag: string): void => {
+		cli.on('message', (info: socket.SocketMessageInfo): void => {
+			try {
+				finishWith(line + 'reply(' + tag + ') ' + info.message.byteLength.toString() + 'B '
+					+ textOf(info.message).substring(0, 44))
+			} catch (e) {
+				finishWith(line + 'reply(' + tag + ') handler threw: ' + errText(e))
+			}
+		})
+	}
+	takeReply('early')
+	const local: socket.NetAddress = { family: 1, port: 0, address: '127.0.0.1' }
+	const addr: socket.NetAddress = { family: 1, port: port, address: '127.0.0.1' }
+	let sec: socket.TLSSecureOptions = {}
+	if (pinDer != null) {
+		sec = { ca: pemOf('CERTIFICATE', pinDer!) }
+	}
+	const opt: socket.TLSConnectOptions = { address: addr, secureOptions: sec, skipRemoteValidation: skip }
+	// A TLS client socket is not like a TCP one: the platform creates the TLS session only after the
+	// local address has been bound, so connecting straight away fails with "No bind socket". Port 0
+	// leaves the local port to the system, which is all the transport half will want either.
+	cli.bind(local).then(() => {
+		return cli.connect(opt)
+	}).then(() => {
+		takeReply('late')
+		return cli.getRemoteCertificate()
+	}).then((peer: cert.EncodingBlob) => {
+		const spki = spkiOf(peer.data)
+		lastPeerDer = peer.data
+		line = line + 'handshake ok cert=' + peer.data.length.toString() + 'B encoding=' + peer.encodingFormat.toString()
+			+ ' fp=' + (spki == null ? 'walk failed' : sha256Hex(spki!).substring(0, 16)) + ' '
+		return cli.send(bytesOf(HELLO_REQ).buffer as ArrayBuffer)
+	}).catch((e: Error) => {
+		finishWith(line + 'refused: ' + e.message)
+	})
+	setTimeout((): void => {
+		finishWith(line + 'timed out waiting for a reply')
+	}, 6000)
+}
+
+export function tlsSelfCheck(peerId: string, port: number, done: (text: string) => void): void {
+	serverLog = ''
+	let out = ''
+	let nk: NodeKey | null = null
+	let stranger: NodeKey | null = null
+	try {
+		nk = buildNodeKey(peerId)
+		stranger = buildNodeKey(peerId + '-stranger')
+		out = out + 'fp=' + nk!.fp + ' der=' + nk!.der.length.toString() + '\n'
+	} catch (e) {
+		done('keygen stopped: ' + errText(e) + '\n')
+		return
+	}
+
+	const srv = socket.constructTLSSocketServerInstance()
+	srv.on('connect', (conn: socket.TLSSocketConnection): void => {
+		serveConnection(conn, '{"hello":"chuanshu","peer_id":"' + nk!.fp.substring(0, 8) + '"}')
+	})
+	srv.on('error', (e: Error): void => {
+		serverLog = serverLog + 'server error: ' + e.message + '\n'
+	})
+
+	const listenAddr: socket.NetAddress = { family: 1, port: port, address: '0.0.0.0' }
+	const secure: socket.TLSSecureOptions = { cert: pemOf('CERTIFICATE', nk!.der), key: pemOf('PRIVATE KEY', nk!.pri.getEncoded().data) }
+	const listenOptions: socket.TLSConnectOptions = { address: listenAddr, secureOptions: secure }
+
+	srv.listen(listenOptions).then(() => {
+		out = out + 'listening ' + port.toString() + '\n'
+		oneClient('A trust our own cert', port, nk!.der, false, (a: string): void => {
+			out = out + a + '  expected fp=' + nk!.fp.substring(0, 16) + '\n'
+			oneClient('B skip validation', port, null, true, (b: string): void => {
+				out = out + b + '  expected fp=' + nk!.fp.substring(0, 16) + '\n'
+				oneClient('C trust a stranger cert', port, stranger!.der, false, (c: string): void => {
+					out = out + c + '  (refused is the correct answer)\n'
+					done(out + '--- server ---\n' + serverLog)
+				})
+			})
+		})
+	}).catch((e: Error) => {
+		done(out + 'listen FAILED: ' + e.message + '\n--- server ---\n' + serverLog)
+	})
+}
+
+// --------------------------------------------------------------------------- key algorithm sweep
+
+const ALG_RSA_SHA256: Uint8Array = new Uint8Array([
+	0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05, 0x00])
+const ALG_ECDSA_SHA256: Uint8Array = new Uint8Array([
+	0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02])
+/** id-ecPublicKey + prime256v1 + a 65-byte BIT STRING. The platform hands back an EC public key as a
+ *  raw point, so it has to be wrapped before it can sit in a certificate as a SubjectPublicKeyInfo. */
+const EC_SPKI_HEAD: Uint8Array = new Uint8Array([
+	0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01,
+	0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00])
+
+/** The certificate builder with the key algorithm as a parameter. The protocol's own identity stays
+ *  Ed25519 either way; this only decides what the TLS leaf carries, and the netstack log said
+ *  "unknown key" for the Ed25519 one, which is what the sweep is here to confirm or refute.
+ *  Each algorithm is tried against every sign-spec name this platform documents, because "create c
+ *  sign fail" says only that a name was not recognised and the useful answer is which one is. */
+function buildPair(gen: string, specs: string[], alg: Uint8Array, peerId: string, note: (s: string) => void): NodeKey {
+	const t0 = Date.now()
+	const kp = cryptoFramework.createAsyKeyGenerator(gen).generateKeyPairSync()
+	// Timed because a synchronous RSA-2048 key generation on this thread is what tripped the
+	// platform's app-freeze killer earlier, and "the probe made the app vanish" is only evidence
+	// if the line before it says how long each step held the thread.
+	note(gen + ' keygen ' + (Date.now() - t0).toString() + 'ms\n')
+	const enc = kp.pubKey.getEncoded().data
+	const spki = enc.length == 65 ? cat(EC_SPKI_HEAD, enc) : enc
+	const now = Date.now()
+	const tbs = seqOf([
+		tlv(0xa0, tlv(0x02, new Uint8Array([0x02]))),
+		tlv(0x02, intBody(randomBytes(8))),
+		alg,
+		cnName(peerId),
+		seqOf([utcTime(now - 86400000), utcTime(now + 365 * 86400000)]),
+		cnName(peerId),
+		spki
+	])
+	let sig: Uint8Array | null = null
+	for (let i = 0; i < specs.length; i++) {
+		try {
+			const signer = cryptoFramework.createSign(specs[i])
+			signer.initSync(kp.priKey)
+			const blob: cryptoFramework.DataBlob = { data: tbs }
+			sig = signer.signSync(blob).data
+			note(gen + ' signed with ' + specs[i] + '\n')
+			break
+		} catch (e) {
+			note(gen + ' ' + specs[i] + ' -> ' + errText(e) + '\n')
+		}
+	}
+	if (sig == null) {
+		throw new Error(gen + ': no sign spec was accepted')
+	}
+	const der = seqOf([tbs, alg, tlv(0x03, cat(new Uint8Array([0x00]), sig!))])
+	return new NodeKey(kp.pubKey, kp.priKey, spki, der, sha256Hex(spki))
+}
+
+/** One server plus two clients: one that has to trust the hand-built certificate through `ca`, and one
+ *  that skips validation. The pair answers "can this device be connected to with this key" and "can a
+ *  hand-built certificate be a trust anchor" together, which is the shape the receiving transport needs. */
+function oneRoundtrip(label: string, pair: NodeKey, stranger: NodeKey, port: number, cb: (line: string) => void): void {
+	serverLog = ''
+	const srv = socket.constructTLSSocketServerInstance()
+	const body = '{"hello":"chuanshu","peer_id":"' + pair.fp.substring(0, 8) + '"}'
+	// Three questions at once, because every round here costs a rebuild and an eighteen-second sweep:
+	// does 'connect' fire when the handler is registered before listen, does it fire when registered
+	// after, and is serverLog reachable at all - a log that never reaches the reader would make both
+	// of those unreadable, which is exactly how "accepted nothing" has to be ruled out first.
+	const onEarly = (conn: socket.TLSSocketConnection): void => {
+		serverLog = serverLog + 'connect(early)\n'
+		serveConnection(conn, body)
+	}
+	srv.on('connect', onEarly)
+	srv.on('error', (e: Error): void => {
+		serverLog = serverLog + 'server error: ' + errText(e) + '\n'
+	})
+	const listenAddr: socket.NetAddress = { family: 1, port: port, address: '0.0.0.0' }
+	const secure: socket.TLSSecureOptions = {
+		cert: pemOf('CERTIFICATE', pair.der),
+		key: pemOf('PRIVATE KEY', pair.pri.getEncoded().data)
+	}
+	const opts: socket.TLSConnectOptions = { address: listenAddr, secureOptions: secure }
+	srv.listen(opts).then(() => {
+		serverLog = serverLog + 'listening ' + port.toString() + '\n'
+		srv.on('connect', (conn: socket.TLSSocketConnection): void => {
+			serverLog = serverLog + 'connect(late)\n'
+			serveConnection(conn, body)
+		})
+		oneClient(label + ' ca=self', port, pair.der, false, (a: string): void => {
+			oneClient(label + ' ca=stranger', port, stranger.der, false, (b: string): void => {
+				oneClient(label + ' skip', port, null, true, (c: string): void => {
+					srv.close().then(() => {
+						cb(a + '\n' + b + '  (a refusal is the correct answer)\n'
+							+ c + '\nserver: ' + (serverLog == '' ? 'accepted nothing' : serverLog))
+					}).catch((e: Error) => {
+						cb(a + '\n' + b + '\n' + c + '\nserver close failed: ' + errText(e))
+					})
+				})
+			})
+		})
+	}).catch((e: Error) => {
+		cb(label + ' listen FAILED: ' + errText(e))
+	})
+}
+
+class AlgCase {
+	label: string
+	gen: string
+	specs: string[]
+	alg: Uint8Array
+	port: number
+	constructor(label: string, gen: string, specs: string[], alg: Uint8Array, port: number) {
+		this.label = label
+		this.gen = gen
+		this.specs = specs
+		this.alg = alg
+		this.port = port
+	}
+}
+
+/** Built when the sweep runs rather than when this module loads: a page that merely imports this
+ *  file must not execute any of it, because on Harmony the ability is created from this module's
+ *  graph and a top-level statement that fails there takes the whole window down with it. */
+function algCases(): AlgCase[] {
+	return [
+		new AlgCase('Ed25519', 'Ed25519', ['Ed25519'], DER_ED25519_ALG, 43801),
+		new AlgCase('ECC256', 'ECC256', ['SHA256|ECDSA', 'ECC256|SHA256|ECDSA', 'ECC256|SHA256|PLAIN',
+			'SHA256|ECDSA|PLAIN', 'ECDSA|SHA256'], ALG_ECDSA_SHA256, 43802),
+		new AlgCase('RSA2048', 'RSA2048', ['RSA2048|SHA256|PKCS1'], ALG_RSA_SHA256, 43803)
+	]
+}
+
+/** Sequential, because two servers on the loopback at once would make a timeout impossible to read -
+ *  and last, RSA, because its key generation holds this thread long enough that the platform may
+ *  decide the app has frozen. Reporting after every case is what makes that survivable: the answers
+ *  already on screen stay on screen. */
+function runCases(i: number, out: string, done: (text: string) => void): void {
+	const cases = algCases()
+	if (i >= cases.length) {
+		done(out)
+		return
+	}
+	const c = cases[i]
+	let notes = ''
+	let pair: NodeKey | null = null
+	let stranger: NodeKey | null = null
+	try {
+		pair = buildPair(c.gen, c.specs, c.alg, 'harmony-alg-' + c.label, (s: string): void => {
+			notes = notes + s
+		})
+		stranger = buildPair(c.gen, c.specs, c.alg, 'harmony-alg-' + c.label + '-x', (_s: string): void => {
+		})
+	} catch (e) {
+		runCases(i + 1, out + notes + c.label + ': key or cert build stopped: ' + errText(e) + '\n', done)
+		return
+	}
+	out = out + notes + c.label + ' spki=' + pair!.spki.length.toString() + 'B cert='
+		+ pair!.der.length.toString() + 'B fp=' + pair!.fp.substring(0, 12) + '\n'
+	oneRoundtrip(c.label, pair!, stranger!, c.port, (line: string): void => {
+		out = out + line + '\n'
+		done(out)
+		runCases(i + 1, out, done)
+	})
+}
+
+export function tlsAlgProbeAsync(done: (text: string) => void) {
+	try {
+		runCases(0, '', done)
+	} catch (e) {
+		done('crashed: ' + errText(e) + '\n')
+	}
+}
+
+function guard(body: () => string): string {
+	try {
+		return body()
+	} catch (e) {
+		return 'crashed: ' + errText(e) + '\n'
+	}
+}
+
+export function identityProbeAsync(done: (text: string) => void) {
+	done(guard((): string => identityProbe()))
+}
+
+export function certProbeAsync(done: (text: string) => void) {
+	done(guard((): string => certProbe('harmony-probe-01')))
+}
+
+export function tlsSelfCheckAsync(done: (text: string) => void) {
+	try {
+		tlsSelfCheck('harmony-probe-01', 43799, done)
+	} catch (e) {
+		done('crashed: ' + errText(e) + '\n')
+	}
+}
+
+// --------------------------------------------------------------------------- against the PC's stack
+
+/** Dial the PC-side scratch listeners, reverse-forwarded into the emulator with
+ *  `hdc rport tcp:43730 tcp:43730` (and 43731). Every roundtrip above this file can run was built by
+ *  this same module on both ends; these four ask the questions that only a foreign stack can answer:
+ *  does a handshake complete against an Ed25519 leaf nobody here made, does it complete against an
+ *  RSA one, and does this module's own SPKI walk agree with what the PC digests for the same key -
+ *  which is the agreement a pairing is made of. The pin round re-uses the DER the skip round just
+ *  captured, so a refusal there would mean the `ca` path cannot hold a foreign certificate, not that
+ *  the certificate was bad. */
+export function pcDialProbe(done: (text: string) => void): void {
+	let out = ''
+	const say = (text: string): void => {
+		out = out + text + '\n'
+		done(out)
+	}
+	oneClient('ed25519 skip', 43730, null, true, (a: string): void => {
+		say(a)
+		const edDer = lastPeerDer
+		oneClient('ed25519 pin', 43730, edDer, false, (b: string): void => {
+			say(b + (edDer == null ? ' (no DER captured; this round dialled with nothing to trust)' : ''))
+			oneClient('rsa2048 skip', 43731, null, true, (c: string): void => {
+				say(c)
+				oneClient('rsa2048 pin', 43731, lastPeerDer, false, (d: string): void => {
+					say(d)
+				})
+			})
+		})
+	})
+}
+
+let hold: socket.TLSSocketServer | null = null
+
+/** Opens a TLS listener and leaves it open, so the PC can be the one that connects - the direction the
+ *  receiving half lives in, and one no loopback test inside this module can prove, because both ends
+ *  would be our own code. RSA-2048 because the sweep above showed this platform's server side cannot
+ *  present an Ed25519 leaf at all. Reach it with `hdc fport tcp:43901 tcp:43901`. */
+export function holdListener(done: (text: string) => void): void {
+	serverLog = ''
+	lastPeerDer = null
+	let nk: NodeKey
+	try {
+		nk = buildPair('RSA2048', ['RSA2048|SHA256|PKCS1'], ALG_RSA_SHA256, 'harmony-listener', (_s: string): void => {
+		})
+	} catch (e) {
+		done('RSA pair stopped: ' + errText(e) + '\n')
+		return
+	}
+	const srv = socket.constructTLSSocketServerInstance()
+	const addr: socket.NetAddress = { family: 1, port: 43901, address: '0.0.0.0' }
+	const secure: socket.TLSSecureOptions = {
+		cert: pemOf('CERTIFICATE', nk.der),
+		key: pemOf('PRIVATE KEY', nk.pri.getEncoded().data)
+	}
+	srv.listen({ address: addr, secureOptions: secure } as socket.TLSConnectOptions).then(() => {
+		// Only a handler registered past this promise receives anything; the sweep proved that by
+		// registering the same event on both sides of it and seeing only the later one fire.
+		srv.on('connect', (conn: socket.TLSSocketConnection): void => {
+			serverLog = serverLog + 'connect\n'
+			serveConnection(conn, '{"hello":"chuanshu","from":"harmony"}')
+		})
+		srv.on('error', (e: Error): void => {
+			serverLog = serverLog + 'server error: ' + errText(e) + '\n'
+		})
+		hold = srv
+		done('listening 43901\nfp=' + nk.fp + '\nder=' + nk.der.length.toString() + 'B\n')
+	}).catch((e: Error) => {
+		done('listen FAILED: ' + errText(e) + '\n')
+	})
+}
+
+/** The listener keeps reporting into serverLog after the page stopped being handed text, so the
+ *  arrival of a PC connection has to be read on demand rather than being awaited by the button that
+ *  started it. */
+export function holdListenerLog(done: (text: string) => void): void {
+	if (hold == null) {
+		done('no listener has been started\n')
+		return
+	}
+	done(serverLog == '' ? 'nothing has connected yet\n' : serverLog)
+}
+
+/** Read a bulk stream from a server that is not our own code, and report what the platform's TLS client
+ *  actually handed the app.
+ *
+ *  The receiving half has been failing on the platform's TLS *server* connection: events arrive in sizes
+ *  the sender never wrote, out of order, and stop after a few kilobytes. Whether this device's TLS
+ *  *client* can carry a stream is the question that decides whether the fix is a smaller record or a
+ *  different direction on the wire, and no loopback test inside our own transport can answer it. */
+export function bulkReadProbe(host: string, port: number, total: number, done: (text: string) => void): void {
+	let ended = false
+	let evs = 0
+	let bytes = 0
+	let sizes = ''
+	const t0 = Date.now()
+	const say = (text: string): void => {
+		if (ended) {
+			return
+		}
+		ended = true
+		done(text + '\n用时 ' + (Date.now() - t0).toString() + 'ms')
+	}
+	const cli = socket.constructTLSSocketInstance()
+	cli.on('error', (e: Error): void => {
+		say('客户端出错: ' + errText(e) + ' 已读 ' + bytes.toString() + 'B 第' + evs.toString() + '包')
+	})
+	const local: socket.NetAddress = { family: 1, port: 0, address: '127.0.0.1' }
+	const addr: socket.NetAddress = { family: 1, port: port, address: host }
+	const sec: socket.TLSSecureOptions = {}
+	const opt: socket.TLSConnectOptions = { address: addr, secureOptions: sec, skipRemoteValidation: true }
+	cli.bind(local).then(() => {
+		return cli.connect(opt)
+	}).then(() => {
+		cli.on('message', (info: socket.SocketMessageInfo): void => {
+			evs = evs + 1
+			const n = info.message.byteLength
+			bytes = bytes + n
+			if (evs <= 4 || evs % 25 == 0) {
+				sizes = sizes + ' ' + n.toString()
+			}
+			if (bytes >= total) {
+				say('读满 ' + bytes.toString() + 'B 用 ' + evs.toString() + '包 包长:' + sizes)
+			}
+		})
+		return cli.send(bytesOf('GET /bulk HTTP/1.1\r\nHost: bulk\r\n\r\n').buffer as ArrayBuffer)
+	}).catch((e: Error) => {
+		say('拨号失败: ' + errText(e))
+	})
+	setTimeout((): void => {
+		say('停在 ' + bytes.toString() + '/' + total.toString() + 'B 第' + evs.toString() + '包 包长:' + sizes)
+	}, 12000)
+}

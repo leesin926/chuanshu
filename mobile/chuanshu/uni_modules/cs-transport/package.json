@@ -1,0 +1,57 @@
+{
+  "id": "cs-transport",
+  "displayName": "cs-transport",
+  "version": "0.0.1",
+  "description": "传书手机端传输层：把协议请求送到固定指纹的对端，浏览器侧用模拟 PC 接收端",
+  "repository": "",
+  "engines": {
+    "HBuilderX": "^4.25"
+  },
+  "dcloudext": {
+    "type": "uts",
+    "sale": {
+      "regular": {
+        "price": "0.00"
+      },
+      "sourcecode": {
+        "price": "0.00"
+      }
+    },
+    "contact": {
+      "qq": ""
+    },
+    "declaration": {
+      "ads": "无",
+      "data": "插件不采集任何数据",
+      "permissions": "android.permission.INTERNET"
+    },
+    "npmurl": ""
+  },
+  "uni_modules": {
+    "dependencies": [],
+    "encrypt": [],
+    "platforms": {
+      "cloud": {
+        "tcb": "n",
+        "aliyun": "n"
+      },
+      "client": {
+        "Vue": {
+          "vue2": "n",
+          "vue3": "y"
+        },
+        "App": {
+          "app-android": {
+            "minVersion": "21"
+          }
+        },
+        "H5-pc": {
+          "Chrome": "y"
+        },
+        "H5-mobile": {
+          "Chrome": "y"
+        }
+      }
+    }
+  }
+}

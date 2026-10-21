@@ -1,0 +1,13 @@
+*.py text eol=lf
+*.md text eol=lf
+*.ts text eol=lf
+*.json text eol=lf
+*.png binary
+*.jpg binary
+*.webp binary
+*.ttf binary
+
+# Last rule wins: the vendored contract is hashed byte-for-byte by
+# scripts/check_protocol.py, so any line-ending normalisation would make a correct
+# checkout look tampered. Keep these verbatim across every OS.
+shared/protocol/** -text

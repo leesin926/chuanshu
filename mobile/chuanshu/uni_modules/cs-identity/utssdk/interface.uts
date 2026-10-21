@@ -1,0 +1,6 @@
+/**
+ * The probe returns one block of text rather than a typed record on purpose: every line is
+ * a question about what this device's security providers can actually do, and a device that
+ * fails halfway must still show the lines it got before the failure.
+ */
+export type IdentityProbe = () => string;
