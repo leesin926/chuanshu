@@ -23,7 +23,7 @@ import {
 	BufferCallback,
 	HexCallback
 } from '@/uni_modules/cs-transport/utssdk/cs-client.uts'
-import { TRANSPORT_PORT, PAIR_CODE_DIGITS, PASSPHRASE_CHARS, codeReject, passReject, digitsOnly, formatSize, parsePairUrl } from '@/uni_modules/cs-transport/utssdk/cs-protocol.uts'
+import { TRANSPORT_PORT, PAIR_CODE_DIGITS, PASSPHRASE_CHARS, SESSION_IDLE_S, codeReject, passReject, digitsOnly, formatSize, parsePairUrl } from '@/uni_modules/cs-transport/utssdk/cs-protocol.uts'
 import { selfInfo, signPair, request, prepareFile, readChunk, digestHex, transportMocked, transportNote, lanCheck } from '@/uni_modules/cs-transport'
 // #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
 import { pinnedFor, unpinPeer, receiveStart, receiveStop, receiveStatus } from '@/uni_modules/cs-transport'
@@ -37,7 +37,7 @@ import { receiveWrongCode, demoPcConnect, demoPcSend, demoPcDisconnect, demoPcCo
  *  memory, Android keeps it in the plugin's Kotlin. Harmony is the odd one and defines the same six
  *  names itself further down, because its ArkTS half cannot read the shared state machine at all -
  *  importing there would collide with those definitions. */
-import { receiveCode, receivePassphrase, receiveRotatePairing, receiveHoldSlot, receiveSnapshot, receiveDecide } from '@/uni_modules/cs-transport'
+import { receiveCode, receivePassphrase, receiveRotatePairing, receiveHoldSlot, receiveSeen, receiveSnapshot, receiveDecide } from '@/uni_modules/cs-transport'
 // #endif
 // #ifdef APP-HARMONY
 /** These two lists have no one place to merge into on this platform. The ArkTS half of the module
@@ -61,6 +61,8 @@ import {
 	passphraseOf,
 	rotatePairing,
 	holdSlotFor,
+	seenNow,
+	sweep,
 	adoptPin,
 	trustJson,
 	adoptTrust,
@@ -379,6 +381,12 @@ function onFileState(relpath: string, status: string, done: number, total: numbe
 }
 
 function onProgress(done: number, total: number) {
+	/* 分块还在走，这条会话就没有停摆：本机拨出去的那一半也要在接收内核里留下心跳，否则一次超过
+	   闲置窗口的传输会被自己的计时器收回名额（spec §3）。 */
+	const session = activeSession
+	if (session != null) {
+		receiveSeen(session!.peerFingerprint)
+	}
 	if (total <= 0) {
 		s.fillWidth = '0%'
 		s.progressPct = '—'
@@ -433,7 +441,7 @@ function syncReceiveMemory(): void {
 	}
 	const offers = loadOfferStates()
 	if (offers != '') {
-		adoptAll(recvInbox, offers.split('\n'))
+		adoptAll(recvInbox, offers.split('\n'), nowSecs())
 	}
 	lastTrustText = trustJson(recvInbox)
 	lastOfferText = stateAll(recvInbox).join('\n')
@@ -551,11 +559,22 @@ function receiveRotatePairing(): string {
 }
 
 function receiveHoldSlot(fingerprint: string): void {
-	holdSlotFor(recvInbox, fingerprint)
+	holdSlotFor(recvInbox, fingerprint, nowSecs())
 }
 
+/** The peer this phone dialled out to never appears in an inbound request, so this is the only place
+ *  its half of the session slot can be kept honest - the sender calls it as chunks land (spec §3).
+ *  Same name on every platform, because onProgress below is shared code. */
+function receiveSeen(fingerprint: string): void {
+	seenNow(recvInbox, fingerprint, nowSecs())
+}
+
+/** Every read of the card is also the local tick that spec §3 and §4 need: a peer that stopped
+ *  talking sends no request for the wire to sweep against, so only this timer can notice it. */
 function receiveSnapshot(): ReceiveSnapshot {
-	return snapshot(recvInbox, nowSecs())
+	const now = nowSecs()
+	sweep(recvInbox, now, storeDropFile)
+	return snapshot(recvInbox, now)
 }
 
 /** The user's answer. Nothing is written back on the connection that asked: this platform has already
@@ -627,9 +646,20 @@ export function refreshReceive() {
 	s.recvStates = c
 	s.recvStateClass = d
 	s.recvSummary = '已验证 ' + snap.verifiedFiles.toString() + ' 个 · 没通过 ' + snap.rejectedFiles.toString() + ' 个 · 固定对端 ' + snap.peers.toString() + ' 台'
-	s.recvPeers = snap.connectedNames.length == 0
-		? '现在没有对端连着'
-		: '连着这台设备的对端：' + snap.connectedNames.join('、')
+	/* 接收内核收回的是本机拨出去那条会话的名额，而发送那一头的连接还挂在页面上。不跟着断一次，
+	   两张卡片就会一件说没对端、一件说已连接；断了也不算丢人——密钥还在，点一次连接就自己配回来。 */
+	if (s.connected && snap.lostName != '' && snap.lostName == s.peerName) {
+		// #ifdef WEB
+		demoPcDisconnect()
+		// #endif
+		onDisconnect()
+	}
+	/* 名额被闲置回收时，卡片必须说出是谁的窗口关了。只写「现在没有对端连着」会让人去找一个自己
+	   根本没按过的断开按钮；这句话和 PC 端状态栏同一说法，两端读到的规则是一样的。 */
+	s.recvPeers = snap.connectedNames.length > 0
+		? '连着这台设备的对端：' + snap.connectedNames.join('、')
+		: (snap.lostName == '' ? '现在没有对端连着'
+			: snap.lostName + ' 已经 ' + Math.floor(SESSION_IDLE_S / 60).toString() + ' 分钟没有动静，本机把会话名额收回了；它的密钥还在，重连不用再报配对码。')
 	/* 对端也可能是从它那一头拨过来的：本机没有拨号会话，但单对端名额已经被占住。首页 banner
 	   和发送页的设备卡问的都是「现在有没有对端连着」，这个问题只有接收内核答得准。 */
 	s.peerAttached = snap.connectedNames.length > 0

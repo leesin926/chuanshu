@@ -52,6 +52,11 @@ def check_uts_mirror(body: dict) -> None:
         "MAX_FILES_PER_OFFER": body["limits"]["max_files_per_offer"],
         "MAX_NAME_BYTES": body["limits"]["max_name_bytes"],
         "MAX_PATH_DEPTH": body["limits"]["max_path_depth"],
+        # The two idle windows of spec §3/§4 are the receiver's own promise, so the phone that
+        # keeps them has to agree with the PC that publishes them - a shorter window on a phone
+        # would delete files the sender still believes are resumable.
+        "SESSION_IDLE_S": body["transport"]["session_idle_timeout_s"],
+        "OFFER_IDLE_S": body["transport"]["offer_idle_timeout_s"],
     }
     for name, expected in mirrored.items():
         found = re.search(rf"export const {name}: number = (\d+)", src)

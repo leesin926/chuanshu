@@ -16,6 +16,12 @@ export const PAIR_CODE_TTL_S: number = 120
  *  PAIR_CODE_TTL_S is only what a build that ignores this flag would rotate on. */
 export const PAIR_CODE_STATIC: boolean = true
 export const PASSPHRASE_CHARS: number = 8
+/** How long a stalled peer may keep the one session slot, and how long an accepted offer may go
+ *  without a chunk, in seconds. Both are floors (spec §3, §4): this device may reclaim later than
+ *  they say, never sooner. A phone has the same problem a PC has - a sender that pairs and then
+ *  dies would otherwise lock the receiver until somebody opens 我的页 and un-pins it by hand. */
+export const SESSION_IDLE_S: number = 900
+export const OFFER_IDLE_S: number = 3600
 export const QR_SCHEME: string = 'chuanshu://p'
 
 const HEX_DIGITS = '0123456789abcdef'

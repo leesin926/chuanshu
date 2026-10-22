@@ -22,6 +22,8 @@ import {
 	PAIR_CODE_TTL_S,
 	PAIR_CODE_STATIC,
 	PASSPHRASE_CHARS,
+	SESSION_IDLE_S,
+	OFFER_IDLE_S,
 	chunkCount,
 	chunkSizeAt,
 	isFullFingerprint,
@@ -105,6 +107,12 @@ class ROffer {
 	fromFingerprint: string = ''
 	awaiting: boolean = true
 	created: number = 0
+	/** When a chunk last landed. The idle window of spec §4 counts from here, not from `created`:
+	 *  a transfer that keeps writing is never idle, however long it takes. */
+	touched: number = 0
+	/** Set by a finalize that found every file whole. It is the difference between an offer that can
+	 *  still be resumed - and one whose bytes must survive the next restart. */
+	complete: boolean = false
 }
 
 class Trust {
@@ -120,6 +128,9 @@ class Trust {
 class TokenEntry {
 	fingerprint: string = ''
 	token: string = ''
+	/** The last request this peer put its token on (spec §3). A session that never says anything is
+	 *  not a session - it is a held slot nobody can release except by restarting. */
+	seen: number = 0
 }
 
 class NonceEntry {
@@ -155,6 +166,13 @@ export class Inbox {
 	/** Which peer this device dialled out to. The receiver is not involved in that handshake, so
 	 *  without this the one-session rule would only ever guard the door that opens inward. */
 	heldBy: string = ''
+	/** When the session this device dialled out last moved. One number because one peer at a time can
+	 *  hold it; the inbound half keeps its own stamp per token. */
+	heldSeen: number = 0
+	/** The name of the peer whose session the idle reclaim took back (spec §3). The card that only
+	 *  says "现在没有对端连着" makes a person hunt for the button they forgot to press; this says
+	 *  whose window closed. A new pair, or this end dialling somebody, replaces it. */
+	lostName: string = ''
 	/** Answers a person already gave, kept by offer id and only for this session. A sender that has to
 	 *  ask again on a new connection cannot tell a decline from a delivery nobody has looked at yet, so
 	 *  without this a decline would reopen the same dialog every poll. */
@@ -197,6 +215,10 @@ export class ReceiveSnapshot {
 	 *  themselves. A card that lists pinned devices and a card that lists connected ones say
 	 *  different things, and the desktop shows the connected ones. */
 	connectedNames: string[] = []
+	/** Whose session the idle reclaim of spec §3 took back, or '' when nothing has been taken back
+	 *  since. A card that only says 现在没有对端连着 makes a person hunt for a button nobody forgot
+	 *  to press. */
+	lostName: string = ''
 }
 
 /** spec.json error_codes carries the HTTP status for every code; the sender checks nothing else,
@@ -318,8 +340,98 @@ export function activePeers(inbox: Inbox): string[] {
 /** Say who this machine already talks to, so the door it dials out of is guarded like the one it is
  *  dialled in through. '' gives the slot back. The UI owns this: the receiver never sees an
  *  outgoing handshake. */
-export function holdSlotFor(inbox: Inbox, fingerprint: string): void {
+export function holdSlotFor(inbox: Inbox, fingerprint: string, now: number): void {
+	const changed = inbox.heldBy != fingerprint
 	inbox.heldBy = fingerprint
+	if (fingerprint == '') {
+		inbox.heldSeen = 0
+		return
+	}
+	inbox.lostName = ''
+	// Only taking the slot starts the clock. This is called from every roster repaint, and stamping
+	// it each time would keep a stalled outbound session alive forever.
+	if (changed) {
+		inbox.heldSeen = now
+	}
+}
+
+/** Say that a session is still moving, so its idle clock starts again from now.
+ *
+ *  The peer this device dialled never appears in an inbound request, so this is the only way its half
+ *  of the slot can be kept honest - the sender calls it as chunks land. */
+export function seenNow(inbox: Inbox, fingerprint: string, now: number): void {
+	if (fingerprint == '') {
+		return
+	}
+	if (inbox.heldBy == fingerprint) {
+		inbox.heldSeen = now
+	}
+	for (let i = 0; i < inbox.tokens.length; i++) {
+		if (inbox.tokens[i].fingerprint == fingerprint) {
+			inbox.tokens[i].seen = now
+		}
+	}
+}
+
+/** The name this device gives a peer: the pinned one if there is one, and the short fingerprint
+ *  otherwise. A phone that lost a session to silence still has to say whose it was. */
+function nameFor(inbox: Inbox, fingerprint: string): string {
+	for (let i = 0; i < inbox.trusted.length; i++) {
+		const pin = inbox.trusted[i]
+		if (pin.fingerprint == fingerprint || (pin.tlsFingerprint != '' && pin.tlsFingerprint == fingerprint)) {
+			if (pin.name != '') {
+				return pin.name
+			}
+		}
+	}
+	return '对端 ' + fingerprint.substring(0, 8) + '…'
+}
+
+/** Reclaim what has stopped moving: a silent peer's slot, and an offer nobody is filling.
+ *
+ *  Cheap and idempotent, because it runs from a request thread and from the card's tick. Both windows
+ *  are floors from the contract, and a peer whose clock runs out is not lost: it re-pairs without a
+ *  code (spec §3), and a finished transfer keeps every byte it verified.
+ *
+ *  An offer the user has not answered yet is deliberately not swept. It occupies no disk, and closing
+ *  a dialog behind a person's back is a different promise from timing out a stalled transfer. */
+export function sweep(inbox: Inbox, now: number, drop: DropFn): string[] {
+	const lost: string[] = []
+	for (let i = inbox.tokens.length - 1; i >= 0; i--) {
+		const entry = inbox.tokens[i]
+		if (now - entry.seen < SESSION_IDLE_S) {
+			continue
+		}
+		inbox.tokens.splice(i, 1)
+		if (inbox.heldBy == entry.fingerprint) {
+			inbox.heldBy = ''
+			inbox.heldSeen = 0
+		}
+		inbox.lostName = nameFor(inbox, entry.fingerprint)
+		lost.push(entry.fingerprint)
+	}
+	if (inbox.heldBy != '' && now - inbox.heldSeen >= SESSION_IDLE_S) {
+		const stalled = inbox.heldBy
+		inbox.lostName = nameFor(inbox, stalled)
+		inbox.heldBy = ''
+		inbox.heldSeen = 0
+		lost.push(stalled)
+	}
+	for (let i = inbox.offers.length - 1; i >= 0; i--) {
+		const offer = inbox.offers[i]
+		if (offer.awaiting || now - offer.touched < OFFER_IDLE_S) {
+			continue
+		}
+		if (!offer.complete) {
+			// Same thing the sender's own 取消 does: the half-written batch is nobody's file, and
+			// leaving it would keep the space the offer reserved when it was accepted.
+			for (let k = 0; k < offer.files.length; k++) {
+				drop(offer.files[k].relpath)
+			}
+		}
+		inbox.offers.splice(i, 1)
+	}
+	return lost
 }
 
 /** Say that the machine at an address this device dialled is one it already trusts, so the door that
@@ -406,16 +518,20 @@ function fpOfToken(inbox: Inbox, token: string): string {
 	return ''
 }
 
-function setToken(inbox: Inbox, fingerprint: string, token: string): void {
+function setToken(inbox: Inbox, fingerprint: string, token: string, now: number): void {
+	// A session that just started has nothing to do with the one that went silent before it.
+	inbox.lostName = ''
 	for (let i = 0; i < inbox.tokens.length; i++) {
 		if (inbox.tokens[i].fingerprint == fingerprint) {
 			inbox.tokens[i].token = token
+			inbox.tokens[i].seen = now
 			return
 		}
 	}
 	const entry = new TokenEntry()
 	entry.fingerprint = fingerprint
 	entry.token = token
+	entry.seen = now
 	inbox.tokens.push(entry)
 }
 
@@ -631,7 +747,7 @@ function pairReply(
 	}
 	addNonce(inbox, nonce, now)
 	const token = randomHex(32)
-	setToken(inbox, fingerprint, token)
+	setToken(inbox, fingerprint, token, now)
 	return okWith({
 		token: token,
 		peer_id: self.peerId,
@@ -674,6 +790,7 @@ function offerReply(inbox: Inbox, now: number, json: string, caller: string): Wi
 	const offer = new ROffer()
 	offer.offerId = offerId
 	offer.created = now
+	offer.touched = now
 	for (let i = 0; i < files.length; i++) {
 		const entry = files[i]
 		const relpath = entry.getString('relpath', '')
@@ -704,6 +821,7 @@ function offerReply(inbox: Inbox, now: number, json: string, caller: string): Wi
 
 function chunkReply(
 	inbox: Inbox,
+	now: number,
 	offerId: string,
 	fileId: string,
 	index: number,
@@ -733,6 +851,9 @@ function chunkReply(
 	if (sha != '' && sha != digest) {
 		return failWith('CHUNK_DIGEST_MISMATCH', { index: index, expected: sha } as UTSJSONObject)
 	}
+	// Even a re-send of a chunk already on disk is proof the transfer is still moving, so the idle
+	// window of spec §4 restarts here - before the idempotent answer and before the write.
+	offer!.touched = now
 	if (file!.chunks.get(index) == digest) {
 		// Idempotent on purpose: a re-send costs a hash, not a rewrite.
 		return okWith({ index: index, stored: true, idempotent: true } as UTSJSONObject)
@@ -760,6 +881,7 @@ function finalizeReply(inbox: Inbox, offerId: string, digestFile: DigestFileFn):
 		return failWith('OFFER_UNKNOWN', { offer_id: offerId } as UTSJSONObject)
 	}
 	const verified: UTSJSONObject[] = []
+	let whole = true
 	for (let i = 0; i < offer.files.length; i++) {
 		const file = offer.files[i]
 		const count = chunkCount(file.size)
@@ -777,8 +899,17 @@ function finalizeReply(inbox: Inbox, offerId: string, digestFile: DigestFileFn):
 		}
 		file.verdict = ok ? 1 : 2
 		file.missingAt = missing.length
+		if (!ok) {
+			whole = false
+		}
 		const entry: UTSJSONObject = { id: file.id, ok: ok, missing: missing, path: ok ? file.dest : null }
 		verified.push(entry)
+	}
+	if (whole) {
+		// Nothing is left to resume. Say so before the ledger goes away: a crash between these two
+		// steps still tells the next run the truth, and unfinished is the only state the reclaim of
+		// spec §4 is allowed to delete.
+		offer!.complete = true
 	}
 	return okWith({ offer_id: offerId, verified: verified } as UTSJSONObject)
 }
@@ -863,6 +994,9 @@ export function handleReceive(
 		} as UTSJSONObject)
 	}
 	if (req.method == 'POST' && req.path == '/v1/pair') {
+		// A peer that went silent must not be the reason a live one gets PEER_BUSY, so the slot is
+		// swept for silence before it is counted - this is the moment it matters.
+		sweep(inbox, now, drop)
 		return pairReply(inbox, self, now, req.client, req.json, keyFp, verify)
 	}
 	// Everything else is authenticated the same way: no session token, no transfer.
@@ -870,6 +1004,10 @@ export function handleReceive(
 	if (caller == '') {
 		return failWith('NOT_PAIRED', null)
 	}
+	// Every authenticated request is a heartbeat: it resets the peer's idle clock, and it is the
+	// cheapest place to sweep - a stalled offer and a silent session both stop moving here.
+	seenNow(inbox, caller, now)
+	sweep(inbox, now, drop)
 	if (req.method == 'POST' && req.path == '/v1/offer') {
 		return offerReply(inbox, now, req.json, caller)
 	}
@@ -883,7 +1021,7 @@ export function handleReceive(
 			return finalizeReply(inbox, offerId, digestFile)
 		}
 		if (req.method == 'PUT' && tail == 'chunk' && parts.length == 7) {
-			return chunkReply(inbox, offerId, parts[5], Math.floor(parseFloat(parts[6])), req.body, req.sha, hexOf, writeAt)
+			return chunkReply(inbox, now, offerId, parts[5], Math.floor(parseFloat(parts[6])), req.body, req.sha, hexOf, writeAt)
 		}
 		if (req.method == 'DELETE') {
 			return abortReply(inbox, offerId, drop)
@@ -929,6 +1067,7 @@ export function snapshot(inbox: Inbox, now: number): ReceiveSnapshot {
 	out.staticCode = PAIR_CODE_STATIC
 	out.codeSecondsLeft = codeSecondsLeft(inbox, now)
 	out.peers = inbox.trusted.length
+	out.lostName = inbox.lostName
 	const active = activePeers(inbox)
 	for (let i = 0; i < active.length; i++) {
 		// The name came in on the pair request and lives in the pin entry; a peer this end dialled
@@ -1010,24 +1149,40 @@ export function stateJson(inbox: Inbox, offerId: string): string {
 		}
 		received.set(file.id, chunks)
 	}
-	const body: UTSJSONObject = { offer_id: offer!.offerId, files: files, received: received, from_name: offer!.fromName }
+	const body: UTSJSONObject = {
+		offer_id: offer!.offerId,
+		files: files,
+		received: received,
+		from_name: offer!.fromName,
+		/** Written so a crash between finalize and this document going away cannot hand the next run
+		 *  an unfinished offer - unfinished is the only state the idle reclaim is allowed to delete. */
+		complete: offer!.complete
+	}
 	return JSON.stringify(body)
 }
 
-/** All offers a restart would have to re-adopt, one document each. */
+/** All offers a restart would have to re-adopt, one document each. A finished one is not on the list:
+ *  the PC deletes its ledger at finalize for the same reason - a record of a transfer that cannot be
+ *  resumed only invites the next run to treat it as one. */
 export function stateAll(inbox: Inbox): string[] {
 	const out: string[] = []
 	for (let i = 0; i < inbox.offers.length; i++) {
-		if (!inbox.offers[i].awaiting) {
+		if (!inbox.offers[i].awaiting && !inbox.offers[i].complete) {
 			out.push(stateJson(inbox, inbox.offers[i].offerId))
 		}
 	}
 	return out
 }
 
-export function adopt(inbox: Inbox, text: string): boolean {
+export function adopt(inbox: Inbox, text: string, now: number): boolean {
 	const body = parseJson(text)
 	if (body == null) {
+		return false
+	}
+	if (body!.getBoolean('complete', false)) {
+		// The document outlived its own deletion (a crash between the two). The bytes it describes are
+		// already whole and verified, so re-adopting them would hand the reclaim a transfer it thinks
+		// it may delete.
 		return false
 	}
 	const offerId = body.getString('offer_id', '')
@@ -1041,6 +1196,10 @@ export function adopt(inbox: Inbox, text: string): boolean {
 	const offer = new ROffer()
 	offer.offerId = offerId
 	offer.awaiting = false
+	// A re-adopted offer starts its idle window from this moment, not from whenever the manifest first
+	// arrived: the sender is about to resume, and a restart is not a stall.
+	offer.created = now
+	offer.touched = now
 	offer.fromName = body.getString('from_name', '')
 	const received = body.getJSON('received')
 	for (let i = 0; i < files.length; i++) {
@@ -1074,10 +1233,10 @@ export function adopt(inbox: Inbox, text: string): boolean {
 	return true
 }
 
-export function adoptAll(inbox: Inbox, list: string[]): number {
+export function adoptAll(inbox: Inbox, list: string[], now: number): number {
 	let count = 0
 	for (let i = 0; i < list.length; i++) {
-		if (adopt(inbox, list[i])) {
+		if (adopt(inbox, list[i], now)) {
 			count = count + 1
 		}
 	}
@@ -1094,6 +1253,8 @@ export function restartLike(inbox: Inbox): void {
 	inbox.fails = []
 	inbox.offers = []
 	inbox.heldBy = ''
+	inbox.heldSeen = 0
+	inbox.lostName = ''
 	if (!PAIR_CODE_STATIC) {
 		inbox.pairCode = ''
 		inbox.passphrase = ''

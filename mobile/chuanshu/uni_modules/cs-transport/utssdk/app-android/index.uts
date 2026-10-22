@@ -9,7 +9,7 @@ import {
 	HexFn, KeyFpFn, VerifyFn, PrepareFn, WriteFn, DigestFileFn, DropFn,
 	LocalPeer, Req, Inbox, ReceiveSnapshot,
 	newInbox, currentPairCode, handleReceive, holdSlotFor, passphraseOf, pairingJson,
-	adoptPairing, resolveOffer, rotatePairing, snapshot
+	adoptPairing, resolveOffer, rotatePairing, seenNow, sweep, snapshot
 } from '../cs-receive.uts'
 
 /** The page reaches the protocol constants and helpers through this entry, not only through a deep path:
@@ -17,7 +17,7 @@ import {
  *  uses and the entry does not is dropped from the compiled module. Naming them here is what makes the
  *  browser's and the phone's copy of cs-protocol.uts literally the same file. */
 export {
-	TRANSPORT_PORT, PAIR_CODE_DIGITS, PASSPHRASE_CHARS, PAIR_CODE_STATIC,
+	TRANSPORT_PORT, PAIR_CODE_DIGITS, PASSPHRASE_CHARS, PAIR_CODE_STATIC, SESSION_IDLE_S,
 	codeReject, passReject, digitsOnly, formatSize, parsePairUrl
 } from '../cs-protocol.uts'
 export {
@@ -551,14 +551,26 @@ export function receiveRotatePairing(): string {
  *  here and the one-session rule can guard the outbound door too (spec §3). */
 export function receiveHoldSlot(fingerprint: string): void {
 	CsServe.gate(function (): string {
-		holdSlotFor(recvInbox, fingerprint)
+		holdSlotFor(recvInbox, fingerprint, CsServe.nowSeconds())
 		return ''
 	})
 }
 
+/** The sender's heartbeat, so a transfer longer than the idle window is not reclaimed by this device's
+ *  own timer (spec §3). */
+export function receiveSeen(fingerprint: string): void {
+	CsServe.gate(function (): string {
+		seenNow(recvInbox, fingerprint, CsServe.nowSeconds())
+		return ''
+	})
+}
+
+/** Reading the card is also the local tick spec §3 and §4 need: a peer that stopped talking sends no
+ *  request for the wire to sweep against, so only this timer can notice it. */
 export function receiveSnapshot(): ReceiveSnapshot {
 	let snap: ReceiveSnapshot | null = null
 	CsServe.gate(function (): string {
+		sweep(recvInbox, CsServe.nowSeconds(), recvDrop)
 		snap = snapshot(recvInbox, CsServe.nowSeconds())
 		return ''
 	})

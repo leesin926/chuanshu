@@ -12,7 +12,9 @@ import {
 	parseJson,
 	randomHex,
 	newPassphrase,
-	PASSPHRASE_CHARS
+	PASSPHRASE_CHARS,
+	SESSION_IDLE_S,
+	OFFER_IDLE_S
 } from '../cs-protocol.uts'
 import {
 	BufferCallback,
@@ -54,6 +56,8 @@ import {
 	restartLike,
 	resolveOffer,
 	rotatePairing,
+	seenNow,
+	sweep,
 	snapshot,
 	stateAll
 } from '../cs-receive.uts'
@@ -1082,7 +1086,13 @@ export function receiveRotatePairing(): string {
 /** Say who this device dialled, so the one-session rule guards the door it goes out of as well as
  *  the one it is dialled in through (spec §3). The page calls it on connect and on disconnect. */
 export function receiveHoldSlot(fingerprint: string): void {
-	holdSlotFor(recvInbox, fingerprint)
+	holdSlotFor(recvInbox, fingerprint, nowSeconds())
+}
+
+/** The sender's heartbeat: the peer this device dialled never shows up in an inbound request, so this
+ *  is the only way its half of the slot can be kept honest (spec §3). */
+export function receiveSeen(fingerprint: string): void {
+	seenNow(recvInbox, fingerprint, nowSeconds())
 }
 
 /** The code with its last digit changed: guaranteed different, so the wrong-code path is testable
@@ -1094,8 +1104,12 @@ export function receiveWrongCode(): string {
 	return code.substring(0, code.length - 1) + alt
 }
 
+/** Every read of the card is also the local tick spec §3 and §4 need: a peer that stopped talking
+ *  sends no request for the wire to sweep against, so only this timer can notice it. */
 export function receiveSnapshot(): ReceiveSnapshot {
-	return snapshot(recvInbox, nowSeconds())
+	const now = nowSeconds()
+	sweep(recvInbox, now, recvDrop)
+	return snapshot(recvInbox, now)
 }
 
 export function demoPcConnect(useCode: string, write: Writer, done: ConnectDone): void {
@@ -1227,6 +1241,10 @@ function missingOf(reply: WireReply, fileId: string): number[] {
  *  received files would report a clean run on top of a wrecked inbox. */
 const SCRATCH_TEXT = '自测-备忘.txt'
 const SCRATCH_BIG = '自测-大块.bin'
+/** The idle-reclaim checks delete the files they hand over, so they get names of their own: a test
+ *  that reuses the scratch names would report a clean run on top of a deleted transfer. */
+const STALL_TEXT = '停摆-备忘.txt'
+const STALL_BIG = '停摆-大块.bin'
 
 function simFilesFor(textName: string, bigName: string): CsFile[] {
 	const list: CsFile[] = []
@@ -1361,7 +1379,7 @@ export function receiveSelfReport(): string {
 	const beforeMissing = missingOf(before, bigId)
 	const kept = stateAll(box)
 	restartLike(box)
-	const adopted = adoptAll(box, kept)
+	const adopted = adoptAll(box, kept, nowSeconds())
 	check('重启后重新接管传输', adopted == 1)
 	check('重启后会话失效 NOT_PAIRED', codeOfReply(askOn(box, SIM_PEER_ID, 'GET', '/v1/offer/' + offerId + '/state', '', '旧令牌', new ArrayBuffer(0), '')) == 'NOT_PAIRED')
 	const repair = askPairOn(box, SIM_PEER_ID, '', '', simKey)
@@ -1419,6 +1437,76 @@ export function receiveSelfReport(): string {
 	check('空间不足回 STORAGE_FULL', full.status == 507)
 	check('空间不足后没有留下半个传输', snapshot(box, nowSeconds()).pendingOfferIds.length == 0)
 	check('空间不足后分配好的文件也回滚了', !recvStore.has(SCRATCH_TEXT))
+
+	// 11. spec §3: a session that stops moving gives the slot back on its own.
+	const idle = newInbox()
+	const idleCode = currentPairCode(idle, nowSeconds())
+	const idleSecret = passphraseOf(idle, nowSeconds())
+	const idleAsk = (method: string, path: string, jsonBody: string, useToken: string): WireReply => {
+		return askOn(idle, SIM_PEER_ID, method, path, jsonBody, useToken, new ArrayBuffer(0), '')
+	}
+	const idlePut = (path: string, useToken: string, part: Uint8Array): WireReply => {
+		return askOn(idle, SIM_PEER_ID, 'PUT', path, '', useToken, part.buffer as ArrayBuffer, hexOf(sha256Bytes(part)))
+	}
+	const idlePair = askPairOn(idle, SIM_PEER_ID, idleCode, idleSecret, simKey)
+	const idleObj = jsonOf(idlePair)
+	const idleToken = idleObj == null ? '' : idleObj!.getString('token', '')
+	check('停摆自检：配对换来会话', idleToken != '')
+	check('停摆自检：会话活着时第三方被拒', codeOfReply(askPairOn(idle, '203.0.113.30', idleCode, idleSecret, b64(randomBytes(32)))) == 'PEER_BUSY')
+	const stalled = nowSeconds() + SESSION_IDLE_S + 1
+	const reclaimed = sweep(idle, stalled, recvDrop)
+	check('沉默满闲置窗口的会话被收回名额', reclaimed.length == 1 && reclaimed[0] == simFp)
+	check('收回名额时说得出这台对端的名字', snapshot(idle, stalled).lostName == SIM_NAME)
+	check('它自己再发请求吃 NOT_PAIRED', codeOfReply(idleAsk('GET', '/v1/offer/x/state', '', idleToken)) == 'NOT_PAIRED')
+	// 名额回来了，而它那一头的密钥还在：重连不需要任何人再报一次码。
+	const idleRepair = askPairOn(idle, SIM_PEER_ID, '', '', simKey)
+	const idleRepairObj = jsonOf(idleRepair)
+	const idleToken2 = idleRepairObj == null ? '' : idleRepairObj!.getString('token', '')
+	check('沉默后靠签名重连，不用再报配对码', idleRepair.status == 200 && idleRepairObj != null && idleRepairObj!.getBoolean('resumed', false))
+	check('重连后又只允许这一台', codeOfReply(askPairOn(idle, '203.0.113.31', idleCode, idleSecret, b64(randomBytes(32)))) == 'PEER_BUSY')
+
+	// 12. spec §4: an accepted offer nobody finishes is dropped exactly like a cancel would.
+	const stallId = hexOf(randomBytes(8))
+	const stallFiles = simFilesFor(STALL_TEXT, STALL_BIG)
+	idleAsk('POST', '/v1/offer', offerJson(stallId, stallFiles, SIM_PEER_ID, SIM_NAME), idleToken2)
+	resolveOffer(idle, stallId, true, recvPrepare, recvDrop)
+	const stallHead = sliceOf(simFileOf(STALL_BIG), 0, chunkSizeAt(stallFiles[1].size, 0))
+	idlePut('/v1/offer/' + stallId + '/chunk/' + stallFiles[1].id + '/0', idleToken2, stallHead)
+	check('停摆前文件已经落在收件箱里', recvStore.has(STALL_BIG))
+	// 这一小时里对端别处的请求一直在给会话续命，只有这一单没人填。不先把心跳打到那个时刻，
+	// 这次收回会把会话一起收走，测到的是 §3 而不是 §4。
+	const offerStallAt = nowSeconds() + OFFER_IDLE_S + 1
+	seenNow(idle, simFp, offerStallAt)
+	sweep(idle, offerStallAt, recvDrop)
+	check('没人填的传输到点自己下台', codeOfReply(idleAsk('GET', '/v1/offer/' + stallId + '/state', '', idleToken2)) == 'OFFER_UNKNOWN')
+	check('到点后不留半个文件', !recvStore.has(STALL_BIG) && !recvStore.has(STALL_TEXT))
+
+	// 13. a transfer that finished is not a stalled one: its bytes survive the very same window.
+	const finId = hexOf(randomBytes(8))
+	const finFiles = simFilesFor(STALL_TEXT, STALL_BIG)
+	idleAsk('POST', '/v1/offer', offerJson(finId, finFiles, SIM_PEER_ID, SIM_NAME), idleToken2)
+	resolveOffer(idle, finId, true, recvPrepare, recvDrop)
+	for (let k = 0; k < finFiles.length; k++) {
+		const bytes = simFileOf(finFiles[k].relpath)
+		for (let c = 0; c < chunkCount(bytes.length); c++) {
+			// sliceOf, not subarray: a view's .buffer is the whole file, and the kernel reads the
+			// body length as the chunk length.
+			idlePut('/v1/offer/' + finId + '/chunk/' + finFiles[k].id + '/' + c.toString(), idleToken2,
+				sliceOf(bytes, c * CHUNK_SIZE, chunkSizeAt(bytes.length, c)))
+		}
+	}
+	const finDone = idleAsk('POST', '/v1/offer/' + finId + '/finalize', '{}', idleToken2)
+	check('停摆自检里也校验通过', finDone.status == 200 && firstVerifiedOk(finDone))
+	check('校验通过的传输不再写续传台账', stateAll(idle).length == 0)
+	// 同一个窗口、同一个时钟：唯一差别是这一单写完了。收满的文件必须活下来。
+	const finishStallAt = nowSeconds() + OFFER_IDLE_S + 1
+	seenNow(idle, simFp, finishStallAt)
+	sweep(idle, finishStallAt, recvDrop)
+	check('收满的文件不会被闲置回收删掉', recvStore.has(STALL_TEXT) && recvStore.has(STALL_BIG))
+	// The ledger that says it is finished must never come back as something to resume - that is the
+	// one shape where the reclaim above would be deleting a person's received file.
+	const finishedLedger = '{"offer_id":"' + finId + '","complete":true,"files":[{"id":"f1","relpath":"' + STALL_TEXT + '","size":1,"sha256":"00","type":"text/plain","verdict":1}],"received":{},"from_name":"PC"}'
+	check('写完的台账不会被当成续传接管', adoptAll(idle, [finishedLedger], nowSeconds()) == 0)
 
 	out.push(fail == 0 ? '接收自检 ' + pass.toString() + ' 项全部通过' : '接收自检失败 ' + fail.toString() + ' 项，通过 ' + pass.toString() + ' 项')
 	return out.join('\n')

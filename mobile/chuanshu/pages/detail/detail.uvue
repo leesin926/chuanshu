@@ -130,14 +130,6 @@
 		return '/static/icons/doc-2f7cf6.png'
 	}
 
-	/** 收下来的任务，成功标记是绿色实心圆里的白勾（设计图历史行），其余状态还是按状态着色的文件夹。 */
-	function recvIcon(cls: string): string {
-		if (cls == 'stateOk') {
-			return '/static/icons/check-circle-34c77b.png'
-		}
-		return iconSrc(cls)
-	}
-
 	function iconSrc(cls: string): string {
 		if (cls == 'stateOk') {
 			return '/static/icons/folder-34c77b.png'
@@ -149,6 +141,14 @@
 			return '/static/icons/folder-ef4444.png'
 		}
 		return '/static/icons/folder-d1d5db.png'
+	}
+
+	/** 收下来的任务，成功标记是绿色实心圆里的白勾（设计图历史行），其余状态还是按状态着色的文件夹。 */
+	function recvIcon(cls: string): string {
+		if (cls == 'stateOk') {
+			return '/static/icons/check-circle-34c77b.png'
+		}
+		return iconSrc(cls)
 	}
 
 	/* 模板只点本页的函数：只被模板引用的 store 动作会被摇树丢掉，编译报“找不到名称 invoke”。 */
