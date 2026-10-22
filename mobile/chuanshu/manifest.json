@@ -58,9 +58,20 @@
 			}
 		}
 	},
+	/* iOS：扫码兜底要相机（uni.scanCode 在 4.71 上是相机取景器），发送页的选取器走系统文件面板、
+	   不需要相册权限。许可描述只在提交云端打包时生效，本地编译器不会校验它们——所以这两行是
+	   「上线前必须核对」的清单，而不是已经配好的配置。
+	   NSBonjourServices 不在这里：它是一个数组键，privacyDescription 只放用途描述字符串，服务类型
+	   写在 uni_modules/cs-transport/utssdk/app-ios/Info.plist 里由插件自己带进包里。 */
 	"app-ios": {
 		"distribute": {
-			"modules": {},
+			"modules": {
+				"uni-barcode-scanning": {}
+			},
+			"privacyDescription": {
+				"NSCameraUsageDescription": "传书用相机扫描电脑上传书显示的配对二维码，二维码里带着对方的地址和要固定的证书指纹。",
+				"NSLocalNetworkUsageDescription": "传书需要和同一局域网里的电脑建立连接，把文件送到对方或从对方接收。"
+			},
 			"icons": {},
 			"splashScreens": {}
 		}

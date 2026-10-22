@@ -1,0 +1,7 @@
+{
+	"deploymentTarget": "13.0",
+	"frameworks": [
+		"Network.framework",
+		"Security.framework"
+	]
+}

@@ -43,6 +43,9 @@
         "App": {
           "app-android": {
             "minVersion": "21"
+          },
+          "app-ios": {
+            "minVersion": "13"
           }
         },
         "H5-pc": {

@@ -25,14 +25,14 @@ import {
 } from '@/uni_modules/cs-transport/utssdk/cs-client.uts'
 import { TRANSPORT_PORT, PAIR_CODE_DIGITS, PASSPHRASE_CHARS, codeReject, passReject, digitsOnly, formatSize, parsePairUrl } from '@/uni_modules/cs-transport/utssdk/cs-protocol.uts'
 import { selfInfo, signPair, request, prepareFile, readChunk, digestHex, transportMocked, transportNote, lanCheck } from '@/uni_modules/cs-transport'
-// #ifdef APP-ANDROID || APP-HARMONY
+// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
 import { pinnedFor, unpinPeer, receiveStart, receiveStop, receiveStatus } from '@/uni_modules/cs-transport'
 // #endif
 // #ifdef WEB
 import { demoPeer, demoQrUrl, demoExpireToken, setDemoFault, demoRestart, demoUnpin, pinnedFingerprint } from '@/uni_modules/cs-transport'
 import { receiveWrongCode, demoPcConnect, demoPcSend, demoPcDisconnect, demoPcConnected, setSenderFault, setReceiveFault, receiveSelfReport } from '@/uni_modules/cs-transport'
 // #endif
-// #ifdef APP-ANDROID || WEB
+// #ifdef APP-ANDROID || APP-IOS || WEB
 /** The receiving half, in the shape this platform can offer it: the browser keeps the inbox in
  *  memory, Android keeps it in the plugin's Kotlin. Harmony is the odd one and defines the same six
  *  names itself further down, because its ArkTS half cannot read the shared state machine at all -
@@ -89,6 +89,12 @@ import {
 	loadOfferStates,
 	saveOfferStates
 } from '@/uni_modules/cs-transport'
+// #endif
+// #ifdef APP-IOS
+/** The iPhone keeps the state machine inside the plugin like Android does, so the only thing the page
+ *  has to know that Android does not is the second fingerprint: this phone's TLS leaf is RSA-2048, and
+ *  §3 says a pair message names it. */
+import { servedFingerprint } from '@/uni_modules/cs-transport'
 // #endif
 
 export type SessionState = {
@@ -154,7 +160,7 @@ export type SessionState = {
 	recvSummary: string
 	recvPeers: string
 	recvNote: string
-	// #ifdef APP-ANDROID || APP-HARMONY
+	// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
 	recvListening: boolean
 	recvListen: string
 	recvListenClass: string
@@ -224,7 +230,7 @@ export const s = reactive({
 	recvSummary: '',
 	recvPeers: '现在没有对端连着',
 	recvNote: '',
-	// #ifdef APP-ANDROID || APP-HARMONY
+	// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
 	recvListening: false,
 	recvListen: '还没开始监听',
 	recvListenClass: 'sub mt8',
@@ -685,7 +691,7 @@ export function onRecvRefuse() {
 	refreshReceive()
 }
 
-// #ifdef APP-ANDROID || APP-HARMONY
+// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
 /** The address a peer would type, pulled out of the interface list the listener reported - that
  *  list is formatted for reading (addr/prefix（iface）), not for the wire. */
 function lanIp(): string {
@@ -707,7 +713,7 @@ function lanIp(): string {
  *  is this fingerprint; that is what lets the two ends agree on one number per device. */
 export function copyPairing() {
 	let text = '配对码 ' + s.recvCodeText + '　密码 ' + s.recvPassText
-	// #ifdef APP-ANDROID || APP-HARMONY
+	// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
 	if (s.recvListening) {
 		for (let i = 0; i < s.recvAddrs.length; i++) {
 			text = text + '　地址 ' + s.recvAddrs[i]
@@ -738,7 +744,7 @@ export function onRotatePairing() {
 	refreshReceive()
 }
 
-// #ifdef APP-ANDROID || APP-HARMONY
+// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
 /** The listener's own words, mirrored onto the card. The addresses are what the PC has to type, so
  *  this is the line the user reads out across the desk - and it is only honest because CsWire.lan()
  *  enumerated the real interfaces rather than guessing. */
@@ -810,7 +816,7 @@ function buildOptions(): TransferOptions {
 	// compares these bytes for equality.
 	opts.secret = s.secret.trim()
 	opts.pinPrefix = s.scannedFp
-	// #ifdef APP-HARMONY
+	// #ifdef APP-HARMONY || APP-IOS
 	// This phone's TLS listener answers under an RSA leaf, not under the Ed25519 identity that
 	// signed the pair message, so §3 says both numbers: the peer pins the first and knows to
 	// expect the second on the socket. '' on the ends whose own key signs its certificate.
@@ -848,7 +854,7 @@ function refreshPinned() {
 }
 // #endif
 
-// #ifdef APP-ANDROID || APP-HARMONY
+// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
 /** On the phone the pin is per address, and reading it is a round trip to the keystore, so this
  *  is a callback rather than a value: the labels only change once the answer arrives. */
 function refreshPinned() {
@@ -969,7 +975,7 @@ export function onConnect() {
 	activeOptions = buildOptions()
 	// Whether a blank code is enough is the pin store's answer, not this device's memory of the last
 	// handshake: the peer stays pinned across a restart, and 留空重连 has to work for it then too.
-	// #ifdef APP-ANDROID || APP-HARMONY
+	// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
 	pinnedFor(activeOptions.host, activeOptions.port, function (fp: string): void {
 		s.pinnedFp = fp
 		checkCodeAndNetwork()
@@ -1094,6 +1100,10 @@ function onFinished(ok: boolean, summary: string) {
 
 /** 分段控件的三类对应 uni.chooseFile 的 type。App 端三个平台都支持这个字段（只有 count 在
  *  Android 上被降级成单选/多选），所以这里直接透传，而不是自己按扩展名过滤。 */
+/** 文件 / 图片 / 视频 三段各自透传给 `uni.chooseFile` 的 type。
+ *  文档里 options.type 只列了 image|video|audio|all，'file' 是结果里那个 type 的取值；
+ *  Android 与鸿蒙都照这个值筛出了文件面板，iOS（4.61 起支持 chooseFile）第一次上机时
+ *  要核对的就是这一段：若 'file' 被拒，把这里改成 'all'，代价是图片也会出现在文件页里。 */
 export function chooseKind(kind: string) {
 	uni.chooseFile({
 		count: 20,
@@ -1312,7 +1322,7 @@ function initReceivePanel() {
 }
 // #endif
 
-// #ifdef APP-ANDROID || APP-HARMONY
+// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
 function initReceivePanel() {
 	// #ifdef APP-HARMONY
 	// The listener refuses to open with nobody to hand requests to, and it must be able to answer a

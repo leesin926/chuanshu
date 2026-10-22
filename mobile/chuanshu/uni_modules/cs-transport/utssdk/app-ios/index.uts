@@ -1,0 +1,712 @@
+/** The iPhone's half of the transport: a pinned TLS connection, real files, a TLS listener, and the
+ *  local interfaces that decide whether a peer address can be reached at all.
+ *
+ *  The shape of this file is Android's and the behaviour of its receive half is Harmony's. Android's,
+ *  because UTS does compile against Swift here, so the shared state machine lives inside the plugin and
+ *  the page keeps calling one set of names on both phones. Harmony's, because that platform learned the
+ *  hard way that a person is still reading the screen when the offer's connection wants an answer
+ *  (task #59): the offer is answered immediately and the sender polls for the decision on a fresh
+ *  connection. And like Harmony, this device cannot serve TLS with the Ed25519 key it pairs with - the
+ *  keychain will not hold one - so the leaf is RSA-2048 and §3's `t` field carries its fingerprint,
+ *  which is what `servedFingerprint()` is for.
+ *
+ *  Two evidence tiers live in this directory. The UTS half - this file and the shared `cs-*.uts` beside
+ *  it - has been through `cli compile app-ios`, which on Windows means transpile plus type-check. The
+ *  Swift it calls has never been through a Swift compiler, because that step needs Xcode. So every claim
+ *  below about how the platform behaves is still a claim, and the cs-identity probe is the first thing
+ *  that has to be run on a Mac before any of it counts as evidence. */
+import { TRANSPORT_PORT } from '../cs-protocol.uts'
+import {
+	HexFn, KeyFpFn, VerifyFn, PrepareFn, WriteFn, DigestFileFn, DropFn,
+	LocalPeer, Req, Inbox, ReceiveSnapshot,
+	newInbox, adoptPin, adoptPairing, adoptTrust, currentPairCode, handleReceive, holdSlotFor,
+	passphraseOf, pairingJson, resolveOffer, rotatePairing, settleOffer, snapshot, stateAll, trustJson, adoptAll
+} from '../cs-receive.uts'
+
+/** The page reaches the protocol constants and helpers through this entry, not only through a deep path:
+ *  a uni_modules plugin keeps only the names its own entry can reach, so a helper the page uses and the
+ *  entry does not is dropped from the compiled module. Naming them here is what makes the browser's, the
+ *  Android's and the iPhone's copy of cs-protocol.uts literally the same file. */
+export {
+	TRANSPORT_PORT, PAIR_CODE_DIGITS, PASSPHRASE_CHARS, PAIR_CODE_STATIC,
+	codeReject, passReject, digitsOnly, formatSize, parsePairUrl
+} from '../cs-protocol.uts'
+export {
+	TransferOptions, PeerSession, connectPeer, sendFiles,
+	SelfCallback, SignCallback, ReplyCallback, MetaCallback, BufferCallback, HexCallback
+} from '../cs-client.uts'
+
+type ReplyCb = (status: number, body: string) => void
+type MetaCb = (ok: boolean, id: string, size: number, sha256: string, mtime: number, type: string, message: string) => void
+type BufCb = (buf: ArrayBuffer | null, message: string) => void
+type HexCb = (hex: string) => void
+type LanCb = (level: string, text: string) => void
+
+function onIo(body: () => void): void {
+	CsRun.background(function (): void {
+		body()
+	})
+}
+
+function onMain(body: () => void): void {
+	CsRun.main(function (): void {
+		body()
+	})
+}
+
+function nowSecs(): number {
+	return Math.floor(Date.now() / 1000)
+}
+
+/** The picker hands the page a path like `_doc/…` or `static/…`, not a filesystem absolute path, and
+ *  the Swift half only knows how to open the latter. One conversion, at the boundary. */
+function absPath(path: string): string {
+	return UTSiOS.convert2AbsFullPath(path)
+}
+
+/** The failure vocabulary the client already knows: a transport error becomes a wire-shaped body so
+ *  codeOf/detailOf/pinText read the same whether the peer refused us or the socket never opened. */
+function transportError(code: string, detail: string): string {
+	const out = new UTSJSONObject()
+	out['code'] = code
+	out['detail'] = detail
+	return JSON.stringify(out)
+}
+
+function ioFail(code: string, detail: string, cb: ReplyCb): void {
+	onMain(function () {
+		cb(0, transportError(code, detail))
+	})
+}
+
+export function selfInfo(cb: (peerId: string, name: string, fingerprint: string) => void): void {
+	onIo(function () {
+		const text = CsIdentity.selfInfo()
+		onMain(function () {
+			const made = JSON.parse(text) as UTSJSONObject | null
+			if (made == null) {
+				cb('', '本机密钥读取失败', '')
+				return
+			}
+			const why = made!.getString('error', '')
+			if (why != '') {
+				cb('', why, '')
+				return
+			}
+			cb(made!.getString('peer_id', ''), made!.getString('name', ''), made!.getString('fingerprint', ''))
+		})
+	})
+}
+
+export function transportMocked(): boolean {
+	return false
+}
+
+/** Shown under the transport card, so what this build actually does is on the screen rather than in a
+ *  commit message - including the two ways this phone differs from the Android one. */
+export function transportNote(): string {
+	return 'iOS 真机传输：对端证书按 SPKI 指纹逐连接核对，文件从系统选取器读取，分块边读边发。' +
+		'密钥与已固定对端存在应用私有目录，卸载即失效。' +
+		'接收半边按鸿蒙那份实测结论做：清单立即应答、发送端轮询取决定，不在一条连接上等人点按钮。' +
+		'本机 TLS 叶证书是 RSA-2048（钥匙串存不了 Ed25519 私钥），配对签名里带上这张叶证书的指纹（合同 §3 的 t 字段），身份键仍是 Ed25519。' +
+		'这一端的 UTS 半边过了 iOS 编译检查，Swift 半边还没进过 Swift 编译器（那一步要 Xcode）。第一次上真机先跑探针页。'
+}
+
+export function signPair(message: string, cb: (publicKeyB64: string, signatureB64: string) => void): void {
+	onIo(function () {
+		const text = CsIdentity.signMessage(message)
+		onMain(function () {
+			const made = JSON.parse(text) as UTSJSONObject | null
+			if (made == null) {
+				cb('', '')
+				return
+			}
+			cb(made!.getString('public_key', ''), made!.getString('signature', ''))
+		})
+	})
+}
+
+export function digestHex(buf: ArrayBuffer, cb: HexCb): void {
+	onIo(function () {
+		const hex = CsWire.digest(buf.toData())
+		onMain(function () {
+			cb(hex)
+		})
+	})
+}
+
+/* ------------------------------------------------------------------------ outgoing files */
+
+export function prepareFile(path: string, relpath: string, cb: MetaCb): void {
+	onIo(function () {
+		const text = CsWire.prepare(absPath(path))
+		onMain(function () {
+			const meta = JSON.parse(text) as UTSJSONObject | null
+			if (meta == null) {
+				cb(false, '', 0, '', 0, '', '对端清单没能读出来')
+				return
+			}
+			const why = meta!.getString('error', '')
+			if (why != '') {
+				cb(false, '', 0, '', 0, '', why)
+				return
+			}
+			cb(true, CsWire.newId(), meta!.getNumber('size') ?? 0, meta!.getString('sha256', ''),
+				meta!.getNumber('mtime') ?? 0, meta!.getString('type', 'application/octet-stream'), '')
+		})
+	})
+}
+
+export function readChunk(path: string, offset: number, length: number, cb: BufCb): void {
+	onIo(function () {
+		const slice = CsWire.readSlice(absPath(path), offset, length)
+		const why = slice == null ? CsWire.readError() : ''
+		onMain(function () {
+			if (slice == null) {
+				cb(null, why == '' ? '这个文件读不出内容' : why)
+				return
+			}
+			const made = ArrayBuffer.fromData(slice!)
+			if (made == null) {
+				cb(null, '这段字节没能交给页面')
+				return
+			}
+			cb(made!, '')
+		})
+	})
+}
+
+/* ---------------------------------------------------------------------------- requests */
+
+/** A human decides whether an offer is accepted, so that one request has to stay open for however
+ *  long they take; every other one should fail fast enough to be retried. On this platform the offer is
+ *  answered immediately, so the long window only ever guards a `finalize` that is re-reading the file. */
+function timeoutOf(method: string, path: string): number {
+	if (method == 'POST' && (path == '/v1/offer' || path.endsWith('/finalize'))) {
+		return 180000
+	}
+	if (method == 'PUT') {
+		return 90000
+	}
+	return 20000
+}
+
+export function request(
+	method: string,
+	host: string,
+	port: number,
+	path: string,
+	jsonBody: string,
+	token: string,
+	pinFpHex: string,
+	body: ArrayBuffer,
+	sha: string,
+	cb: ReplyCb
+): void {
+	onIo(function () {
+		// An address we already met is pinned whether or not the QR handed us the digest: that is what
+		// makes an empty pair code mean "the peer I already know" rather than "whoever answers".
+		const expected = pinFpHex != '' ? pinFpHex : CsIdentity.pinFor(host, port)
+		const text = CsWire.http(method, host, port, path, jsonBody, token, expected,
+			body.byteLength > 0 ? body.toData() : null, sha, timeoutOf(method, path))
+		const parsed = JSON.parse(text) as UTSJSONObject | null
+		if (parsed == null) {
+			ioFail('IO', '对端应答无法解析', cb)
+			return
+		}
+		const err = parsed!.getString('error', '')
+		if (err != '') {
+			ioFail(err, parsed!.getString('detail', ''), cb)
+			return
+		}
+		const status = parsed!.getNumber('status') ?? 0
+		const resBody = parsed!.getString('body', '')
+		// A pair that succeeded is the moment the peer becomes someone we trust: record the key the
+		// handshake actually saw - the RSA leaf, on this platform - together with what the peer said
+		// its id and name are.
+		if (status == 200 && method == 'POST' && path == '/v1/pair') {
+			const seen = parsed!.getString('fp', '')
+			const ack = JSON.parse(resBody) as UTSJSONObject | null
+			if (seen != '' && ack != null) {
+				CsIdentity.pin(host, port, seen, ack!.getString('peer_id', ''), ack!.getString('name', ''))
+			}
+		}
+		onMain(function () {
+			cb(status, resBody)
+		})
+	})
+}
+
+/* ---------------------------------------------------------------------- same-network check */
+
+const DIGITS = '0123456789'
+
+function ipToNumber(text: string): number {
+	const parts = text.split('.')
+	if (parts.length != 4) {
+		return -1
+	}
+	let out = 0
+	for (let i = 0; i < 4; i++) {
+		const raw = parts[i]
+		if (raw.length == 0 || raw.length > 3) {
+			return -1
+		}
+		let octet = 0
+		for (let j = 0; j < raw.length; j++) {
+			const value = DIGITS.indexOf(raw.charAt(j))
+			if (value < 0) {
+				return -1
+			}
+			octet = octet * 10 + value
+		}
+		if (octet > 255) {
+			return -1
+		}
+		out = out * 256 + octet
+	}
+	return out
+}
+
+function inSameNet(local: number, prefix: number, peer: number): boolean {
+	const shift = 32 - prefix
+	if (shift <= 0) {
+		return true
+	}
+	const mask = Math.pow(2, shift)
+	return Math.floor(local / mask) == Math.floor(peer / mask)
+}
+
+/** Decide, before spending a handshake, whether the peer address is even on the network this phone is
+ *  joined to, and say which of the four answers it is:
+ *  ok - same prefix as a live interface; bad - provably not reachable; warn - reachable but odd
+ *  (link-local, or a prefix that only matches because it is a /0-ish network); unknown - the address
+ *  is a name, or there is nothing to compare it against. */
+export function lanCheck(host: string, cb: LanCb): void {
+	onIo(function () {
+		const parsed = JSON.parse(CsWire.lan()) as UTSJSONObject | null
+		onMain(function () {
+			if (parsed == null) {
+				cb('unknown', '手机的网卡信息读不出来，没法核对是否同一网络')
+				return
+			}
+			const why = parsed!.getString('error', '')
+			if (why != '') {
+				cb('unknown', '手机的网卡信息读不出来：' + why)
+				return
+			}
+			if (host == '') {
+				cb('unknown', '还没有对端地址')
+				return
+			}
+			if (ipToNumber(host) == -1) {
+				cb('unknown', '对端是「' + host + '」这样的名字，不是 IP，没法核对是否同一网络')
+				return
+			}
+			const loop = ipToNumber(host)
+			if (loop >= 2130706432 && loop <= 2130706687) {
+				cb('bad', '对端地址是 127.0.0.1：真机上这指向手机自己。请填电脑上传书显示的局域网 IP')
+				return
+			}
+			const addrs = parsed!.getArray<UTSJSONObject>('addrs')
+			if (addrs == null || addrs.length == 0) {
+				cb('bad', '手机现在没有拿到任何局域网 IPv4 地址：先连上和电脑同一个 Wi-Fi')
+				return
+			}
+			let names = ''
+			let best = ''
+			let matched = false
+			let linkLocal = false
+			for (let i = 0; i < addrs.length; i++) {
+				const one = addrs[i]
+				const addr = one.getString('addr', '')
+				const prefix = one.getNumber('prefix') ?? 24
+				const iface = one.getString('iface', '')
+				const value = ipToNumber(addr)
+				if (value == -1) {
+					continue
+				}
+				names = names + (names == '' ? '' : '、') + addr + '/' + prefix.toString() + '(' + iface + ')'
+				if (value >= 2851995648 && value <= 2852061183) {
+					linkLocal = true
+				}
+				if (inSameNet(value, prefix, loop)) {
+					matched = true
+					best = addr + '/' + prefix.toString()
+				}
+			}
+			if (matched) {
+				cb('ok', '同一网络：手机在 ' + best + '，对端 ' + host + ' 与它同网段')
+				return
+			}
+			if (linkLocal) {
+				cb('warn', '手机只有 169.254 地址（' + names + '）：Wi-Fi 可能没拿到 IP，对端 ' + host + ' 未必连得通')
+				return
+			}
+			cb('bad', '不在同一网络：手机在 ' + names + '，对端 ' + host + ' 不属于任何一个本机网段')
+		})
+	})
+}
+
+/* -------------------------------------------------------------------------- pinned peers */
+
+/** The digest this phone already trusts for one address, so the page can say what an empty pair code
+ *  actually means there. '' means nobody is pinned at that address yet. */
+export function pinnedFor(host: string, port: number, cb: (fp: string) => void): void {
+	onIo(function () {
+		const fp = CsIdentity.pinFor(host, port)
+		onMain(function () {
+			cb(fp)
+		})
+	})
+}
+
+/** Undo the pin for one address - the phone's half of the PC's "撤销已配对设备". The next connection
+ *  there is a first contact again and has to redeem a code. */
+export function unpinPeer(host: string, port: number, cb: (dropped: boolean, message: string) => void): void {
+	onIo(function () {
+		const text = CsIdentity.unpin(host, port)
+		const done = JSON.parse(text) as UTSJSONObject | null
+		onMain(function () {
+			if (done == null) {
+				cb(false, '解除固定没能读完本机存储')
+				return
+			}
+			const why = done!.getString('error', '')
+			if (why != '') {
+				cb(false, why)
+				return
+			}
+			cb((done!.getNumber('dropped') ?? 0) > 0, '')
+		})
+	})
+}
+
+/** The leaf the listener will hand out, which is not this device's identity key. The pair message puts
+ *  it in `t` so the peer can pin one number and still know what to expect on the socket. */
+export function servedFingerprint(): string {
+	return CsIdentity.tlsFingerprint()
+}
+
+/* ================================================== this device as a receiver */
+
+const recvInbox: Inbox = newInbox()
+let recvSelf: LocalPeer | null = null
+let recvStartNote = '还没开始监听'
+/** The two documents as they were when last written, so a refresh that changed nothing writes nothing. */
+let lastTrustText = ''
+let lastOfferText = ''
+
+function receiverSelf(): LocalPeer {
+	if (recvSelf == null) {
+		const made = new LocalPeer()
+		made.port = TRANSPORT_PORT
+		recvSelf = made
+	}
+	return recvSelf!
+}
+
+const recvHex: HexFn = (buf: ArrayBuffer): string => {
+	return CsWire.digest(buf.toData())
+}
+
+const recvKeyFp: KeyFpFn = (publicKeyB64: string): string => {
+	return CsIdentity.fpOfKeyB64(publicKeyB64)
+}
+
+/** A real Ed25519 verify - the one thing the browser half could only imitate by hashing the message and
+ *  comparing. Without this, "the peer re-paired from its pinned key" would be a claim about a string. */
+const recvVerify: VerifyFn = (publicKeyB64: string, message: string, signatureB64: string): boolean => {
+	return CsIdentity.verifyKey(publicKeyB64, message, signatureB64)
+}
+
+const recvPrepare: PrepareFn = (relpath: string, size: number): string => {
+	return CsStore.prepare(relpath, size)
+}
+
+const recvWrite: WriteFn = (relpath: string, offset: number, buf: ArrayBuffer): string => {
+	return CsStore.writeAt(relpath, offset, buf.toData())
+}
+
+/** finalize() re-reads the whole file from disk, so this is the line that decides whether a transfer
+ *  actually arrived rather than whether it looked consistent on the way in. */
+const recvDigestFile: DigestFileFn = (relpath: string): string => {
+	return CsStore.digestFile(relpath)
+}
+
+const recvDrop: DropFn = (relpath: string): void => {
+	CsStore.drop(relpath)
+}
+
+function replyJson(status: number, body: string): string {
+	const out = new UTSJSONObject()
+	out['status'] = status
+	out['body'] = body
+	return JSON.stringify(out)
+}
+
+/** The id a POST /v1/offer carries, read before the state machine is asked to register it: the guard
+ *  that keeps one dialog on screen needs it to tell a second delivery apart from the same delivery
+ *  being asked about again. */
+function offerIdOf(json: string): string {
+	const made = JSON.parse(json) as UTSJSONObject | null
+	return made == null ? '' : made!.getString('offer_id', '')
+}
+
+/** Cheap by design: both documents are rewritten only when their own serialisation moved, so the
+ *  one-second refresh that watches a transfer costs nothing while nothing is being written. A phone that
+ *  is closed and reopened loses its trust store otherwise, and then the peer that pinned its key is
+ *  refused and a person is asked to type a code whose entire job is to be typed once (task #80). */
+function saveReceiveMemory(): void {
+	const peers = trustJson(recvInbox)
+	if (peers != lastTrustText) {
+		lastTrustText = peers
+		CsIdentity.saveTrustPeers(peers)
+	}
+	const offers = stateAll(recvInbox).join('\n')
+	if (offers != lastOfferText) {
+		lastOfferText = offers
+		CsIdentity.saveOfferStates(offers)
+	}
+}
+
+function syncReceiveMemory(): void {
+	const peers = CsIdentity.loadTrustPeers()
+	if (peers != '') {
+		adoptTrust(recvInbox, peers)
+	}
+	const offers = CsIdentity.loadOfferStates()
+	if (offers != '') {
+		adoptAll(recvInbox, offers.split('\n'))
+	}
+	lastTrustText = trustJson(recvInbox)
+	lastOfferText = stateAll(recvInbox).join('\n')
+}
+
+/** One request, arriving on the listener's queue. `gate` is not decoration: the page reads this same
+ *  inbox from the main thread while a chunk is landing on another one. */
+const recvHandle: (reqJson: string) => string = (reqJson: string): string => {
+	return CsServe.gate(function (): string {
+		const made = JSON.parse(reqJson) as UTSJSONObject | null
+		if (made == null) {
+			return replyJson(400, '{"code":"UNSUPPORTED_PROTOCOL","detail":{"reason":"请求不是 JSON"}}')
+		}
+		const index = made!.getNumber('index') ?? 0
+		const req = new Req()
+		req.method = made!.getString('method', '')
+		req.path = made!.getString('path', '')
+		req.json = made!.getString('json', '')
+		req.token = made!.getString('token', '')
+		req.sha = made!.getString('sha', '')
+		req.client = made!.getString('client', '')
+		if ((made!.getNumber('blob') ?? 0) > 0) {
+			const raw = CsServe.takeBlob(index)
+			if (raw != null) {
+				req.body = ArrayBuffer.fromData(raw!)
+			}
+		}
+		const now = nowSecs()
+		if (req.method == 'POST' && req.path == '/v1/offer') {
+			// One offer waits for the user at a time, but the same manifest is not a new request: the
+			// sender is polling this door for an answer it cannot get on a parked connection, and the
+			// state machine already answers a known offer_id instead of opening a second dialog.
+			const waiting = snapshot(recvInbox, now).pendingOfferIds
+			if (waiting.length > 0 && offerIdOf(req.json) != waiting[waiting.length - 1]) {
+				return replyJson(429, '{"code":"PEER_BUSY","detail":{"reason":"上一条清单还在等人决定"}}')
+			}
+		}
+		if (req.method == 'POST' && req.path == '/v1/pair' && req.client != '') {
+			// Both directions, one answer. The address this phone dialled out to is the peer it already
+			// trusts, and that same machine dials in from a port it never chose - so without this the
+			// caller which keeps its pin over a restart sends no code, and this door asks for one it
+			// cannot get. Nothing is trusted on an address alone: pairReply still refuses the pair unless
+			// the key behind it signs its own claim.
+			const known = CsIdentity.pinFor(req.client, TRANSPORT_PORT)
+			if (known != '') adoptPin(recvInbox, known, '', '')
+		}
+		const answer = handleReceive(recvInbox, receiverSelf(), now, req,
+			recvHex, recvKeyFp, recvVerify, recvPrepare, recvWrite, recvDigestFile, recvDrop)
+		saveReceiveMemory()
+		if (!answer.pending) {
+			return replyJson(answer.status, answer.body)
+		}
+		const ids = snapshot(recvInbox, now).pendingOfferIds
+		if (ids.length == 0) {
+			return replyJson(403, '{"code":"DECLINED","detail":{"reason":"状态机没有登记这条清单"}}')
+		}
+		// The offer is registered and the card is showing it, but this connection is not held open for
+		// the answer: it is told right now that nobody has decided, and the sender asks again on a fresh
+		// connection until the card is answered.
+		return replyJson(200, '{"offer_id":"' + ids[ids.length - 1] + '","accepted":false}')
+	})
+}
+
+/** The pairing material is the receiver's decision but this device's storage: read it back, mint a
+ *  pair if this phone never had one, write down whatever came out. Runs under the gate, because two
+ *  threads minting two codes would leave the screen showing one and the socket answering with the
+ *  other. */
+function syncPairing(): void {
+	const saved = CsIdentity.loadPairing()
+	if (saved != '' && !adoptPairing(recvInbox, saved)) {
+		recvStartNote = '本机配对文件读不出内容，已重新生成一对码和密码'
+	}
+	currentPairCode(recvInbox, nowSecs())
+	CsIdentity.savePairing(pairingJson(recvInbox, nowSecs()))
+}
+
+/** Open the port the desktop connects to. The listener answers under an RSA leaf, so the fingerprint it
+ *  presents is `servedFingerprint()`, not the one below - which is why the pair message carries both. */
+export function receiveStart(cb: (ok: boolean, message: string) => void): void {
+	onIo(function () {
+		const made = JSON.parse(CsIdentity.selfInfo()) as UTSJSONObject | null
+		if (made == null) {
+			onMain(function () {
+				cb(false, '本机密钥读不出来')
+			})
+			return
+		}
+		const why = made!.getString('error', '')
+		if (why != '') {
+			onMain(function () {
+				cb(false, why)
+			})
+			return
+		}
+		const self = new LocalPeer()
+		self.peerId = made!.getString('peer_id', '')
+		self.name = made!.getString('name', '')
+		self.fingerprint = made!.getString('fingerprint', '')
+		self.port = TRANSPORT_PORT
+		recvSelf = self
+		// The listener must be able to answer a pair request the moment it opens, so the code and the
+		// passphrase this device shows - and the peers that may use them - are settled before the socket does.
+		syncPairing()
+		syncReceiveMemory()
+		const started = JSON.parse(CsServe.start(TRANSPORT_PORT, recvHandle)) as UTSJSONObject | null
+		const err = started == null ? '监听状态读不出来' : started!.getString('error', '')
+		recvStartNote = err == ''
+			? '正在监听 ' + TRANSPORT_PORT.toString() + '，收到的文件落在 ' + CsStore.rootPath()
+			: '监听没能起来：' + err
+		onMain(function () {
+			cb(err == '', recvStartNote)
+		})
+	})
+}
+
+export function receiveStop(): string {
+	onIo(function () {
+		const done = JSON.parse(CsServe.stop()) as UTSJSONObject | null
+		const parked = done == null ? 0 : (done!.getNumber('parked') ?? 0)
+		recvStartNote = parked > 0 ? ('不再监听，' + parked.toString() + ' 条等决定的清单已经回拒') : '不再监听'
+	})
+	return recvStartNote
+}
+
+export function receiveCode(): string {
+	let out = ''
+	CsServe.gate(function (): string {
+		syncPairing()
+		out = currentPairCode(recvInbox, nowSecs())
+		return ''
+	})
+	return out
+}
+
+export function receivePassphrase(): string {
+	let out = ''
+	CsServe.gate(function (): string {
+		syncPairing()
+		out = passphraseOf(recvInbox, nowSecs())
+		return ''
+	})
+	return out
+}
+
+/** Fresh code and passphrase on the user's own order. Pinned peers keep working: this only changes
+ *  what a stranger has to get right before it may pin us. */
+export function receiveRotatePairing(): string {
+	CsServe.gate(function (): string {
+		rotatePairing(recvInbox, nowSecs())
+		CsIdentity.savePairing(pairingJson(recvInbox, nowSecs()))
+		return ''
+	})
+	return '已换一组配对码和密码'
+}
+
+/** Which peer this phone dialled out to. The receiver never sees that handshake, so the page says so
+ *  here and the one-session rule can guard the outbound door too (spec §3). */
+export function receiveHoldSlot(fingerprint: string): void {
+	CsServe.gate(function (): string {
+		holdSlotFor(recvInbox, fingerprint)
+		return ''
+	})
+}
+
+export function receiveSnapshot(): ReceiveSnapshot {
+	let snap: ReceiveSnapshot | null = null
+	CsServe.gate(function (): string {
+		snap = snapshot(recvInbox, nowSecs())
+		saveReceiveMemory()
+		return ''
+	})
+	return snap == null ? new ReceiveSnapshot() : snap!
+}
+
+/** The user's answer. Nothing is written back on the connection that asked: this platform has already
+ *  freed that TLS session by the time a person taps, so the answer sits in the inbox until the sender
+ *  asks again on a new connection, which it does every second while the card is up. */
+export function receiveDecide(accepted: boolean): string {
+	let message = ''
+	CsServe.gate(function (): string {
+		const waiting = snapshot(recvInbox, nowSecs()).pendingOfferIds
+		if (waiting.length == 0) {
+			message = '现在没有等待决定的传输'
+			return ''
+		}
+		const offerId = waiting[waiting.length - 1]
+		const answer = resolveOffer(recvInbox, offerId, accepted, recvPrepare, recvDrop)
+		if (answer.status != 200) {
+			// Remembered by id so the next POST answers the same way instead of asking the user again.
+			settleOffer(recvInbox, offerId, answer.status, answer.body)
+		}
+		saveReceiveMemory()
+		const ack = JSON.parse(answer.body) as UTSJSONObject | null
+		const code = ack == null ? '' : ack!.getString('code', '')
+		message = code == '' ? '已应答 ' + answer.status.toString() : code + '（' + answer.status.toString() + '）'
+		return ''
+	})
+	return message
+}
+
+/** What the page shows next to the pair code: whether the port is open, which addresses a peer would use
+ *  to reach this phone, and the last few things the listener said.
+ *
+ *  `fingerprint` is the identity key and `served` is the TLS leaf. They are two different numbers here
+ *  and the page has to know which one belongs in which field of a pair message: the first is what a
+ *  peer pins as who it is talking to, the second is what it expects the socket to present. */
+export function receiveStatus(): string {
+	const out = new UTSJSONObject()
+	out['listening'] = CsServe.isRunning()
+	out['port'] = CsServe.port()
+	out['root'] = CsStore.rootPath()
+	out['note'] = recvStartNote
+	out['fingerprint'] = CsIdentity.fingerprint()
+	out['served'] = CsIdentity.tlsFingerprint()
+	out['code'] = currentPairCode(recvInbox, nowSecs())
+	out['passphrase'] = passphraseOf(recvInbox, nowSecs())
+	const addrs: string[] = []
+	const nets = JSON.parse(CsWire.lan()) as UTSJSONObject | null
+	if (nets != null) {
+		const list = nets!.getArray<UTSJSONObject>('addrs')
+		if (list != null) {
+			for (let i = 0; i < list!.length; i++) {
+				const one = list![i]
+				addrs.push(one.getString('addr', '') + '/' + (one.getNumber('prefix') ?? 24).toString() +
+					'（' + one.getString('iface', '') + '）')
+			}
+		}
+	}
+	out['addrs'] = addrs
+	out['notes'] = JSON.parse(CsServe.noteLog())
+	return JSON.stringify(out)
+}

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Speaking to a peer on the same Wi-Fi is a privacy question on iOS 14+, and the answer is a
+	     sentence the user reads before the socket opens. Without this key the connect simply fails. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>传书需要和同一局域网里的电脑建立连接，把文件送到对方或从对方接收。</string>
+	<!-- Only used once discovery lands (task #36): the service this phone advertises and browses for.
+	     Declared now so the local-network prompt is asked for the right reason on the first run. -->
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_chuanshu._tcp</string>
+	</array>
+</dict>
+</plist>

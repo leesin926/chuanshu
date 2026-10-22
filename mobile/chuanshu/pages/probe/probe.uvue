@@ -18,6 +18,20 @@
 			<button class="btn" @click="runBulk">客户端读大块</button>
 		</view>
 		<!-- #endif -->
+		<!-- #ifdef APP-IOS -->
+		<view class="row">
+			<button class="btn" @click="runAlg">密钥算法 TLS</button>
+			<button class="btn" @click="runPc">连 PC</button>
+		</view>
+		<view class="row">
+			<button class="btn" @click="runHold">监听起来</button>
+			<button class="btn" @click="runHoldLog">监听日志</button>
+			<button class="btn" @click="runBulk">客户端读大块</button>
+		</view>
+		<!-- 这一端没有 hdc rport 那样的反向转发，所以「连 PC」和「读大块」拨的都是这个局域网地址，而不是
+		     127.0.0.1。地址写在代码里（BULK_HOST），因为它量的是这台设备，不是这个产品。 -->
+		<text class="hint">这一端拨的是 {{ bulkHost }}，PC 侧的两个监听端口固定 43730 / 43731。</text>
+		<!-- #endif -->
 		<!-- #ifdef WEB -->
 		<button class="btn mt12" @click="runSha">SHA-256 自检</button>
 		<!-- #endif -->
@@ -27,7 +41,9 @@
 
 <script setup lang="uts">
 	import { identityProbeAsync, certProbeAsync, tlsSelfCheckAsync } from '@/uni_modules/cs-identity'
-	// #ifdef APP-HARMONY
+	// #ifdef APP-HARMONY || APP-IOS
+	/** Five names, both phones. The one difference is 连 PC: the ArkTS half dials 127.0.0.1 through
+	 *  `hdc rport`, the iPhone has no such forward and takes the LAN address as an argument. */
 	import { tlsAlgProbeAsync, pcDialProbe, holdListener, holdListenerLog, bulkReadProbe } from '@/uni_modules/cs-identity'
 	// #endif
 
@@ -40,7 +56,7 @@
 	// #endif
 
 	const lines = ref('还没有运行。')
-	// #ifdef APP-HARMONY
+	// #ifdef APP-HARMONY || APP-IOS
 	const bulkHost = ref(BULK_HOST)
 	const bulkPort = ref(BULK_PORT)
 	// #endif
@@ -64,15 +80,10 @@
 		tlsSelfCheckAsync(show)
 	}
 
-	// #ifdef APP-HARMONY
+	// #ifdef APP-HARMONY || APP-IOS
 	function runAlg() {
 		lines.value = '三种密钥算法各跑一次回路 TLS，最长约半分钟……'
 		tlsAlgProbeAsync(show)
-	}
-
-	function runPc() {
-		lines.value = '拨号 PC 侧的两个监听（Ed25519 / RSA），最长约半分钟……'
-		pcDialProbe(show)
 	}
 
 	function runHold() {
@@ -87,6 +98,20 @@
 	function runBulk() {
 		lines.value = '正在从 ' + bulkHost.value + ' 读 300000 字节……'
 		bulkReadProbe(bulkHost.value, bulkPort.value, 300000, show)
+	}
+	// #endif
+
+	// #ifdef APP-HARMONY
+	function runPc() {
+		lines.value = '拨号 PC 侧的两个监听（Ed25519 / RSA），最长约半分钟……'
+		pcDialProbe(show)
+	}
+	// #endif
+
+	// #ifdef APP-IOS
+	function runPc() {
+		lines.value = '拨号 ' + bulkHost.value + ' 上的两个监听（Ed25519 43730 / RSA 43731）……'
+		pcDialProbe(bulkHost.value, show)
 	}
 	// #endif
 

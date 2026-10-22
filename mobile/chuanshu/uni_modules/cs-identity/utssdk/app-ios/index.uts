@@ -1,0 +1,76 @@
+/** The iPhone's platform-capability probe: the same five questions the Android and Harmony probes ask, in
+ *  the same order, because the answers have to be comparable across three devices by a person reading a
+ *  screen.
+ *
+ *  This file is a thin shell over `CsProbe.swift` and does no work of its own beyond naming the ports.
+ *  The threading lives inside the Swift - a probe that waits on a handshake it delivers to itself would
+ *  wait forever - and every callback comes back on the main queue so the page can write it into a `ref`.
+ *
+ *  This shell has been through `cli compile app-ios`; the Swift behind it has not been through a Swift
+ *  compiler at all, which is exactly the gap this file exists to close. `pages/probe/probe.uvue` is its
+ *  only consumer, and its iOS block is there so the first run on a Mac is a set of buttons rather than a
+ *  harness someone has to write. */
+
+/** `CsProbe.swift` needs no import: on this platform UTS is compiled *into* Swift, so the classes sitting
+ *  next to it in `app-ios` are the same module. The one consequence worth remembering is the symbol rule -
+ *  a Swift class and a UTS function may not share a name, which is why everything native here is prefixed. */
+const PROBE_PORT = 43799
+/** Where 监听起来 leaves its listener, so the desktop knows which port to dial. */
+const HOLD_PORT = 43901
+
+/** The three buttons every platform has. */
+export function identityProbeAsync(done: (text: string) => void) {
+	CsProbe.identityProbeAsync(done)
+}
+
+export function certProbeAsync(done: (text: string) => void) {
+	CsProbe.certProbeAsync(done)
+}
+
+export function tlsSelfCheckAsync(done: (text: string) => void) {
+	CsProbe.tlsSelfCheckAsync(PROBE_PORT, done)
+}
+
+/** Ed25519 / RSA-2048 / P-256, each one served and dialed.
+ *
+ *  The button label matches Harmony's because the question is the same one that phone already answered -
+ *  "can this device be connected to with this kind of key" - and the answer decided the receiving half's
+ *  leaf algorithm there. On iOS the expected outcome is different in its first line: no keychain key for
+ *  Ed25519 at all, so the sweep stops before the socket. */
+export function tlsAlgProbeAsync(done: (text: string) => void) {
+	CsProbe.tlsAlgProbeAsync(PROBE_PORT, done)
+}
+
+/** Dial the PC's two scratch listeners at `host`:43730 (Ed25519 leaf) and :43731 (RSA leaf).
+ *
+ *  Unlike the Harmony half, this one takes the address instead of assuming 127.0.0.1: there is no
+ *  reverse-forward on an iPhone comparable to `hdc rport`, so the desktop has to be reached over the LAN.
+ *  The point is the fingerprint each round prints - it has to equal the number the PC computes over the
+ *  same SubjectPublicKeyInfo, which is the agreement every pairing in this product is made of.
+ *
+ *  `@UTSJS.keepAlive` is not decoration: from HBuilderX 4.25 an iOS plugin reclaims a callback parameter
+ *  as soon as it has fired once, and this button fires four times on purpose - a run that dies at round
+ *  two has to leave the first line on the screen. Every other export here fires once and needs nothing. */
+@UTSJS.keepAlive
+export function pcDialProbe(host: string, done: (text: string) => void) {
+	CsProbe.pcDialAsync(host, done)
+}
+
+/** Opens a TLS listener under a throwaway RSA-2048 identity and leaves it up for the desktop to connect
+ *  to - the direction no loopback round inside this module can prove, because both ends would be our own
+ *  code. */
+export function holdListener(done: (text: string) => void) {
+	CsProbe.holdListenerAsync(HOLD_PORT, done)
+}
+
+export function holdListenerLog(done: (text: string) => void) {
+	done(CsProbe.holdListenerLog())
+}
+
+/** Read `total` bytes from a server that is not our own code and report the packet sizes the platform
+ *  actually handed the app. Answers whether the other phone's "events arrived in sizes the sender never
+ *  wrote" was a record-sizing problem or a direction one, and it settles nothing about the sending half
+ *  until the pacing on a real chunk stream has been watched the same way. */
+export function bulkReadProbe(host: string, port: number, total: number, done: (text: string) => void) {
+	CsProbe.bulkReadAsync(host, port, total, done)
+}

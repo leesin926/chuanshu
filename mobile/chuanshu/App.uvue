@@ -1,5 +1,5 @@
 <script setup lang="uts">
-	// #ifdef APP-ANDROID || APP-HARMONY
+	// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
 	let firstBackTime = 0
 	// #endif
 
@@ -15,7 +15,7 @@
 		console.log('App Hide')
 	})
 
-	// #ifdef APP-ANDROID || APP-HARMONY
+	// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
 	onLastPageBackPress(() => {
 		console.log('App LastPageBackPress')
 		if (firstBackTime == 0) {

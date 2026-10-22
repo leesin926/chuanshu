@@ -52,7 +52,7 @@ function transportError(code: string, detail: string): string {
 	return JSON.stringify(out)
 }
 
-function reply(code: string, detail: string, cb: ReplyCb): void {
+function ioFail(code: string, detail: string, cb: ReplyCb): void {
 	onMain(function () {
 		cb(0, transportError(code, detail))
 	})
@@ -183,12 +183,12 @@ export function request(
 			body.byteLength > 0 ? body.toByteBuffer() : null, sha, timeoutOf(method, path))
 		const parsed = JSON.parse(text) as UTSJSONObject | null
 		if (parsed == null) {
-			reply('IO', '对端应答无法解析', cb)
+			ioFail('IO', '对端应答无法解析', cb)
 			return
 		}
 		const err = parsed!.getString('error', '')
 		if (err != '') {
-			reply(err, parsed!.getString('detail', ''), cb)
+			ioFail(err, parsed!.getString('detail', ''), cb)
 			return
 		}
 		const status = parsed!.getNumber('status') ?? 0

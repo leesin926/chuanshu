@@ -38,7 +38,7 @@
 				<text class="setlabel">更换配对码和密码</text>
 				<text class="chevron">›</text>
 			</view>
-			<!-- #ifdef APP-ANDROID || APP-HARMONY -->
+			<!-- #ifdef APP-ANDROID || APP-HARMONY || APP-IOS -->
 			<view class="divider"></view>
 			<view class="setrow" @click="toggleListen">
 				<image class="icoMe" src="/static/icons/listen-6b7280.png"></image>
@@ -134,7 +134,7 @@
 
 <script setup lang="uts">
 	import { s, initSession, refreshReceive, copyPairing, onRotatePairing, onDisconnect } from '@/store/session.uts'
-	// #ifdef APP-ANDROID || APP-HARMONY
+	// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
 	import { onRecvListen, onRecvListenStop } from '@/store/session.uts'
 	// #endif
 	// #ifdef WEB
@@ -160,7 +160,7 @@
 		onDisconnect()
 	}
 
-	// #ifdef APP-ANDROID || APP-HARMONY
+	// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
 	function toggleListen() {
 		if (s.recvListening) {
 			onRecvListenStop()

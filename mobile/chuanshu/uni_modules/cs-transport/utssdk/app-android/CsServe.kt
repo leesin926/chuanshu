@@ -131,6 +131,39 @@ object CsServe {
         return line.substring(name.length).trim()
     }
 
+    /** `0x1B 0x1B` means a literal escape and `0x1B B` means a zero byte; a trailing or unknown escape is
+     *  left as the byte it is, exactly as `app/net/spec.py:unescape_chunk` reads it. The desktop escapes
+     *  every PUT body that contains a zero byte and declares it in `X-Chunk-Escape` (spec §4), and the
+     *  digest the sender puts in `X-Sha256` is over the plain bytes - so a receiver that ignores this
+     *  header stores the escaped ones under a hash they do not match, and every such chunk is rejected. */
+    private fun unescape(bytes: ByteArray): ByteArray {
+        val out = java.io.ByteArrayOutputStream(bytes.size)
+        var at = 0
+        while (at < bytes.size) {
+            if (bytes[at] != 0x1b.toByte()) {
+                out.write(bytes[at].toInt())
+                at += 1
+                continue
+            }
+            if (at + 1 >= bytes.size) {
+                out.write(0x1b)
+                at += 1
+                continue
+            }
+            val next = bytes[at + 1]
+            when {
+                next == 0x1b.toByte() -> out.write(0x1b)
+                next == 'B'.code.toByte() -> out.write(0)
+                else -> {
+                    out.write(0x1b)
+                    out.write(next.toInt())
+                }
+            }
+            at += 2
+        }
+        return out.toByteArray()
+    }
+
     // -------------------------------------------------------------------- response writing
 
     private fun reasonOf(status: Int): String = when (status) {
@@ -178,6 +211,7 @@ object CsServe {
             var token = ""
             var sha = ""
             var type = ""
+            var escape = ""
             var declared = -1
             while (true) {
                 val line = readLine(ins) ?: break
@@ -189,11 +223,20 @@ object CsServe {
                     token = valueOf(line, "x-chuanshu-auth:")
                 } else if (lower.startsWith("x-sha256:")) {
                     sha = valueOf(line, "x-sha256:")
+                } else if (lower.startsWith("x-chunk-escape:")) {
+                    escape = valueOf(line, "x-chunk-escape:")
                 } else if (lower.startsWith("content-type:")) {
                     type = valueOf(line, "content-type:")
                 }
             }
-            val raw = if (declared > 0) readExactly(ins, declared) else ByteArray(0)
+            val wire = if (declared > 0) readExactly(ins, declared) else ByteArray(0)
+            val raw = if (escape.isNotEmpty() && method == "PUT" && wire.isNotEmpty()) {
+                val plain = unescape(wire)
+                note("反解 $escape：收到 ${wire.size} 解出 ${plain.size}")
+                plain
+            } else {
+                wire
+            }
             index = counter.getAndIncrement()
             val jsonish = raw.isEmpty() || isJsonBody(method, type)
             if (!jsonish) {

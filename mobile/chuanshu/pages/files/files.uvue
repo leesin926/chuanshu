@@ -48,7 +48,7 @@
 			<text class="big">配对码 {{ s.recvCodeText }}</text>
 			<text class="big">密码 {{ s.recvPassText }}</text>
 			<text class="sub">{{ s.recvCodeLeft }}</text>
-			<!-- #ifdef APP-ANDROID || APP-HARMONY -->
+			<!-- #ifdef APP-ANDROID || APP-HARMONY || APP-IOS -->
 			<text class="sub mt8" :class="s.recvListenClass">{{ s.recvListen }}</text>
 			<text class="sub" v-for="(a, i) in s.recvAddrs" :key="i">本机地址 {{ a }}</text>
 			<!-- #endif -->
