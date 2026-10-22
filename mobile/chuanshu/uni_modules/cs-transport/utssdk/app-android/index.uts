@@ -9,7 +9,7 @@ import {
 	HexFn, KeyFpFn, VerifyFn, PrepareFn, WriteFn, DigestFileFn, DropFn,
 	LocalPeer, Req, Inbox, ReceiveSnapshot,
 	newInbox, currentPairCode, handleReceive, holdSlotFor, passphraseOf, pairingJson,
-	adoptPairing, adoptTrust, adoptAll, resolveOffer, rotatePairing, seenNow, settleOffer,
+	adoptPairing, adoptPin, adoptTrust, adoptAll, resolveOffer, rotatePairing, seenNow, settleOffer,
 	snapshot, stateAll, sweep, trustJson
 } from '../cs-receive.uts'
 
@@ -481,6 +481,15 @@ const recvHandle: (reqJson: string) => string = (reqJson: string): string => {
 			if (waiting.length > 0 && offerIdOf(req.json) != waiting[waiting.length - 1]) {
 				return replyJson(429, '{"code":"PEER_BUSY","detail":{"reason":"上一条清单还在等人决定"}}')
 			}
+		}
+		if (req.method == 'POST' && req.path == '/v1/pair' && req.client != '') {
+			// Both directions, one answer. The address this phone dialled out to is the peer it already
+			// trusts, and that same machine dials in from a port it never chose - so without this the
+			// caller which keeps its pin over a restart sends no code, and this door asks for one it
+			// cannot get. Nothing is trusted on an address alone: pairReply still refuses the pair unless
+			// the key behind it signs its own claim.
+			const known = CsIdentity.pinFor(req.client, TRANSPORT_PORT)
+			if (known != '') adoptPin(recvInbox, known, '', '')
 		}
 		const reply = handleReceive(recvInbox, receiverSelf(), now, req,
 			recvHex, recvKeyFp, recvVerify, recvPrepare, recvWrite, recvDigestFile, recvDrop)
