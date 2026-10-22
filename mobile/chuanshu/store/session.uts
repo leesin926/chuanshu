@@ -609,7 +609,7 @@ export function refreshReceive() {
 		? '固定的一组，点「更换配对码和密码」才会换'
 		: '有效还剩 ' + snap.codeSecondsLeft.toString() + ' 秒，过期自动换一个'
 	s.recvAsk = snap.pendingOfferIds.length > 0
-		? '来自 ' + (snap.pendingFrom[0] == '' ? '对端' : snap.pendingFrom[0]) + ' 的传输在等你决定。PC 那条提交清单的请求一直挂着，直到你点接受或拒绝。'
+		? '来自 ' + (snap.pendingFrom[0] == '' ? '对端' : snap.pendingFrom[0]) + ' 的传输在等你决定。对面每秒问一次决定好了没有，所以你点的这一下下一秒就到它那边。'
 		: ''
 	const a: string[] = []
 	const b: string[] = []

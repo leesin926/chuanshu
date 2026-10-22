@@ -391,7 +391,7 @@ public enum CsServe {
         listener = nil
         let open = liveConnections
         liveConnections.removeAll()
-        let pending = blobs.count
+        let waiting = blobs.count
         blobs.removeAll()
         gateLock.unlock()
         old?.cancel()
@@ -399,6 +399,6 @@ public enum CsServe {
             conn.cancel()
         }
         note("已经不再监听")
-        return CsBytes.json(["stopped": true, "parked": pending] as [String: Any])
+        return CsBytes.json(["stopped": true, "closed": open.count, "dropped_bodies": waiting] as [String: Any])
     }
 }

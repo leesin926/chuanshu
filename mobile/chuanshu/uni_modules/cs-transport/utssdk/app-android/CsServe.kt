@@ -13,8 +13,6 @@ import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.SynchronousQueue
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.locks.ReentrantLock
 import javax.net.ssl.KeyManagerFactory
@@ -28,22 +26,18 @@ import javax.net.ssl.SSLSocket
  *
  *  Two things here are deliberate:
  *
- *  - No read timeout on the connection. `POST /v1/offer` is answered by a person, and the sender stays
- *    parked for as long as the phone takes. The worker thread that waits is cheap; a timeout that
- *    pretends the user had 20 seconds to look at the screen is not.
+ *  - No read timeout on the connection. A 4 MiB chunk body can outlast any timeout small enough to be
+ *    worth setting, and the honest end of a conversation is the socket closing - `readLine` returns null
+ *    the moment the peer hangs up. `stop()` closes everything still open, so no connection outlives the
+ *    listener it came in through.
  *  - One lock around the state machine. The web host has JavaScript's single thread for free; here a
  *    connection worker and the UI both touch the same inbox, so `gate()` is how UTS says "this is the
  *    critical section". */
 object CsServe {
 
-    /** A parked offer nobody ever answers is a leaked thread. Half an hour is far outside any human
-     *  reaction this protocol expects, and the sender has hung up long before. */
-    private const val DECISION_WAIT_MIN = 30L
-
     private val lock = ReentrantLock()
     private val counter = AtomicInteger(1)
     private val blobs = ConcurrentHashMap<Int, ByteArray>()
-    private val decisions = ConcurrentHashMap<Int, SynchronousQueue<String>>()
     private val open = Collections.synchronizedSet(mutableSetOf<SSLSocket>())
     private val notes = JSONArray()
 
@@ -90,12 +84,6 @@ object CsServe {
     fun takeBlob(index: Number): ByteBuffer? {
         val raw = blobs.remove(index.toInt()) ?: return null
         return ByteBuffer.wrap(raw)
-    }
-
-    /** The user answered. Whatever thread is parked on that offer's connection gets the reply. */
-    fun deliver(index: Number, status: Number, body: String): Boolean {
-        val queue = decisions.remove(index.toInt()) ?: return false
-        return queue.offer(JSONObject().put("status", status.toInt()).put("body", body).toString())
     }
 
     // -------------------------------------------------------------------- request parsing
@@ -263,27 +251,16 @@ object CsServe {
                 note("状态机的应答不是 JSON：$answer")
                 return
             }
-            var status = reply.optInt("status", 400)
-            var body = reply.optString("body", "{}")
-            if (reply.optBoolean("pending")) {
-                val queue = SynchronousQueue<String>()
-                decisions[index] = queue
-                val waited = queue.poll(DECISION_WAIT_MIN, TimeUnit.MINUTES)
-                decisions.remove(index)
-                if (waited == null) {
-                    note("这条清单等满了 ${DECISION_WAIT_MIN} 分钟也没人决定")
-                    return
-                }
-                val decided = JSONObject(waited)
-                status = decided.optInt("status", 403)
-                body = decided.optString("body", "{}")
-            }
+            val status = reply.optInt("status", 400)
+            val body = reply.optString("body", "{}")
+            // An offer that needs a person is answered on the spot with "nobody has decided yet": the
+            // sender polls a fresh connection until the card is tapped, because holding this one open
+            // for an answer loses both the answer and the connection (task #59, measured on a phone).
             writeResponse(sk, status, body)
         } catch (e: Throwable) {
             note("这条连接断开：$e")
         } finally {
             blobs.remove(index)
-            decisions.remove(index)
             try {
                 sk.close()
             } catch (ignored: Throwable) {
@@ -349,8 +326,8 @@ object CsServe {
         }
     }
 
-    /** Closing the listener wakes the accept loop; the parked offers get a clean refusal so a sender
-     *  is never left holding a connection after this end decided to stop. */
+    /** Closing the listener wakes the accept loop, and every connection still open is closed with it -
+     *  a sender must never be left holding a socket to a phone that decided to stop receiving. */
     fun stop(): String {
         running = false
         var closed = 0
@@ -359,21 +336,18 @@ object CsServe {
         } catch (ignored: Throwable) {
         }
         server = null
-        val keys = ArrayList(decisions.keys)
-        for (index in keys) {
-            if (deliver(index, 403, JSONObject().put("code", "DECLINED").toString())) closed++
-        }
         synchronized(open) {
             for (sk in open) {
                 try {
                     sk.close()
                 } catch (ignored: Throwable) {
                 }
+                closed++
             }
             open.clear()
         }
         note("已经不再监听")
-        return JSONObject().put("stopped", true).put("parked", closed).toString()
+        return JSONObject().put("stopped", true).put("closed", closed).toString()
     }
 
     /** Seconds since the epoch, from Kotlin, so the state machine and the listener agree on the clock

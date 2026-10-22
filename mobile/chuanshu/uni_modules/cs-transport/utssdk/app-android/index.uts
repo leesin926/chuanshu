@@ -9,7 +9,7 @@ import {
 	HexFn, KeyFpFn, VerifyFn, PrepareFn, WriteFn, DigestFileFn, DropFn,
 	LocalPeer, Req, Inbox, ReceiveSnapshot,
 	newInbox, currentPairCode, handleReceive, holdSlotFor, passphraseOf, pairingJson,
-	adoptPairing, resolveOffer, rotatePairing, seenNow, sweep, snapshot
+	adoptPairing, resolveOffer, rotatePairing, seenNow, settleOffer, sweep, snapshot
 } from '../cs-receive.uts'
 
 /** The page reaches the protocol constants and helpers through this entry, not only through a deep path:
@@ -359,10 +359,13 @@ const recvInbox: Inbox = newInbox()
 let recvSelf: LocalPeer | null = null
 let recvStartNote = '还没开始监听'
 
-/** The offer the user has not answered yet, and the connection parked behind it. One slot, because that
- *  is what the contract's PEER_BUSY means: a receiver with its hands full does not queue senders up. */
-let pendingOffer = ''
-let pendingIndex = 0
+/** The id a POST /v1/offer carries, read before the state machine is asked to register it: the guard
+ *  that keeps one dialog on screen needs it to tell a second delivery apart from the same delivery
+ *  being asked about again. */
+function offerIdOf(json: string): string {
+	const made = JSON.parse(json) as UTSJSONObject | null
+	return made == null ? '' : made!.getString('offer_id', '')
+}
 
 function receiverSelf(): LocalPeer {
 	if (recvSelf == null) {
@@ -434,10 +437,16 @@ const recvHandle: (reqJson: string) => string = (reqJson: string): string => {
 				req.body = ArrayBuffer.fromByteBuffer(raw!)
 			}
 		}
-		if (req.method == 'POST' && req.path == '/v1/offer' && pendingOffer != '') {
-			return replyJson(429, '{"code":"PEER_BUSY","detail":{"reason":"上一条清单还在等人决定"}}')
-		}
 		const now = CsServe.nowSeconds()
+		if (req.method == 'POST' && req.path == '/v1/offer') {
+			// One offer waits for the user at a time, but the same manifest is not a new request: the
+			// sender is polling this door for an answer it cannot get on a parked connection, and the
+			// state machine already answers a known offer_id instead of opening a second dialog.
+			const waiting = snapshot(recvInbox, now).pendingOfferIds
+			if (waiting.length > 0 && offerIdOf(req.json) != waiting[waiting.length - 1]) {
+				return replyJson(429, '{"code":"PEER_BUSY","detail":{"reason":"上一条清单还在等人决定"}}')
+			}
+		}
 		const reply = handleReceive(recvInbox, receiverSelf(), now, req,
 			recvHex, recvKeyFp, recvVerify, recvPrepare, recvWrite, recvDigestFile, recvDrop)
 		if (!reply.pending) {
@@ -447,11 +456,10 @@ const recvHandle: (reqJson: string) => string = (reqJson: string): string => {
 		if (ids.length == 0) {
 			return replyJson(403, '{"code":"DECLINED","detail":{"reason":"状态机没有登记这条清单"}}')
 		}
-		pendingOffer = ids[ids.length - 1]
-		pendingIndex = index
-		const out = new UTSJSONObject()
-		out['pending'] = true
-		return JSON.stringify(out)
+		// The offer is registered and the card is showing it, but this connection is not held open for
+		// the answer: it is told right now that nobody has decided, and the sender asks again on a fresh
+		// connection until the card is answered.
+		return replyJson(200, '{"offer_id":"' + ids[ids.length - 1] + '","accepted":false}')
 	})
 }
 
@@ -496,8 +504,8 @@ export function receiveStart(cb: (ok: boolean, message: string) => void): void {
 export function receiveStop(): string {
 	onIo(function () {
 		const done = JSON.parse(CsServe.stop()) as UTSJSONObject | null
-		const parked = done == null ? 0 : (done!.getNumber('parked') ?? 0)
-		recvStartNote = parked > 0 ? ('不再监听，' + parked.toString() + ' 条等决定的清单已经回拒') : '不再监听'
+		const closed = done == null ? 0 : (done!.getNumber('closed') ?? 0)
+		recvStartNote = closed > 0 ? ('不再监听，' + closed.toString() + ' 条还开着的连接一并断了') : '不再监听'
 	})
 	return recvStartNote
 }
@@ -577,25 +585,26 @@ export function receiveSnapshot(): ReceiveSnapshot {
 	return snap == null ? new ReceiveSnapshot() : snap!
 }
 
-/** The user's answer. The parked connection wakes up with exactly what the state machine said, which is
- *  why a decline reads as DECLINED on the sender rather than as a dropped socket. */
+/** The user's answer. Nothing is written back on the connection that asked: this phone has already
+ *  freed that TLS session by the time a person taps, so the answer sits in the inbox until the sender
+ *  asks again on a new connection, which it does every second while the card is up. */
 export function receiveDecide(accepted: boolean): string {
 	let message = ''
 	CsServe.gate(function (): string {
-		if (pendingOffer == '') {
+		const waiting = snapshot(recvInbox, CsServe.nowSeconds()).pendingOfferIds
+		if (waiting.length == 0) {
 			message = '现在没有等待决定的传输'
 			return ''
 		}
-		const offerId = pendingOffer
-		const index = pendingIndex
-		pendingOffer = ''
-		pendingIndex = 0
+		const offerId = waiting[waiting.length - 1]
 		const reply = resolveOffer(recvInbox, offerId, accepted, recvPrepare, recvDrop)
-		const sent = CsServe.deliver(index, reply.status, reply.body)
+		if (reply.status != 200) {
+			// Remembered by id so the next POST answers the same way instead of asking the user again.
+			settleOffer(recvInbox, offerId, reply.status, reply.body)
+		}
 		const ack = JSON.parse(reply.body) as UTSJSONObject | null
 		const code = ack == null ? '' : ack!.getString('code', '')
-		message = (code == '' ? '已应答 ' + reply.status.toString() : code + '（' + reply.status.toString() + '）') +
-			(sent ? '' : '，但那条连接已经不在了')
+		message = code == '' ? '已应答 ' + reply.status.toString() : code + '（' + reply.status.toString() + '）'
 		return ''
 	})
 	return message

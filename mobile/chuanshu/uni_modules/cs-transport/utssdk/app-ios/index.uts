@@ -596,8 +596,8 @@ export function receiveStart(cb: (ok: boolean, message: string) => void): void {
 export function receiveStop(): string {
 	onIo(function () {
 		const done = JSON.parse(CsServe.stop()) as UTSJSONObject | null
-		const parked = done == null ? 0 : (done!.getNumber('parked') ?? 0)
-		recvStartNote = parked > 0 ? ('不再监听，' + parked.toString() + ' 条等决定的清单已经回拒') : '不再监听'
+		const closed = done == null ? 0 : (done!.getNumber('closed') ?? 0)
+		recvStartNote = closed > 0 ? ('不再监听，' + closed.toString() + ' 条还开着的连接一并断了') : '不再监听'
 	})
 	return recvStartNote
 }
