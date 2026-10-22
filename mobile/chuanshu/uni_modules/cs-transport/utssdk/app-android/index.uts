@@ -9,7 +9,8 @@ import {
 	HexFn, KeyFpFn, VerifyFn, PrepareFn, WriteFn, DigestFileFn, DropFn,
 	LocalPeer, Req, Inbox, ReceiveSnapshot,
 	newInbox, currentPairCode, handleReceive, holdSlotFor, passphraseOf, pairingJson,
-	adoptPairing, resolveOffer, rotatePairing, seenNow, settleOffer, sweep, snapshot
+	adoptPairing, adoptTrust, adoptAll, resolveOffer, rotatePairing, seenNow, settleOffer,
+	snapshot, stateAll, sweep, trustJson
 } from '../cs-receive.uts'
 
 /** The page reaches the protocol constants and helpers through this entry, not only through a deep path:
@@ -358,6 +359,40 @@ export function unpinPeer(host: string, port: number, cb: (dropped: boolean, mes
 const recvInbox: Inbox = newInbox()
 let recvSelf: LocalPeer | null = null
 let recvStartNote = '还没开始监听'
+let lastTrustText = ''
+let lastOfferText = ''
+
+/** Cheap by design: both documents are rewritten only when their own serialisation moved, so the
+ *  one-second refresh that watches a transfer costs nothing while nothing is being written. The state
+ *  machine itself is in memory and the files only ever hold what it says out loud (task #86). */
+function saveReceiveMemory(): void {
+	const peers = trustJson(recvInbox)
+	if (peers != lastTrustText) {
+		lastTrustText = peers
+		CsIdentity.saveTrustPeers(peers)
+	}
+	const offers = stateAll(recvInbox).join('\n')
+	if (offers != lastOfferText) {
+		lastOfferText = offers
+		CsIdentity.saveOfferStates(offers)
+	}
+}
+
+/** Read once, before the listener opens: an offer the inbox never heard of looks like a fresh delivery,
+ *  and adoptAll() is what tells the two apart - it re-registers a part-written transfer so the next
+ *  chunk continues instead of the file starting over. */
+function syncReceiveMemory(): void {
+	const peers = CsIdentity.loadTrustPeers()
+	if (peers != '') {
+		adoptTrust(recvInbox, peers)
+	}
+	const offers = CsIdentity.loadOfferStates()
+	if (offers != '') {
+		adoptAll(recvInbox, offers.split('\n'), CsServe.nowSeconds())
+	}
+	lastTrustText = trustJson(recvInbox)
+	lastOfferText = stateAll(recvInbox).join('\n')
+}
 
 /** The id a POST /v1/offer carries, read before the state machine is asked to register it: the guard
  *  that keeps one dialog on screen needs it to tell a second delivery apart from the same delivery
@@ -449,6 +484,7 @@ const recvHandle: (reqJson: string) => string = (reqJson: string): string => {
 		}
 		const reply = handleReceive(recvInbox, receiverSelf(), now, req,
 			recvHex, recvKeyFp, recvVerify, recvPrepare, recvWrite, recvDigestFile, recvDrop)
+		saveReceiveMemory()
 		if (!reply.pending) {
 			return replyJson(reply.status, reply.body)
 		}
@@ -488,8 +524,9 @@ export function receiveStart(cb: (ok: boolean, message: string) => void): void {
 		self.port = TRANSPORT_PORT
 		recvSelf = self
 		// The listener must be able to answer a pair request the moment it opens, so the code and the
-		// passphrase this device shows are settled before the socket does.
+		// passphrase this device shows - and the peers that may use them - are settled before the socket does.
 		syncPairing()
+		syncReceiveMemory()
 		const started = JSON.parse(CsServe.start(TRANSPORT_PORT, recvHandle)) as UTSJSONObject | null
 		const err = started == null ? '监听状态读不出来' : started!.getString('error', '')
 		recvStartNote = err == ''
@@ -580,6 +617,7 @@ export function receiveSnapshot(): ReceiveSnapshot {
 	CsServe.gate(function (): string {
 		sweep(recvInbox, CsServe.nowSeconds(), recvDrop)
 		snap = snapshot(recvInbox, CsServe.nowSeconds())
+		saveReceiveMemory()
 		return ''
 	})
 	return snap == null ? new ReceiveSnapshot() : snap!
@@ -602,6 +640,7 @@ export function receiveDecide(accepted: boolean): string {
 			// Remembered by id so the next POST answers the same way instead of asking the user again.
 			settleOffer(recvInbox, offerId, reply.status, reply.body)
 		}
+		saveReceiveMemory()
 		const ack = JSON.parse(reply.body) as UTSJSONObject | null
 		const code = ack == null ? '' : ack!.getString('code', '')
 		message = code == '' ? '已应答 ' + reply.status.toString() : code + '（' + reply.status.toString() + '）'

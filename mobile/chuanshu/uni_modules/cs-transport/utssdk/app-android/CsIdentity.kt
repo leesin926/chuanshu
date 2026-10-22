@@ -42,6 +42,11 @@ object CsIdentity {
     private const val ID_FILE = "chuanshu-peer-id.txt"
     private const val TRUST_FILE = "chuanshu-trusted.json"
     private const val PAIRING_FILE = "chuanshu-pairing.json"
+    // The receiver's own two memories, kept apart from TRUST_FILE on purpose: the one above pins a
+    // peer by the address it was met at (this phone dialled out), the one below says which peers may
+    // knock on this phone's door. Same digest in both, different promises.
+    private const val RECEIVER_TRUST_FILE = "chuanshu-receiver-trust.json"
+    private const val RECEIVER_OFFERS_FILE = "chuanshu-receiver-offers.json"
 
     private class Self(val peerId: String, val key: PrivateKey, val spki: ByteArray)
 
@@ -183,6 +188,42 @@ object CsIdentity {
     } catch (e: Throwable) {
         false
     }
+
+    private fun readText(name: String): String {
+        val dir = filesDir() ?: return ""
+        return try {
+            val f = File(dir, name)
+            if (f.exists()) f.readText() else ""
+        } catch (e: Throwable) {
+            ""
+        }
+    }
+
+    private fun writeText(name: String, text: String): Boolean {
+        val dir = filesDir() ?: return false
+        return try {
+            File(dir, name).writeText(text)
+            true
+        } catch (e: Throwable) {
+            false
+        }
+    }
+
+    // -------------------------------------------------- the receiver's own memories
+
+    /** Who may send to this phone, and which offers this inbox already took - verbatim the text
+     *  cs-receive.uts serialises with trustJson() and stateAll(). Neither one survives a restart on
+     *  its own, and losing them is not cosmetic: the peer that pinned its key is refused and a person
+     *  is asked to type a code whose entire job is to be typed once, while 收到的文件 goes empty over
+     *  a folder that is still full. Android is the last host that had no copy of these files at all
+     *  (Harmony got them in #80, iOS in #81, this is #86). */
+    fun loadTrustPeers(): String = readText(RECEIVER_TRUST_FILE)
+
+    fun saveTrustPeers(text: String): Boolean = writeText(RECEIVER_TRUST_FILE, text)
+
+    fun loadOfferStates(): String = readText(RECEIVER_OFFERS_FILE)
+
+    fun saveOfferStates(text: String): Boolean = writeText(RECEIVER_OFFERS_FILE, text)
 
     /** Pin a peer by the fingerprint its TLS certificate presented, tagged with the address it was
      *  met at. peer_id is metadata only, exactly like the PC side: the digest is the anchor. */
