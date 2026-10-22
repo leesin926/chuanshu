@@ -537,6 +537,11 @@ class TransferPanel(QWidget):
         self._receiver: ReceiveService | None = None
         self._discovery: DiscoveryService | None = None
         self._decisions: dict[str, dict] = {}
+        #: The offer cards currently on screen, by the token that asked for them. Only the GUI
+        #: thread reads or writes this, which is what makes an expiring offer able to find its own
+        #: card - the decision holder it lives next to is popped by the server thread the moment it
+        #: stops waiting, and a queued close signal arrives after that.
+        self._offer_cards: dict[str, _OfferDialog] = {}
         self._ask_lock = threading.Lock()
         self._worker: threading.Thread | None = None
         self._staged: list[Path] = []
@@ -1585,7 +1590,7 @@ class TransferPanel(QWidget):
     def _decide(self, manifest: dict, who: str, caller: str) -> bool | Path:
         """Called from a server thread; blocks until the user answers or the offer lapses."""
         token = secrets.token_hex(6)
-        holder = {"answer": False, "event": threading.Event(), "dialog": None}
+        holder = {"answer": False, "event": threading.Event()}
         with self._ask_lock:
             self._decisions[token] = holder
         self._offer_arrived.emit(manifest, who or f"{caller[:12]}…", token)
@@ -1600,10 +1605,7 @@ class TransferPanel(QWidget):
     def _on_offer(self, manifest: dict, who: str, token: str) -> None:
         dialog = _OfferDialog(self, manifest, who)
         dialog.move(self._center_of(dialog))
-        with self._ask_lock:
-            holder = self._decisions.get(token)
-        if holder is not None:
-            holder["dialog"] = dialog
+        self._offer_cards[token] = dialog
         answer: bool | Path = False
         try:
             if dialog.exec() == QDialog.Accepted:
@@ -1611,8 +1613,7 @@ class TransferPanel(QWidget):
                 # transfer alone. Either way the receiver files the batch under its own folder.
                 answer = dialog.parent_dir or True
         finally:
-            if holder is not None:
-                holder["dialog"] = None
+            self._offer_cards.pop(token, None)
             self._resolve(token, answer)
 
     def _center_of(self, dialog: QDialog) -> QPoint:
@@ -1624,11 +1625,14 @@ class TransferPanel(QWidget):
 
     def _close_offer(self, token: str) -> None:
         """Throw away a card whose server thread has already stopped waiting for an answer."""
-        with self._ask_lock:
-            holder = self._decisions.get(token)
-        dialog = None if holder is None else holder.get("dialog")
-        if isinstance(dialog, QDialog):
-            dialog.close()
+        dialog = self._offer_cards.get(token)
+        if dialog is None:
+            return
+        log.info("offer card for %s closed unanswered", token)
+        self.status_label.setText(_("对方的这次发送已经等不到回答，确认框已关闭。"))
+        # done() rather than close(): the card is in a nested modal loop, and this is the call that
+        # both ends it and says which answer it ended with - 拒绝, the only one still true.
+        dialog.done(QDialog.Rejected)
 
     def _resolve(self, token: str, answer: bool | Path) -> None:
         with self._ask_lock:
@@ -2758,12 +2762,12 @@ class TransferPanel(QWidget):
             self._decisions.clear()
         # The window can close while an incoming offer is still on screen, and the server
         # thread holding it is waiting on that answer. Quitting means declining.
-        for holder in pending:
+        for dialog in list(self._offer_cards.values()):
             # The card runs a nested modal loop; dismissing it first is what lets the close
             # finish instead of leaving a dialog whose parent has already been destroyed.
-            dialog = holder.get("dialog")
-            if isinstance(dialog, QDialog):
-                dialog.done(QDialog.Rejected)
+            dialog.done(QDialog.Rejected)
+        self._offer_cards.clear()
+        for holder in pending:
             holder["event"].set()
         self.stop_listening()
         for conn in self._sessions.values():

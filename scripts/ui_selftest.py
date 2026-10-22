@@ -713,6 +713,12 @@ def phase_incoming(app: QApplication, dialog: AutoDialog, panel, sender: Identit
     check("accepted transfer raised nothing", "error" not in outcome, f"{outcome.get('error')} [{outcome.get('where')}]" if "error" in outcome else None)
     verified = (outcome.get("result") or {}).get("verified", [])
     check("receiver verified every file", bool(verified) and all(v["ok"] for v in verified), [v for v in verified if not v["ok"]])
+    # The sender comes back the moment finalize's reply lands, but the list is painted by a queued
+    # slot on the GUI thread, which has not necessarily run yet. Wait for the paint instead of
+    # reading the table at whatever point the two threads happened to be at - a run that counts the
+    # rows too early sees the *previous* transfer's total and calls it a missing arrival.
+    painted = pump_until(app, lambda: len(received_rows(panel)) >= arrivals + len(files), 20.0)
+    check("every verified file was written down on screen", painted, f"{len(received_rows(panel))} of {arrivals + len(files)} rows")
     root = (landing or receive_root()) / conn.offer_id
     bad = [f.relpath for f in files if not (root / f.relpath).is_file() or hashlib.sha256((root / f.relpath).read_bytes()).hexdigest() != f.sha256]
     check("files landed byte-identical where the card said they would", not bad, bad or str(root))
@@ -726,6 +732,77 @@ def phase_incoming(app: QApplication, dialog: AutoDialog, panel, sender: Identit
     check("an arrival names its sender", bool(rows) and rows[0][3] == "Probe-Sender", rows[:1])
     check("an arrival carries its size and time", bool(rows) and rows[0][1] and rows[0][2], rows[:1])
     check("the arrivals list puts the newest first", bool(rows) and files[-1].relpath in rows[0][0], [row[0] for row in rows[:2]])
+
+
+def offer_cards(app: QApplication) -> list:
+    """The fig5 cards on screen right now - the ones a user could still press 接收 on."""
+    return [widget for widget in app.topLevelWidgets() if widget.objectName() == "offer" and widget.isVisible()]
+
+
+def phase_offer_expiry(app: QApplication, dialog: AutoDialog, panel, sender: Identity, files) -> None:
+    """Nobody answers the card, so the card has to leave the screen by itself.
+
+    The server thread stops waiting after ``offer_wait_timeout_s`` + 5 and says so from another
+    thread; the answer it would have read is gone, so a 接收 button still on screen would be a
+    button that can no longer be honoured. The wait is shortened rather than waited out - this
+    phase is about who closes the card, not about how long a person is allowed to think.
+    """
+    arrivals = len(received_rows(panel))
+    conn = PeerConnection(sender, "Probe-Sender", "127.0.0.1", panel._receiver.port, panel.identity.fingerprint)
+    outcome: dict = {}
+
+    def push() -> None:
+        try:
+            conn.hello()
+            conn.pair(panel._receiver.current_pair_code())
+            conn.offer(files)
+        except BaseException as error:  # noqa: BLE001 - whatever the sender saw is the finding
+            outcome["error"] = error
+            outcome["where"] = f"served={_served_fingerprint(panel._receiver.port)}"
+
+    original = panel.proto
+    panel.proto = replace(original, offer_wait_timeout_s=2)
+    thread = threading.Thread(target=push, daemon=True, name="probe-nobody")
+    dialog.expect("expire")
+    #: Cards the probe had to take off screen because the app had not closed them.
+    forced: list[str] = []
+
+    def watchdog() -> None:
+        # A card the app leaves up is not a check this probe can reach: ``exec()`` owns this
+        # thread until it closes, so the run would stop there instead of reporting the leak.
+        for stuck in offer_cards(app):
+            forced.append(stuck.title.text())
+            stuck.done(QDialog.Rejected)
+
+    guard = QTimer(app)
+    guard.setInterval(15_000)
+    guard.timeout.connect(watchdog)
+    guard.start()
+    thread.start()
+    try:
+        # There is no polling for the card and then for its absence: ``exec()`` blocks this thread,
+        # so the one ``processEvents`` call that opens the card does not return until it has been
+        # closed again. What the timer recorded on the way through is the evidence it was asked,
+        # and the sender coming back is the evidence it was answered - by nobody.
+        done = pump_until(app, lambda: not thread.is_alive(), 40.0)
+    finally:
+        guard.stop()
+        panel.proto = original
+    thread.join(timeout=20)
+    card = dialog.last("offer")
+    check("an unanswered offer still asks the user", done and bool(card), f"thread={done} card={card}")
+    check("the card names the files it is asking about", card.get("files") == ["hello.txt", "相册/2026/IMG_大文件.bin", "empty.dat"],
+          card.get("files"))
+    check("nobody answered this card", card.get("clicked") == "", card.get("clicked", ""))
+    gone = not offer_cards(app)
+    check("the card closes itself once the server stopped waiting", gone and not forced,
+          f"{len(offer_cards(app))} card(s) still up" + (f", probe closed {len(forced)}" if forced else ""))
+    check("the status line says why it went", "等不到回答" in panel.status_label.text(), panel.status_label.text())
+    error = outcome.get("error")
+    check("the sender is told the offer was declined", getattr(error, "code", "") == "DECLINED",
+          f"{type(error).__name__}: {error} [{outcome.get('where')}]" if error else "the sender was never answered")
+    check("an expired offer adds nothing to the arrivals list", len(received_rows(panel)) == arrivals,
+          f"{arrivals} -> {len(received_rows(panel))}")
 
 
 def connect_through_ui(app: QApplication, dialog: AutoDialog, panel, port: int, code: str, label: str, manual: bool = False) -> bool:
@@ -1269,6 +1346,7 @@ def main() -> int:
         check("a folder picked on the card leaves the receive root alone", str(receive_root()) != str(SCRATCH / "chosen"),
               f"{receive_root()} vs {SCRATCH / 'chosen'}")
         phase_incoming(app, dialog, panel, pusher, files, accept=False)
+        phase_offer_expiry(app, dialog, panel, pusher, files)
         phase_arrivals(app, window)
         # Each probe that dials in takes the one session slot, so the card has to be cleared
         # before this machine can be the one that dials out.
