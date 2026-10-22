@@ -47,7 +47,9 @@ _CODE_MAX_FAILS = 5
 #: How much of an unconsumed request body an error reply is allowed to swallow.
 _MAX_ERROR_DRAIN = 65536
 
-OfferHandler = Callable[[dict, str, str], bool]
+#: What the UI answers an offer with: false to turn it down, true to take it into the usual
+#: folder under this machine's receive root, or that folder's parent when the user chose one.
+OfferHandler = Callable[[dict, str, str], bool | str | Path]
 #: Fires once an offer has been verified chunk-for-chunk: who sent it, and which files this
 #: machine can now vouch for. Only the UI's answer can say a file was *received* - a directory
 #: listing cannot tell a finished file from one whose tail is still on the wire.
@@ -502,6 +504,10 @@ class ReceiveService:
         files = list(body.get("files", []))
         if not offer_id or not files:
             raise protocol_spec.ProtocolError("UNSUPPORTED_PROTOCOL", {"reason": "offer has no id or files"})
+        # The id names the folder the files land in, so it has to be one component: a peer that
+        # sent "../escape" would otherwise be handed a directory outside the receive root.
+        if Path(offer_id).name != offer_id or offer_id.startswith("."):
+            raise protocol_spec.ProtocolError("UNSUPPORTED_PROTOCOL", {"reason": "offer id is not a folder name"})
         if len(files) > self.proto.limits["max_files_per_offer"]:
             raise protocol_spec.ProtocolError("UNSUPPORTED_PROTOCOL", {"reason": "too many files"})
         restored = self._offers.get(offer_id)
@@ -513,10 +519,13 @@ class ReceiveService:
         # A peer may call itself anything inside the manifest, so the name the user sees
         # comes from the pin list; caller's fingerprint prefix is the only real anchor.
         who = str((entry or {}).get("name") or "")
-        if not self.handler(body, who, caller):
+        answer = self.handler(body, who, caller)
+        if not answer:
             raise protocol_spec.ProtocolError("DECLINED")
-
-        directory = self.root / offer_id
+        # One folder per transfer is what stops two offers of the same file name from truncating
+        # each other, so the folder the user picked is the parent, never the destination.
+        parent = Path(answer) if isinstance(answer, (str, Path)) else self.root
+        directory = parent / offer_id
         directory.mkdir(parents=True, exist_ok=True)
         state = OfferState(offer_id=offer_id, directory=directory, files=files, proto=self.proto, who=who)
         for entry in files:

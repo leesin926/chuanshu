@@ -23,6 +23,12 @@ DEFAULTS: dict = {
     "autostart": False,
     # Empty means <data dir>/received; set it to move incoming files.
     "receive_dir": "",
+    # 传输限速: how fast this machine pushes files out. The switch and the number are kept apart
+    # so turning it back on restores the rate the user last chose.
+    "limit_on": False,
+    "limit_mbps": 10,
+    # 通知: a tray message when a transfer lands, so a minimized window still says it happened.
+    "notify": True,
     # The size the four-page design is drawn for. A saved window is clamped up to the layout's
     # own minimum when the window opens, so this is a starting size, not a floor.
     "window": {"width": 1080, "height": 680},

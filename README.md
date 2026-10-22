@@ -113,11 +113,19 @@ Remove-Item env:QT_QPA_PLATFORM; py scripts/ui_selftest.py      # 真字形 + �
 - 新增语言：`pybabel init -i locale/app.pot -d locale -D app -l ja`，翻译后
   `build.ps1 -Task i18n`，`app/i18n.py` 的 `LANGUAGE_NAMES` 加一项 `ja: 日本語`。
   守卫是扫目录的，所以"建了 .po 但没翻完"和"承诺了但没建目录"两种偷懒都会挡住。
-- **哪些字面量会被抽走**由 `babel.cfg` 的 `keywords` 决定：`_ _n:1,2 N:1 _bind:2 _label:1 _form:1`。
-  设置窗口的文案不是当场翻译，而是存下 msgid 等切语言时再翻（`retranslate()` 重放 `_bound`），
-  所以它们藏在 `_bind(w, "打开日志目录")`、`_label("端口")`、`_form("常规")` 这类调用的参数里，
+- **哪些字面量会被抽走**由 `babel.cfg` 的 `keywords` 决定：`_ _n:1,2 N:1 _bind:2 _switch:1`。
+  设置页的文案不是当场翻译，而是存下 msgid 等切语言时再翻（`retranslate()` 重放 `_bound`），
+  所以它们藏在 `_bind(w, "打开日志目录")`、`_switch("开机自启", …)` 这类调用的参数里，
   还有 `_radios({"auto": N("跟随系统")})` 这种字典值里 —— 不加这几个关键字，Babel 一个都看不见，
   界面切过去就是空白。`N()` 只负责"让抽取器看见"，原样返回字符串。
+- **`name:1,2` 的意思是"第 1 个参数是 msgid，第 2 个是它的复数形式"**，不是"这两个参数都要抽"。
+  所以 `_row(title, note)` / `_block_row(title, note, …)` 不能按 `:1,2` 登记：那样 note 会变成
+  `msgid_plural`，而 gettext 查普通消息时永远不看复数形式，note 就每种语言都显示中文。这两处的
+  标题和说明当场用 `N()` 包起来。
+- **中文 msgid 里，汉字与拉丁字母之间才加空格**：`这个程序跑在 Qt 上` 对，`关于 {app}` 错。
+  msgid 就是中文文案，`{app}` 填进去是「传书」，两个汉字中间塞空格不符合中文排版；设计图写的
+  也是 `关于传书`。英文要的那个空格写在 `en` 的 `msgstr` 里（`About {app}`），msgid 管不着，
+  所以去掉空格不会影响其他语言。
 - **`.probe/` 之类的点目录不进抽取范围**（`babel.cfg` 的 `[ignore: **/.*/**]`）：草稿脚本里也
   写着中文，漏进来就成了会发出去的假文案。
 - **空 `msgstr` 是会漏进产物的 bug，不是回退**：Python 的 gettext 命中空翻译就返回空串，

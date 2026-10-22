@@ -10,7 +10,6 @@ from PySide6.QtCore import QObject, Signal
 from app import icons
 from app.autostart import is_supported, launch_command
 from app.i18n import _
-from app.meta import APP_NAME
 
 log = logging.getLogger(__name__)
 
@@ -20,7 +19,7 @@ class TrayIcon(QSystemTrayIcon):
     quit_requested = Signal()
     autostart_toggled = Signal(bool)
 
-    def __init__(self, parent: QObject, color: str) -> None:
+    def __init__(self, parent: QObject, color: str, app_name: str) -> None:
         super().__init__(parent)
         self.setIcon(icons.button_icon("tray", color))
         # Not `self.menu`: that would shadow QSystemTrayIcon.menu().
@@ -28,7 +27,7 @@ class TrayIcon(QSystemTrayIcon):
         self.action_open = self.context_menu.addAction(_("打开主界面"))
         self.action_autostart = self.context_menu.addAction(_("开机自动启动"))
         self.action_autostart.setCheckable(True)
-        self.action_quit = self.context_menu.addAction(_("退出 {app}").format(app=APP_NAME))
+        self.action_quit = self.context_menu.addAction(_("退出{app}").format(app=app_name))
         self.setContextMenu(self.context_menu)
 
         self.action_open.triggered.connect(self.restore_requested)
@@ -59,7 +58,7 @@ class TrayIcon(QSystemTrayIcon):
         self.setToolTip(app_name)
         self.action_open.setText(_("打开主界面"))
         self.action_autostart.setText(_("开机自动启动"))
-        self.action_quit.setText(_("退出 {app}").format(app=app_name))
+        self.action_quit.setText(_("退出{app}").format(app=app_name))
 
     def restyle(self, color: str) -> None:
         self.setIcon(icons.button_icon("tray", color))
@@ -70,4 +69,13 @@ class TrayIcon(QSystemTrayIcon):
             _("已最小化到托盘，仍在后台运行。\n双击托盘图标可重新打开。"),
             self.icon(),
             4000,
+        )
+
+    def notify_arrival(self, app_name: str, who: str, count: int, size: str) -> None:
+        """One message per finished transfer, so a window nobody is looking at still says it landed."""
+        self.showMessage(
+            app_name,
+            _("收到 {who} 发来的 {n} 个文件（{size}）").format(who=who, n=count, size=size),
+            self.icon(),
+            5000,
         )

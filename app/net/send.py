@@ -60,6 +60,32 @@ class PairNeeded(RuntimeError):
         self.reason = reason
 
 
+class Throttle:
+    """A bytes-per-second budget shared by everything one connection writes.
+
+    It is spent at the seam where the body leaves as TLS records, because that is the only place
+    a transfer is small enough to stop between: a ``sendall`` of a 4 MiB chunk has already handed
+    the whole thing to the socket before anyone can object.
+    """
+
+    #: How far ahead of the clock the bucket may run, in seconds of traffic. Without headroom the
+    #: first record waits out its own transfer time before a single byte is on the wire.
+    BURST_S = 0.5
+
+    def __init__(self, bps: int) -> None:
+        self.bps = max(0, int(bps))
+        self.start = time.monotonic()
+        self.sent = 0
+
+    def spend(self, n: int) -> None:
+        if not self.bps:
+            return
+        self.sent += n
+        allowed = (time.monotonic() - self.start + self.BURST_S) * self.bps
+        if self.sent > allowed:
+            time.sleep((self.sent - allowed) / self.bps)
+
+
 class _Paced:
     """A body http.client reads one record at a time, with a pause between reads.
 
@@ -69,9 +95,10 @@ class _Paced:
     needs. A bytes body would go out in one ``sendall`` and one oversized record.
     """
 
-    def __init__(self, data: bytes, ms: float) -> None:
+    def __init__(self, data: bytes, ms: float, throttle: Throttle | None = None) -> None:
         self.data = data
         self.ms = ms / 1000.0
+        self.throttle = throttle
         self.at = 0
 
     def read(self, size: int) -> bytes:
@@ -79,6 +106,8 @@ class _Paced:
             time.sleep(self.ms)
         piece = self.data[self.at:self.at + size]
         self.at += len(piece)
+        if self.throttle is not None:
+            self.throttle.spend(len(piece))
         return piece
 
 
@@ -157,6 +186,9 @@ class PeerConnection:
         self.peer: dict = {}
         self.offer_id = ""
         self.pace_ms = PACE_MS_LADDER[0]
+        #: None means the wire runs as fast as the peer will take it. The UI owns this value: it is
+        #: the 传输限速 switch, read again before every transfer.
+        self.throttle: Throttle | None = None
         self.hello_read = False
         self._conn: http.client.HTTPSConnection | None = None
 
@@ -201,7 +233,7 @@ class PeerConnection:
                 # sendall, which OpenSSL turns into 16 KiB records, and a 16 KiB record is enough to
                 # kill a Harmony peer. Read in blocksize pieces and each piece becomes its own record,
                 # and when the pipe has proven it cannot drain that, one record per `pace_ms`.
-                writer = io.BytesIO(body) if not pace_ms else _Paced(body, pace_ms)
+                writer = _Paced(body, pace_ms, self.throttle) if (pace_ms or self.throttle) else io.BytesIO(body)
                 conn.request(method, path, body=writer if body else None, headers=merged)
                 response = conn.getresponse()
                 raw = response.read()

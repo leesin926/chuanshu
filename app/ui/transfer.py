@@ -18,30 +18,42 @@ import secrets
 import socket
 import threading
 import time
+from collections import Counter
 from pathlib import Path
 
 import qrcode
 from qrcode.image.svg import SvgPathImage
-from PySide6.QtCore import QUrl, Qt, QTimer, Signal
-from PySide6.QtGui import QDesktopServices, QImage, QPainter, QPalette, QPixmap
+from PySide6.QtCore import QPoint, QSize, QUrl, Qt, QTimer, Signal
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QDesktopServices,
+    QImage,
+    QPainter,
+    QPalette,
+    QPixmap,
+    QAction,
+)
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
     QFrame,
+    QGraphicsDropShadowEffect,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
     QLabel,
+    QLayout,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
-    QMessageBox,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QStackedWidget,
     QTreeWidget,
     QTreeWidgetItem,
@@ -49,15 +61,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app import icons
 from app.config import Settings
-from app.i18n import _
+from app.i18n import _, N
 from app.net import errors as proto_errors
 from app.net import spec as protocol_spec
 from app.net.discovery import DiscoveryService, Peer, local_ipv4, verify_peer
 from app.net.identity import load_or_create
 from app.net.receive import ReceiveService
-from app.net.send import PairNeeded, PeerConnection, plan
+from app.net.send import PairNeeded, PeerConnection, Throttle, plan
 from app.paths import identity_dir, receive_root, user_data_dir
+from app.ui import theme
 
 log = logging.getLogger(__name__)
 
@@ -73,6 +87,32 @@ QR_SIZE = 224
 _ARRIVALS_KEPT = 500
 #: How many finished task rows the 传输 page remembers from this session.
 _TASK_HISTORY_KEPT = 12
+#: How many finished arrivals the 传输 page's card shows beside the transfers in flight.
+_TASK_CARD_ROWS = 3
+#: How wide the 附近设备 row is. The mockup draws three cards across; a fourth would make each
+#: one narrower than a device name.
+_NEARBY_COLUMNS = 3
+
+#: Stack positions. The rail shows five of these; 传输记录 is the sixth and is reached from the
+#: dashboard's own card, because the mockups put the record list behind a "查看全部" rather than
+#: in the navigation.
+PAGE_TRANSFER = 0
+PAGE_SEND = 1
+PAGE_RECEIVE = 2
+PAGE_FILES = 3
+PAGE_HISTORY = 4
+PAGE_SETTINGS = 5
+
+#: The four pills the 传输记录 mockup draws, in the order it draws them. N() because the chip
+#: text is looked up from the dict and handed to _() at run time: a bare literal here is invisible
+#: to Babel, and an absent catalogue entry falls back to the Chinese, so every language would
+#: show 全部/进行中 on an English pill.
+_HISTORY_FILTER_LABELS = {
+    "all": N("全部"),
+    "running": N("进行中"),
+    "done": N("已完成"),
+    "failed": N("失败"),
+}
 
 
 def _split_addr(text: str, default_port: int, scheme: str) -> tuple[str, int, str]:
@@ -93,12 +133,21 @@ def _split_addr(text: str, default_port: int, scheme: str) -> tuple[str, int, st
 
 
 def _human(size: int) -> str:
+    """The mockups write 128MB, not 128.0 MB: no space, and no decimal that says "exactly".
+
+    A whole number is dropped to zero decimals, so 456KB does not come out as 456.0KB.
+    """
     value = float(size)
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if value < 1024 or unit == "TB":
-            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+            if unit == "B":
+                return f"{value:.0f}{unit}"
+            text = f"{value:.1f}"
+            if text.endswith(".0"):
+                text = text[:-2]
+            return f"{text}{unit}"
         value /= 1024
-    return f"{size} B"
+    return f"{size}B"
 
 
 def _arrivals_file() -> Path:
@@ -111,7 +160,22 @@ def _arrivals_file() -> Path:
 
 
 def _when(stamp: float) -> str:
-    return time.strftime("%Y-%m-%d %H:%M", time.localtime(stamp))
+    """How long ago, in the words the mockup writes.
+
+    The exact timestamp is the row's tooltip instead: a column that only ever says 上周 cannot be
+    reconciled with a calendar, and one that says 2026-10-13 09:41 cannot be scanned. The column
+    gets the scannable one, the pointer gets the precise one.
+    """
+    days = max(0, int((time.time() - stamp) // 86_400))
+    if days == 0:
+        return _("今天")
+    if days == 1:
+        return _("昨天")
+    if days < 7:
+        return _("{n}天前").format(n=days)
+    if days < 14:
+        return _("上周")
+    return _("{n}周前").format(n=days // 7)
 
 
 def _qr_pixmap(text: str) -> QPixmap:
@@ -144,6 +208,49 @@ class _ArrivalRow(QTreeWidgetItem):
         if type(mine) is type(theirs):
             return bool(mine < theirs)
         return str(mine) < str(theirs)
+
+
+def _flush_minimum_cache(widget: QWidget) -> None:
+    """Tell every layout under a widget that its cached minimum is no longer the one to believe.
+
+    A layout recomputes its minimum only when a queued LayoutRequest event arrives, so a caption
+    written moments ago is still worth its old width in the number a parent reads. invalidate()
+    clears one layout and no more: the rows inside a card are layouts of their own, so the whole
+    tree has to be told before any measurement taken during a language switch means anything.
+    """
+    for layout in [widget.layout(), *widget.findChildren(QLayout)]:
+        if layout is not None:
+            layout.invalidate()
+
+
+#: The width the mockups give the narrow right-hand cards (已连接设备 on 传输, 我的设备 on 接收).
+#: It is a floor, not a cap: a language whose longest caption on that card needs more than this
+#: takes it, so the layout never pays for the design out of a button's text.
+COLUMN = 300
+
+#: QWIDGETSIZE_MAX, which PySide6 does not export. A pinned width is lifted to this so that a
+#: layout reports the minimum its content wants rather than the pin it was given.
+_ANY_WIDTH = (1 << 24) - 1
+
+
+class _TightList(QListWidget):
+    """A device or task list that never asks for more height than it can shrink to.
+
+    QAbstractScrollArea answers sizeHint with a 192px placeholder when it cannot judge its rows,
+    and a layout treats a height-for-width card as worth whatever its children's sizeHints sum to
+    - not their minimums. One list in a card therefore cost the window 118px of minimum height,
+    three times over the pages, against mockups that fit in a window a third shorter.
+    """
+
+    def sizeHint(self) -> QSize:
+        return self.minimumSizeHint()
+
+
+class _TightTree(QTreeWidget):
+    """The same deal for the two columned tables, which inherit the same placeholder."""
+
+    def sizeHint(self) -> QSize:
+        return self.minimumSizeHint()
 
 
 class _CandidateDialog(QDialog):
@@ -245,15 +352,169 @@ class _CandidateDialog(QDialog):
         self.accept()
 
 
+class _OfferDialog(QDialog):
+    """fig5: the card a phone's files arrive behind.
+
+    Frameless and rounded because the design draws no title bar - the question is one sentence
+    and there are two answers. It sits in the middle of the window and does not move; Esc is 拒绝
+    and Enter is 接收, which is what a keyboard needs in place of a drag bar.
+
+    浏览 chooses the folder this one transfer is filed under, not the receive root: the root is a
+    setting that outlives the offer, and a dialog that quietly changed it would be answering a
+    question the user never asked.
+    """
+
+    #: Past this many files the card would be taller than the window it is answering for, so the
+    #: rest are counted out loud instead of listed.
+    SHOWN = 8
+
+    def __init__(self, panel: TransferPanel, manifest: dict, who: str) -> None:
+        super().__init__(panel.window())
+        self.panel = panel
+        self.offer_id = str(manifest.get("offer_id", ""))
+        #: The folder the user picked for this transfer; None means this machine's receive root.
+        self.parent_dir: Path | None = None
+        #: The acceptance harness finds this card by name; nothing in the stylesheet does.
+        self.setObjectName("offer")
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        # Without this the 24px radius comes out as four black corners: a translucent top-level
+        # is what lets the QSS rounded sheet be the whole window.
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setWindowTitle(_("收到来自 {who} 的文件").format(who=who))
+        self.setFixedWidth(677)
+
+        shell = QVBoxLayout(self)
+        shell.setContentsMargins(18, 18, 18, 18)
+        card = QFrame(self)
+        card.setObjectName("OfferCard")
+        shell.addWidget(card)
+        shadow = QGraphicsDropShadowEffect(card)
+        shadow.setBlurRadius(48)
+        shadow.setOffset(0, 6)
+        shadow.setColor(QColor(0, 0, 0, 70))
+        card.setGraphicsEffect(shadow)
+
+        box = QVBoxLayout(card)
+        box.setContentsMargins(28, 26, 28, 24)
+        box.setSpacing(16)
+
+        self.title = QLabel(_("收到来自 {who} 的文件").format(who=who), card)
+        self.title.setObjectName("OfferTitle")
+        # Wrapping: the name a peer chose for itself is up to 40 characters, and in the wider
+        # languages the sentence around it is longer still. A clipped title would hide who is
+        # asking - the one word that decides the answer.
+        self.title.setWordWrap(True)
+        box.addWidget(self.title)
+
+        files = list(manifest.get("files", []))
+        #: The names the card lists, for the acceptance harness to read back.
+        self.names: list[str] = []
+        listing = QFrame(card)
+        listing.setObjectName("OfferFiles")
+        rows = QVBoxLayout(listing)
+        rows.setContentsMargins(18, 0, 18, 0)
+        rows.setSpacing(0)
+        for index, file in enumerate(files[: self.SHOWN]):
+            if index:
+                line = QFrame(listing)
+                line.setObjectName("Hairline")
+                line.setFixedHeight(1)
+                rows.addWidget(line)
+            name = str(file.get("relpath") or _("（无名文件）"))
+            self.names.append(name)
+            rows.addWidget(self._file_row(listing, name, int(file.get("size") or 0)))
+        box.addWidget(listing)
+        if len(files) > self.SHOWN:
+            more = QLabel(_("…还有 {n} 个文件没有列出").format(n=len(files) - self.SHOWN), card)
+            more.setObjectName("MutedOnCard")
+            box.addWidget(more)
+
+        where = QHBoxLayout()
+        where.setSpacing(10)
+        tag = QLabel(_("保存到"), card)
+        tag.setObjectName("Tag")
+        self.dir_field = QLineEdit(card)
+        self.dir_field.setObjectName("PathField")
+        self.dir_field.setReadOnly(True)
+        self.browse_button = QPushButton(_("浏览"), card)
+        self.browse_button.setObjectName("Ghost")
+        self.browse_button.clicked.connect(self._choose_dir)
+        where.addWidget(tag)
+        where.addWidget(self.dir_field, 1)
+        where.addWidget(self.browse_button)
+        box.addLayout(where)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        self.decline_button = QPushButton(_("拒绝"), card)
+        self.decline_button.setObjectName("Secondary")
+        self.decline_button.clicked.connect(self.reject)
+        # One msgid with the rail entry, because the mockup writes 接收 in both places. gettext
+        # cannot tell them apart, so the wording has to read as a page name and as a button.
+        self.accept_button = QPushButton(_("接收"), card)
+        self.accept_button.setDefault(True)
+        self.accept_button.clicked.connect(self.accept)
+        buttons.addWidget(self.decline_button)
+        buttons.addWidget(self.accept_button)
+        box.addLayout(buttons)
+        self._sync_dir()
+
+    def _file_row(self, parent: QWidget, relpath: str, size: int) -> QWidget:
+        row = QWidget(parent)
+        line = QHBoxLayout(row)
+        line.setContentsMargins(0, 12, 0, 12)
+        line.setSpacing(12)
+        mark = QLabel(row)
+        glyph = self.panel._KIND_GLYPH.get(self.panel._file_kind(relpath), "file-unknown")
+        mark.setPixmap(icons.pixmap(glyph, self.panel._p.accent, 22))
+        mark.setFixedWidth(24)
+        mark.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+        name = QLabel(relpath, row)
+        name.setWordWrap(True)
+        bytes_ = QLabel(_human(size), row)
+        bytes_.setObjectName("MutedOnCard")
+        bytes_.setAlignment(Qt.AlignRight | Qt.AlignTop)
+        line.addWidget(mark)
+        line.addWidget(name, 1)
+        line.addWidget(bytes_)
+        return row
+
+    def landing_dir(self) -> Path:
+        """Where these files will be written: one folder per transfer, under the chosen parent."""
+        return (self.parent_dir or receive_root()) / self.offer_id
+
+    def _sync_dir(self) -> None:
+        self.dir_field.setText(str(self.landing_dir()))
+
+    def _choose_dir(self) -> None:
+        chosen = QFileDialog.getExistingDirectory(self, _("选择这次存放的文件夹"), str(self.parent_dir or receive_root()))
+        if chosen:
+            self.parent_dir = Path(chosen)
+            self._sync_dir()
+
+    def keyPressEvent(self, event) -> None:
+        # A frameless card has no close box, so the two ways out have to be the two keys that
+        # mean them. Esc already rejects through the default QDialog behaviour.
+        if event.key() in (Qt.Return, Qt.Key_Enter):
+            self.accept()
+            return
+        super().keyPressEvent(event)
+
+
 class _Cancelled(Exception):
     """Raised inside the send worker when 取消 is pressed on its row."""
 
-
 class TransferPanel(QWidget):
     _offer_arrived = Signal(dict, str, str)  # manifest, who, token
+    #: The server thread gave up waiting. The card is still on screen and the user has not
+    #: answered, so it has to go - a 接收 button that can no longer be honoured is a lie.
+    _offer_expired = Signal(str)  # token
     _peers_changed = Signal()  # emitted from discovery threads
     _progressed = Signal(int, int, str)  # chunks done, chunks total, current file
     _finished = Signal(bool, str)
+    #: A transfer finished and every byte of it verified. The window turns this into a tray
+    #: message, which is the only way a minimized app can say a file arrived.
+    arrived = Signal(str, int, str)  # who, count, human size
     #: A finished handshake arrives with its live session: sending to a device the user just
     #: connected to must not spend a second pair on the way.
     _connected_ok = Signal(object, object)  # peer, PeerConnection
@@ -318,6 +579,7 @@ class TransferPanel(QWidget):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh_pairing)
         self._offer_arrived.connect(self._on_offer)
+        self._offer_expired.connect(self._close_offer)
         self._peers_changed.connect(self._refresh_peers)
         self._progressed.connect(self._on_progress)
         self._finished.connect(self._on_finished)
@@ -333,7 +595,7 @@ class TransferPanel(QWidget):
     # ------------------------------------------------------------------ widgets
 
     def _build(self) -> None:
-        """Three pages the rail can switch between, all owned by this widget.
+        """Five pages the rail can switch between, plus the record list behind the dashboard.
 
         Every control keeps its old attribute name: the acceptance script reaches the window
         through these objects, and a rename would turn a passing run into a missing widget.
@@ -343,9 +605,12 @@ class TransferPanel(QWidget):
         outer.setSpacing(0)
         self.stack = QStackedWidget(self)
         self.page_transfer = self._build_transfer_page()
-        self.page_devices = self._build_devices_page()
+        self.page_send = self._build_send_page()
+        self.page_devices = self._build_receive_page()
         self.page_files = self._build_files_page()
-        for page in (self.page_transfer, self.page_devices, self.page_files):
+        self.page_history = self._build_history_page()
+        for page in (self.page_transfer, self.page_send, self.page_devices,
+                     self.page_files, self.page_history):
             self.stack.addWidget(page)
         outer.addWidget(self.stack, 1)
 
@@ -355,6 +620,95 @@ class TransferPanel(QWidget):
         outer.addWidget(self.status_label)
 
         self.setAcceptDrops(True)
+
+    def _card(
+        self, box_in: QVBoxLayout | QHBoxLayout, heading_id: str = "", stretch: int = 0
+    ) -> tuple[QFrame, QLabel | None]:
+        """A white sheet laid on the page, with the mockups' 16px corner and 20px padding.
+
+        `heading_id` is a msgid rather than a string because every caption here has to survive
+        a language switch, so the label is handed back for retranslate() to write.
+        """
+        card = QFrame(self)
+        card.setObjectName("Card")
+        box = QVBoxLayout(card)
+        box.setContentsMargins(20, 18, 20, 18)
+        box.setSpacing(10)
+        heading = None
+        if heading_id:
+            heading = QLabel(card)
+            heading.setObjectName("SectionTitle")
+            heading.setProperty("msgid", heading_id)
+            box.addWidget(heading)
+        box_in.addWidget(card, stretch)
+        return card, heading
+
+    #: Protocol v1 carries no device class, so the glyph is guessed from the name the peer
+    #: chose for itself - decoration beside a name the user can read, not a claim about it.
+    _MOBILE_HINTS = ("手机", "平板", "phone", "iphone", "ipad", "android", "harmony", "hongmeng", "pixel", "mate")
+
+    def _peer_kind(self, peer: Peer) -> str:
+        name = (peer.name or peer.prefix or peer.host).lower()
+        return "phone" if any(hint in name for hint in self._MOBILE_HINTS) else "desktop"
+
+    def _device_row(self, name: str, status: str, kind: str, online: bool, sub: str = "") -> QFrame:
+        """One device, drawn the way the mockups draw it: a tinted tile, a name, a status dot.
+
+        The row is a widget rather than a text item because the list it sits in has to answer
+        clicks and keyboard focus, and the picture wants three columns of type inside one row.
+        """
+        p = self._p
+        row = QFrame()
+        row.setObjectName("DeviceRow")
+        box = QHBoxLayout(row)
+        box.setContentsMargins(10, 8, 10, 8)
+        box.setSpacing(10)
+        tile = QLabel(row)
+        tile.setObjectName("DeviceTile")
+        tile.setFixedSize(40, 40)
+        tile.setAlignment(Qt.AlignCenter)
+        tile.setPixmap(icons.pixmap(kind, p.accent, 22))
+        box.addWidget(tile)
+        words = QVBoxLayout()
+        words.setSpacing(1)
+        label = QLabel(row)
+        label.setObjectName("DeviceName")
+        label.setText(name)
+        words.addWidget(label)
+        if sub:
+            detail = QLabel(row)
+            detail.setObjectName("MutedOnCard")
+            detail.setText(sub)
+            words.addWidget(detail)
+        box.addLayout(words, 1)
+        dot = QLabel(row)
+        dot.setText(f'<span style="color:{p.ok_dot if online else p.off_dot}">●</span>'
+                    f' <span style="color:{p.ok if online else p.text_muted}">{status}</span>')
+        dot.setTextFormat(Qt.RichText)
+        box.addWidget(dot)
+        row.setAccessibleName(" ".join(part for part in (name, status, sub) if part))
+        return row
+
+    def _header(self, box_in: QVBoxLayout, title_id: str, sub_id: str = "") -> tuple[QLabel, QLabel | None]:
+        """A page's own title line: the big name, and the quiet sentence beside it."""
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        title = QLabel(self)
+        title.setObjectName("PageTitle")
+        title.setProperty("msgid", title_id)
+        row.addWidget(title)
+        sub = None
+        if sub_id:
+            sub = QLabel(self)
+            sub.setObjectName("PageSub")
+            sub.setProperty("msgid", sub_id)
+            sub.setWordWrap(True)
+            row.addWidget(sub, 1)
+        else:
+            row.addStretch(1)
+        box_in.addLayout(row)
+        box_in.addSpacing(6)
+        return title, sub
 
     def add_page(self, page: QWidget) -> int:
         """Let the window contribute a rail page. 设置 lives here, not in a second window."""
@@ -367,14 +721,43 @@ class TransferPanel(QWidget):
         return self.stack.currentIndex()
 
     def fit_pages(self) -> None:
-        """Ask every page what height its sentences need at the width the rail leaves them.
+        """Ask every page what width it needs and what height its sentences need at that width.
 
-        A stacked widget sizes itself on the biggest page minimum it is given, and a minimum
-        hint counts a wrapping label as one line. At the narrowest width the stack can reach a
-        caption needs more lines than that, and the layout paid for the difference out of the
-        buttons' height. Measuring at that width is the worst case, because the window cannot
-        go narrower than the widest page.
+        Called from a language switch, when the window has to re-derive its own floor. The second
+        pass is not a belt-and-braces repeat: a stylesheet lands as an event, and until it has, a
+        card reports its minimum *without* the padding the theme gives it - a pin 40px too narrow
+        for the same words. Because an explicit minimum replaces the stack's own hint for the
+        layout above it, that too-low number is exactly what the window then obeys, and the pages
+        pay for it out of their buttons' width. So measure now, and measure once more when the
+        tick that carries the polish has run.
         """
+        self._pin_to_content()
+        QTimer.singleShot(0, self._pin_to_content)
+
+    def _pin_to_content(self) -> None:
+        # A stacked widget sizes itself on the page that is on screen, so the window's floor would
+        # be whatever page happened to be open when the layout was activated - and a page opened
+        # later would find itself narrower than its own minimum. Pinning the widest page's floor
+        # is what makes the promise below true: the stack can never be narrower than the widest page.
+        for index in range(self.stack.count()):
+            _flush_minimum_cache(self.stack.widget(index))
+        self._fit_columns()
+        widest = 0
+        for index in range(self.stack.count()):
+            page = self.stack.widget(index)
+            # A layout caches the minimum it computed last time and only drops the cache when the
+            # queued LayoutRequest event is processed, which is after this call: asked during a
+            # language switch it answers with the previous language's number, and pinning the
+            # stack to that leaves every page narrower than its own words. invalidate() clears one
+            # layout and no more - the rows inside a card are layouts of their own - so the whole
+            # tree under the page has to be told before any number is read.
+            _flush_minimum_cache(page)
+            widest = max(widest, page.minimumSizeHint().width())
+        if widest:
+            self.stack.setMinimumWidth(widest)
+        # A minimum hint counts a wrapping label as one line. At the narrowest width the stack
+        # can reach a caption needs more lines than that, and the layout paid for the difference
+        # out of the buttons' height, so measure the height at the floor the width now has.
         width = self.stack.minimumSizeHint().width()
         need = 0
         for index in range(self.stack.count()):
@@ -387,30 +770,76 @@ class TransferPanel(QWidget):
         if need:
             self.stack.setMinimumHeight(need)
 
+    def _fit_columns(self) -> None:
+        """Give the two design-fixed cards the width their own captions need, and no more.
+
+        Chinese keeps the mockup's 300px to the pixel. Russian asks for three more, and a card
+        that refuses them takes them out of the button inside it - which is the one way this
+        window can render a control narrower than its own text.
+        """
+        for card in (self.peer_card, self.mine_box):
+            _flush_minimum_cache(card)
+            # Reading the hint while the width is pinned answers with the pin, not the content,
+            # because a layout clamps its own minimum against the widget's fixed size.
+            card.setMaximumWidth(_ANY_WIDTH)
+            card.setFixedWidth(max(COLUMN, card.minimumSizeHint().width()))
+
     # ----------------------------------------------------------------- 传输 page
 
     def _build_transfer_page(self) -> QWidget:
+        """The dashboard the mockups call 传输: drop here, who is on the other end, what moved.
+
+        Sending itself lives on 发送. This page only stages, because the picture that matches
+        the design is the one where the drop box is the biggest thing on screen.
+        """
         page = QWidget(self)
         page.setObjectName("TransferPage")
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
-        title = QLabel()
-        title.setObjectName("PageTitle")
-        self.page_title_transfer = title
+        layout.setSpacing(14)
+        self.page_title_transfer, self.page_sub_transfer = self._header(
+            layout, "传书 - 文件互传", "文件放在这里，拖进来就能发给连上的设备。"
+        )
 
-        # The drop box is the whole top of the page: dropping is the way anyone actually moves
+        top = QHBoxLayout()
+        top.setSpacing(14)
+        drop_card, _heading = self._card(top, stretch=1)
+        drop_card.setMinimumHeight(240)
+        drop_box = drop_card.layout()
+        drop_box.setContentsMargins(20, 22, 20, 20)
+        drop_box.setSpacing(8)
+
+        # The drop box is the whole left half of the page: dropping is the way anyone actually moves
         # files, and the two pickers are what a keyboard-only user has instead.
-        self.drop_box = QFrame(page)
+        self.drop_box = QFrame(drop_card)
         self.drop_box.setObjectName("DropZone")
         drop_layout = QVBoxLayout(self.drop_box)
-        drop_layout.setContentsMargins(18, 20, 18, 16)
+        drop_layout.setContentsMargins(18, 26, 18, 26)
+        drop_layout.setSpacing(6)
+        self.drop_icon = QLabel(self.drop_box)
+        self.drop_icon.setObjectName("DropIcon")
+        # The mockup's circle is the pale blue of a tile, not a drawn ring: the arrow inside it
+        # is what carries the accent, so the disc is painted here and the glyph is stroked there.
+        self.drop_icon.setFixedSize(72, 72)
+        self.drop_icon.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
         self.drop_big = QLabel()
         self.drop_big.setObjectName("DropBig")
         self.drop_big.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+        # Wrapping, not clipping: the mockup's line is short Chinese, but every other language
+        # puts a longer sentence here, and a label without word wrap answers that by cutting the
+        # tail off the one instruction on the page.
+        self.drop_big.setWordWrap(True)
         self.drop_hint = QLabel()
         self.drop_hint.setObjectName("DropHint")
         self.drop_hint.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+        self.drop_hint.setWordWrap(True)
+        # The two lines inside the dashed box are the mockup's, and they only say what to drop.
+        # That nothing lands until the peer says yes is the one thing about this button a user
+        # can be surprised by, so it keeps its own line under the pickers rather than being cut.
+        self.drop_note = QLabel()
+        self.drop_note.setObjectName("Muted")
+        self.drop_note.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+        self.drop_note.setWordWrap(True)
         self.pick_files_button = QPushButton()
         self.pick_files_button.setObjectName("Inline")
         self.pick_files_button.clicked.connect(lambda: self._stage(kind="files"))
@@ -426,17 +855,95 @@ class TransferPanel(QWidget):
         pickers.addWidget(self.pick_dir_button)
         pickers.addWidget(self.clear_stage_button)
         pickers.addStretch(1)
-        self.stage_label = QLabel()
-        self.stage_label.setObjectName("Muted")
-        self.stage_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+        drop_layout.addWidget(self.drop_icon)
+        # A fixed-size widget in a vertical layout sits at the left unless told otherwise, and
+        # the mockup draws the disc on the box's centre line.
+        drop_layout.setAlignment(self.drop_icon, Qt.AlignHCenter)
         drop_layout.addWidget(self.drop_big)
         drop_layout.addWidget(self.drop_hint)
         drop_layout.addLayout(pickers)
-        drop_layout.addWidget(self.stage_label)
+        drop_layout.addWidget(self.drop_note)
+        drop_box.addWidget(self.drop_box, 1)
 
-        # Which device this is going to, and what that device asked us to write at. The pace
-        # line exists because a paced transfer looks exactly like a slow network from here.
-        self.peer_now_box = QGroupBox(page)
+        # ---- who is on the other end ----
+        peer_card, self.peer_card_title = self._card(top, "已连接设备")
+        self.peer_card = peer_card
+        peer_card.setFixedWidth(COLUMN)
+        peer_box = peer_card.layout()
+        self.peer_list = _TightList(peer_card)
+        self.peer_list.setObjectName("DeviceList")
+        # Host:port plus a name is wider than the column; elide it instead of letting the
+        # list grow a horizontal scrollbar that hides half of every row behind it.
+        self.peer_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.peer_list.currentItemChanged.connect(lambda *_: self._sync_buttons())
+        # The empty state reads under the heading, not under the list: an empty list is zero
+        # high, so a note placed after it would fall to the bottom of the card and look like a
+        # caption for 扫码连接.
+        self.peer_note = QLabel()
+        self.peer_note.setObjectName("Muted")
+        self.peer_note.setWordWrap(True)
+        peer_box.addWidget(self.peer_note)
+        peer_box.addWidget(self.peer_list, 1)
+        # The mockups' one way in is the picture a phone camera reads, so it is the card's
+        # primary action; typing an address by hand stays available one page over.
+        self.scan_button = QPushButton(peer_card)
+        self.scan_button.setObjectName("Pill")
+        self.scan_button.clicked.connect(lambda: self.show_page(PAGE_RECEIVE))
+        peer_box.addWidget(self.scan_button)
+        layout.addLayout(top, 1)
+
+        # Which device this is going to, and what that device asked us to write at, live on
+        # 发送: this page only ever stages the files.
+
+        record_card, _heading = self._card(layout, stretch=1)
+        head = QHBoxLayout()
+        self.task_title = QLabel(record_card)
+        self.task_title.setObjectName("SectionTitle")
+        head.addWidget(self.task_title)
+        head.addStretch(1)
+        self.show_history_button = QPushButton(record_card)
+        self.show_history_button.setObjectName("Ghost")
+        self.show_history_button.clicked.connect(lambda: self.show_page(PAGE_HISTORY))
+        head.addWidget(self.show_history_button)
+        record_card.layout().addLayout(head)
+        # One row per transfer in flight: name, bar, speed, cancel. The protocol only lets one
+        # peer hold the slot at a time, so this list holds at most the send under way plus the
+        # offer someone else dialled in and we are still deciding about.
+        self.task_list = _TightList(record_card)
+        self.task_list.setObjectName("TaskList")
+        self.task_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        record_card.layout().addWidget(self.task_list)
+        # Arrivals that this session did not send sit under the live rows so the card is the
+        # same answer on both pages: what moved through 传书, newest first. This one takes the
+        # slack - the live list must not, or an idle card pushes yesterday's files off the bottom.
+        self.recent_list = _TightList(record_card)
+        self.recent_list.setObjectName("RecordList")
+        self.recent_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.recent_list.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        record_card.layout().addWidget(self.recent_list, 1)
+        return page
+
+    # ------------------------------------------------------------------ 发送 page
+
+    def _build_send_page(self) -> QWidget:
+        """What is staged, where it is going, and the one button that starts it.
+
+        The drop box stays on 传输, where the mockups draw it. This page is the part of the flow
+        that needs room to say something: which device holds the slot, and what it asked us to
+        write at.
+        """
+        page = QWidget(self)
+        page.setObjectName("SendPage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+        self.page_title_send, self.page_sub_send = self._header(layout, "发送", "文件在「传输」页拖进来；这一页决定它去哪。")
+
+        # The pace line exists because a paced transfer looks exactly like a slow network here.
+        card, self.send_target_title = self._card(layout, "目标设备")
+        self.peer_now_box = QGroupBox(card)
+        self.peer_now_box.setObjectName("Block")
+        self.peer_now_box.setTitle("")
         now_layout = QVBoxLayout(self.peer_now_box)
         self.peer_now_label = QLabel()
         self.peer_now_label.setWordWrap(True)
@@ -445,146 +952,181 @@ class TransferPanel(QWidget):
         self.pace_label.setWordWrap(True)
         now_layout.addWidget(self.peer_now_label)
         now_layout.addWidget(self.pace_label)
+        card.layout().addWidget(self.peer_now_box)
 
-        self.task_title = QLabel()
-        self.task_title.setObjectName("SectionTitle")
-        # One row per transfer in flight: name, bar, speed, cancel. The protocol only lets one
-        # peer hold the slot at a time, so this list holds at most the send under way plus the
-        # offer someone else dialled in and we are still deciding about.
-        self.task_list = QListWidget()
-        self.task_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.progress = QProgressBar()
+        card2, self.send_stage_title = self._card(layout, "这次发什么")
+        self.stage_label = QLabel(card2)
+        self.stage_label.setObjectName("Muted")
+        self.stage_label.setWordWrap(True)
+        card2.layout().addWidget(self.stage_label)
+        self.progress = QProgressBar(card2)
+        self.progress.setObjectName("Slim")
+        # The 6px rail is the stylesheet's, but a pinned height is what tells the layout and the
+        # selftest that this bar is meant to be thinner than a widget's default floor.
+        self.progress.setFixedHeight(6)
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.progress.setTextVisible(True)
         self.send_button = QPushButton()
         self.send_button.clicked.connect(self._start_send)
         self.send_button.setEnabled(False)
-
-        layout.addWidget(title)
-        layout.addWidget(self.drop_box)
-        layout.addWidget(self.peer_now_box)
-        layout.addWidget(self.task_title)
-        layout.addWidget(self.task_list, 1)
-        layout.addWidget(self.progress)
-        layout.addWidget(self.send_button)
+        card2.layout().addWidget(self.progress)
+        card2.layout().addWidget(self.send_button)
+        layout.addStretch(1)
         return page
 
-    # ----------------------------------------------------------------- 设备 page
+    # ----------------------------------------------------------------- 接收 page
 
-    def _build_devices_page(self) -> QWidget:
+    def _build_receive_page(self) -> QWidget:
+        """The mockups' 扫码连接手机 page: the picture, this machine's facts beside it, then
+        who is out there.
+
+        The QR and 我的设备 share a row on purpose. Stacked, the page's own minimum height went
+        past what the window is designed to open at, and the picture - the one thing another
+        device has to read from across a desk - is what should be setting that height.
+        """
         page = QWidget(self)
         page.setObjectName("DevicesPage")
-        grid = QGridLayout(page)
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(14)
-        # Both cards want roughly the same width: the left one is bounded by the QR plus
-        # the code beside it, the right one by its row of buttons.
-        grid.setColumnStretch(0, 1)
-        grid.setColumnStretch(1, 1)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+        self.page_title_receive, self.page_sub_receive = self._header(
+            layout, "扫码连接手机", "请使用传书手机端扫描二维码完成连接"
+        )
+        top = QHBoxLayout()
+        top.setSpacing(14)
 
-        # ---- my device (receiving) ----
-        mine = QGroupBox(self)
+        # ---- the picture, with the two secrets it carries beside it ----
+        qr_card, _heading = self._card(top, stretch=1)
+        self.qr_label = QLabel(qr_card)
+        self.qr_label.setObjectName("QrBox")
+        self.qr_label.setFixedSize(QR_SIZE + 8, QR_SIZE + 8)
+        self.qr_label.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+        self.qr_label.setToolTip(_("让对方扫这个码，就能带着配对码和密码连过来。"))
+        self.code_label = QLabel(qr_card)
+        self.code_label.setObjectName("PairCode")
+        self.code_label.setWordWrap(True)
+        # Both secrets are read out loud to whoever is on the other side of the desk, so the
+        # passphrase gets the same size as the code instead of a footnote.
+        self.pass_label = QLabel(qr_card)
+        self.pass_label.setObjectName("PairCode")
+        self.pass_label.setWordWrap(True)
+        self.pass_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        secrets_column = QVBoxLayout()
+        secrets_column.setSpacing(4)
+        secrets_column.addWidget(self.code_label)
+        secrets_column.addWidget(self.pass_label)
+        # Under the picture, not beside it. The card has to survive the narrowest window the
+        # rail leaves it, and a fixed 232px QR plus a column of text next to it does not.
+        pairing = QVBoxLayout()
+        pairing.setSpacing(10)
+        pairing.addStretch(1)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(self.qr_label)
+        row.addStretch(1)
+        pairing.addLayout(row)
+        pairing.addLayout(secrets_column)
+        pairing.addStretch(1)
+        # start_listening() paints this at launch; it stays hidden only if there is no port.
+        self.qr_label.hide()
+        qr_card.layout().addLayout(pairing, 1)
+
+        # ---- this machine ----
+        mine = QGroupBox(page)
+        mine.setObjectName("Card")
+        self.mine_box = mine
+        mine.setFixedWidth(COLUMN)
         mine_layout = QVBoxLayout(mine)
+        mine_layout.setContentsMargins(20, 18, 20, 18)
+        mine_layout.setSpacing(8)
 
-        # The facts about this machine sit top-left, and the name is edited right where it
-        # is shown. Three buttons on one bottom row did not fit the minimum window width
-        # and got clipped, so the two secondary actions became inline text buttons.
+        # The name is edited right where it is shown, and the two secondary actions are inline
+        # text buttons: three real buttons on one row did not fit the minimum window width.
         who = QHBoxLayout()
         self.name_label = QLabel()
-        # Wrapping rather than eliding: the name is the one thing on this card the user
-        # has to be able to read back, and in the wider languages it does not fit.
+        # Wrapping rather than eliding: the name is the one thing on this card the user has to
+        # be able to read back, and in the wider languages it does not fit.
         self.name_label.setWordWrap(True)
         self.rename_button = QPushButton()
         self.rename_button.setObjectName("Inline")
         self.rename_button.clicked.connect(self.rename_device)
-        who.addWidget(self.name_label)
+        who.addWidget(self.name_label, 1)
         who.addWidget(self.rename_button)
-        who.addStretch(1)
         self.listen_label = QLabel()
         self.channel_label = QLabel()
         self.channel_label.setObjectName("Muted")
         self.channel_label.setWordWrap(True)
 
-        self.qr_label = QLabel()
-        self.qr_label.setObjectName("QrBox")
-        self.qr_label.setFixedSize(QR_SIZE + 8, QR_SIZE + 8)
-        self.qr_label.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
-        self.qr_label.setToolTip(_("让对方扫这个码，就能带着配对码和密码连过来。"))
-        self.code_label = QLabel()
-        self.code_label.setObjectName("PairCode")
-        self.code_label.setWordWrap(True)
-        # Both secrets are read out loud to whoever is on the other side of the desk, so the
-        # passphrase gets the same size as the code instead of a footnote.
-        self.pass_label = QLabel()
-        self.pass_label.setObjectName("PairCode")
-        self.pass_label.setWordWrap(True)
-        self.pass_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        secrets_column = QVBoxLayout()
-        secrets_column.addStretch(1)
-        secrets_column.addWidget(self.code_label)
-        secrets_column.addWidget(self.pass_label)
-        secrets_column.addStretch(1)
-        pairing = QHBoxLayout()
-        pairing.addStretch(1)
-        pairing.addWidget(self.qr_label)
-        pairing.addLayout(secrets_column)
-        pairing.addStretch(1)
-        # start_listening() paints this at launch; it stays hidden only if there is no port.
-        self.qr_label.hide()
-
         where = QHBoxLayout()
-        self.receive_dir_label = QLabel()
-        self.receive_dir_label.setObjectName("Muted")
-        self.receive_dir_label.setWordWrap(True)
-        self.receive_dir_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        where.setSpacing(6)
+        self.receive_dir_title = QLabel()
+        self.receive_dir_title.setObjectName("Muted")
+        # A read-only field rather than a label: a Windows path has no space to break at, so as
+        # a label its single unbreakable run would set the minimum width of the whole card. The
+        # field scrolls instead, and the text stays as selectable as a path needs to be.
+        self.receive_dir_field = QLineEdit()
+        self.receive_dir_field.setObjectName("PathField")
+        self.receive_dir_field.setReadOnly(True)
         self.open_dir_button = QPushButton()
         self.open_dir_button.setObjectName("Inline")
         self.open_dir_button.clicked.connect(self._open_receive_dir)
-        where.addWidget(self.receive_dir_label, 1)
+        where.addWidget(self.receive_dir_title)
+        where.addWidget(self.receive_dir_field, 1)
         where.addWidget(self.open_dir_button)
 
         self.refresh_pair_button = QPushButton()
         self.refresh_pair_button.setObjectName("Inline")
         self.refresh_pair_button.clicked.connect(self.rotate_pairing)
-        rotate = QHBoxLayout()
-        rotate.addWidget(self.refresh_pair_button)
-        rotate.addStretch(1)
 
         mine_layout.addLayout(who)
         mine_layout.addWidget(self.listen_label)
         mine_layout.addWidget(self.channel_label)
-        mine_layout.addLayout(pairing)
-        mine_layout.addLayout(rotate)
         mine_layout.addLayout(where)
+        rotate = QHBoxLayout()
+        rotate.addWidget(self.refresh_pair_button)
+        rotate.addStretch(1)
+        mine_layout.addLayout(rotate)
         mine_layout.addStretch(1)
+        top.addWidget(mine)
+        layout.addLayout(top)
 
-        # ---- peers (sending) ----
-        peers = QGroupBox(self)
+        # ---- what discovery can see ----
+        # The mockup draws 附近设备 on the page with 刷新 at the right of that heading, then a row
+        # of device cards. So the heading is not inside a card and the cards are the chrome. The
+        # fields the mockup has no room for - a pairing code typed by hand, an address typed by
+        # hand - keep a card of their own under that row.
+        near_head = QHBoxLayout()
+        near_head.setSpacing(10)
+        self.nearby_title = QLabel(page)
+        self.nearby_title.setObjectName("SectionTitle")
+        near_head.addWidget(self.nearby_title)
+        near_head.addStretch(1)
+        self.rescan_button = QPushButton(page)
+        self.rescan_button.setObjectName("Ghost")
+        self.rescan_button.clicked.connect(self._refresh_peers)
+        near_head.addWidget(self.rescan_button)
+        layout.addLayout(near_head)
+
+        nearby = QWidget(page)
+        self.nearby_grid = QGridLayout(nearby)
+        self.nearby_grid.setContentsMargins(0, 0, 0, 0)
+        self.nearby_grid.setSpacing(14)
+        for column in range(_NEARBY_COLUMNS):
+            self.nearby_grid.setColumnStretch(column, 1)
+        layout.addWidget(nearby)
+
+        peers = QGroupBox(page)
+        peers.setObjectName("Card")
+        self.peers_box = peers
         peers_layout = QVBoxLayout(peers)
-        self.peer_list = QListWidget()
-        # Host:port plus a name is wider than the column; elide it instead of letting the
-        # list grow a horizontal scrollbar that hides half of every row behind it.
-        self.peer_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.peer_list.currentItemChanged.connect(lambda *_: self._sync_buttons())
+        peers_layout.setContentsMargins(20, 18, 20, 18)
+        peers_layout.setSpacing(10)
 
-        # Discovery is a stream of candidates, not a roster. It lives behind a button so this
-        # card only ever lists devices whose pair handshake this machine has finished.
         self.nearby_label = QLabel()
         self.nearby_label.setObjectName("Muted")
         self.nearby_label.setWordWrap(True)
-        self.pick_peer_button = QPushButton()
-        self.pick_peer_button.setObjectName("Inline")
-        self.pick_peer_button.clicked.connect(self._choose_peer)
-        self.disconnect_button = QPushButton()
-        self.disconnect_button.setObjectName("Inline")
-        self.disconnect_button.clicked.connect(self._disconnect_selected)
-        # The sentence gets its own row: on the same row as the two buttons it was the only
-        # widget allowed to shrink, and at the narrowest window it ended up one character wide.
-        nearby = QHBoxLayout()
-        nearby.addWidget(self.pick_peer_button)
-        nearby.addWidget(self.disconnect_button)
-        nearby.addStretch(1)
+        peers_layout.addWidget(self.nearby_label)
 
         # The code is typed here rather than in a modal that appears mid-transfer: which device
         # it belongs to has to be readable while it is being typed.
@@ -601,57 +1143,134 @@ class TransferPanel(QWidget):
         self.secret_edit.returnPressed.connect(self._start_connect)
         self.connect_button = QPushButton()
         self.connect_button.clicked.connect(self._start_connect)
+        self.pick_peer_button = QPushButton()
+        self.pick_peer_button.setObjectName("Ghost")
+        self.pick_peer_button.clicked.connect(self._choose_peer)
+        self.disconnect_button = QPushButton()
+        self.disconnect_button.setObjectName("Inline")
+        self.disconnect_button.clicked.connect(self._disconnect_selected)
         code_row = QHBoxLayout()
         code_row.addWidget(self.code_edit)
         code_row.addWidget(self.secret_edit, 1)
         code_row.addWidget(self.connect_button)
-
-        peers_layout.addWidget(self.peer_list, 1)
-        peers_layout.addWidget(self.nearby_label)
-        peers_layout.addLayout(nearby)
         peers_layout.addLayout(code_row)
+        manual = QHBoxLayout()
+        manual.addWidget(self.pick_peer_button)
+        manual.addWidget(self.disconnect_button)
+        manual.addStretch(1)
+        peers_layout.addLayout(manual)
+        layout.addWidget(peers, 1)
+        return page
 
-        grid.addWidget(mine, 0, 0)
-        grid.addWidget(peers, 0, 1)
-        self.mine_box, self.peers_box = mine, peers
+    # -------------------------------------------------------------- 传输记录 page
+
+    def _build_history_page(self) -> QWidget:
+        """Every transfer this machine knows about, newest first, grouped by day.
+
+        Two sources, because the honest answer to "what moved" is two questions: what is in
+        flight or finished this session, and what landed on disk and survived a restart.
+        """
+        page = QWidget(self)
+        page.setObjectName("HistoryPage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+        self.page_title_history, _sub = self._header(layout, "传输记录")
+
+        chips = QHBoxLayout()
+        chips.setSpacing(8)
+        self.history_chips: list[QPushButton] = []
+        self.history_chip_rows: dict[str, QPushButton] = {}
+        for value in ("all", "running", "done", "failed"):
+            chip = QPushButton(page)
+            chip.setObjectName("Chip")
+            chip.setCheckable(True)
+            chip.setProperty("filter", value)
+            chip.clicked.connect(lambda _c=False, picked=chip: self._choose_history_filter(picked))
+            chips.addWidget(chip)
+            self.history_chips.append(chip)
+            self.history_chip_rows[value] = chip
+        chips.addStretch(1)
+        layout.addLayout(chips)
+
+        card, _heading = self._card(layout, stretch=1)
+        # The mockup's record list is a grouped list, not a table: a day heading, then rows that
+        # read icon - name - size - status. Columns fight that, so every row is its own widget.
+        self.history_list = _TightList(card)
+        self.history_list.setObjectName("RecordList")
+        self.history_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        card.layout().addWidget(self.history_list, 1)
+        self._history_filter = "all"
         return page
 
     # ----------------------------------------------------------------- 文件 page
+
+    #: The mockups filter 文件管理 by what a file is, not by when it landed. The date column
+    #: sorts, so a 今天/近 7 天 pill would only re-ask a question one header click answers.
+    #: N() for the same reason as the history pills above: the caption is fetched out of the
+    #: dict and translated at run time, so Babel has to be told the literals live here.
+    _FILE_KINDS = {
+        "all": N("全部"),
+        "image": N("图片"),
+        "video": N("视频"),
+        "doc": N("文档"),
+        "archive": N("压缩包"),
+    }
+    _KIND_SUFFIXES = {
+        "image": {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".bmp", ".svg", ".tif", ".tiff"},
+        "video": {".mp4", ".mov", ".mkv", ".avi", ".webm", ".flv", ".wmv"},
+        "doc": {".pdf", ".doc", ".docx", ".txt", ".md", ".xls", ".xlsx", ".ppt", ".pptx", ".csv", ".json"},
+        "archive": {".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz"},
+    }
+
+    @classmethod
+    def _file_kind(cls, name: str) -> str:
+        suffix = Path(name).suffix.lower()
+        return next((kind for kind, group in cls._KIND_SUFFIXES.items() if suffix in group), "")
 
     def _build_files_page(self) -> QWidget:
         page = QWidget(self)
         page.setObjectName("FilesPage")
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
+        layout.setSpacing(12)
+
         self.page_title_files = QLabel()
         self.page_title_files.setObjectName("PageTitle")
-
-        # The hint above the table is what this list can honestly promise; the promise changed
-        # once arrivals were kept across restarts, so it is still a label and not a caption.
         self.received_label = QLabel()
-        self.received_label.setObjectName("SectionTitle")
+        self.received_label.setObjectName("PageSub")
         self.received_label.setWordWrap(True)
+        # The search box shares the title row because that is where the mockup draws it, and
+        # because a name is the first thing anyone reaches for once the list has twenty rows.
+        self.files_search = QLineEdit()
+        self.files_search.setObjectName("Search")
+        self.files_search.setFixedWidth(240)
+        self.files_search.setClearButtonEnabled(True)
+        #: The magnifier is a QAction the line edit owns; holding it lets a theme switch repaint
+        #: the same one instead of stacking a second icon in front of the text.
+        self._search_action: QAction | None = None
+        self.files_search.textChanged.connect(lambda _text: self._refresh_received())
+        head = QHBoxLayout()
+        head.setSpacing(12)
+        head.addWidget(self.page_title_files)
+        head.addWidget(self.received_label)
+        head.addStretch(1)
+        head.addWidget(self.files_search)
+        layout.addLayout(head)
 
-        # Narrow filters rather than a menu: the useful questions are "since when" and "from
-        # whom", and both are answerable with a pill or two on screen.
         self.chip_row = QHBoxLayout()
         self.chip_row.setSpacing(8)
-        self.chip_all = QPushButton()
-        self.chip_all.setObjectName("Chip")
-        self.chip_all.setCheckable(True)
-        self.chip_today = QPushButton()
-        self.chip_today.setObjectName("Chip")
-        self.chip_today.setCheckable(True)
-        self.chip_week = QPushButton()
-        self.chip_week.setObjectName("Chip")
-        self.chip_week.setCheckable(True)
+        self.file_chips: dict[str, QPushButton] = {}
         self._chips: list[QPushButton] = []
-        for chip, value in ((self.chip_all, "all"), (self.chip_today, "today"), (self.chip_week, "week")):
+        for value, _caption in self._FILE_KINDS.items():
+            chip = QPushButton()
+            chip.setObjectName("Chip")
+            chip.setCheckable(True)
             chip.setProperty("filter", value)
             chip.clicked.connect(lambda _c=False, picked=chip: self._choose_filter(picked))
             self.chip_row.addWidget(chip)
             self._chips.append(chip)
+            self.file_chips[value] = chip
         self.chip_row.addStretch(1)
         #: Rows are a reading list; the folder is where the bytes actually are, and the two can
         #: disagree (the user may have moved a file), so the folder gets a button of its own.
@@ -659,14 +1278,16 @@ class TransferPanel(QWidget):
         self.open_received_dir_button.setObjectName("Inline")
         self.open_received_dir_button.clicked.connect(self._open_receive_dir)
         self.chip_row.addWidget(self.open_received_dir_button)
+        layout.addLayout(self.chip_row)
 
         # Columns, because a file list that cannot say which machine it came from or when is
         # a log, not a filing cabinet.
-        self.received_list = QTreeWidget()
+        card, _heading = self._card(layout, stretch=1)
+        self.received_list = _TightTree(card)
         self.received_list.setObjectName("ReceivedTable")
         self.received_list.setColumnCount(4)
         self.received_list.setRootIsDecorated(False)
-        self.received_list.setAlternatingRowColors(True)
+        self.received_list.setAlternatingRowColors(False)
         self.received_list.setSortingEnabled(True)
         self.received_list.sortByColumn(2, Qt.DescendingOrder)
         self.received_list.setSelectionBehavior(QTreeWidget.SelectRows)
@@ -677,39 +1298,66 @@ class TransferPanel(QWidget):
         header.setSectionResizeMode(0, QHeaderView.Stretch)
         for column in (1, 2, 3):
             header.setSectionResizeMode(column, QHeaderView.ResizeToContents)
+        card.layout().addWidget(self.received_list, 1)
         self._received_filter = "all"
         #: Where an arrival stopped existing on disk, so the table can say so instead of
         #: listing a row that opens nothing.
         self._missing: dict[str, str] = {}
-
-        layout.addWidget(self.page_title_files)
-        layout.addWidget(self.received_label)
-        layout.addLayout(self.chip_row)
-        layout.addWidget(self.received_list, 1)
         return page
 
 
     def retranslate(self) -> None:
         """Re-apply every visible string, including the ones set from callbacks."""
-        self.page_title_transfer.setText(_("传输"))
-        self.page_title_files.setText(_("文件"))
+        self.page_title_transfer.setText(_("传书 - 文件互传"))
+        self.page_sub_transfer.setText(_("文件放在这里，拖进来就能发给连上的设备。"))
+        self.page_title_send.setText(_("发送"))
+        self.page_sub_send.setText(_("文件在「传输」页拖进来；这一页决定它去哪。"))
+        self.page_title_receive.setText(_("扫码连接手机"))
+        self.page_sub_receive.setText(_("请使用传书手机端扫描二维码完成连接"))
+        self.page_title_history.setText(_("传输记录"))
+        self.page_title_files.setText(_("文件管理"))
+        self.peer_card_title.setText(_("已连接设备"))
+        self.peer_note.setText(_("还没有已连接的设备。点下面「扫码连接」，或在「接收」页选一台。"))
+        self.scan_button.setText(_("扫码连接"))
+        self.show_history_button.setText(_("查看全部"))
+        self.send_target_title.setText(_("目标设备"))
+        self.send_stage_title.setText(_("这次发什么"))
+        self.nearby_title.setText(_("附近设备"))
+        self.rescan_button.setText(_("刷新"))
         self.mine_box.setTitle(_("我的设备"))
-        self.peers_box.setTitle(_("已连接的设备"))
-        self.drop_big.setText(_("把文件或文件夹拖到这里"))
-        self.drop_hint.setText(
-            _("也可以点下面的按钮挑选。对方要先接受，文件才会落到它的接收目录。")
-        )
-        self.task_title.setText(_("本次会话的传输"))
-        self.chip_all.setText(_("全部"))
-        self.chip_today.setText(_("今天"))
-        self.chip_week.setText(_("近 7 天"))
+        # The card below 附近设备 holds the typed code and address, not a list, so it has no
+        # heading of its own and no frame title either.
+        self.peers_box.setTitle("")
+        self.drop_icon.setPixmap(icons.pixmap("arrow-up", self._p.accent, 32))
+        # setIcon replaces, so this repaints the same button instead of stacking a second glyph.
+        self.rescan_button.setIcon(icons.icon("refresh", self._p.accent))
+        self.drop_big.setText(_("拖拽文件到此处，或点击选择"))
+        self.drop_hint.setText(_("支持图片 视频 文档 压缩包"))
+        self.drop_note.setText(_("对方要先点接受，文件才会落到它的接收目录。"))
+        self.task_title.setText(_("传输记录"))
+        for value, chip in self.file_chips.items():
+            chip.setText(_(self._FILE_KINDS[value]))
+        self.files_search.setPlaceholderText(_("搜索文件"))
+        # QSS cannot recolour an icon, so the magnifier is re-rasterised with the palette. The
+        # QAction itself is made once and only repainted - adding a fresh one per retranslate
+        # would stack a leading icon in front of the text every time the theme changed.
+        # The line edit sizes its own leading icon from the style, so 16px is what shows.
+        if self._search_action is None:
+            self._search_action = self.files_search.addAction(
+                icons.icon("search", self._p.text_muted), QLineEdit.LeadingPosition
+            )
+        else:
+            self._search_action.setIcon(icons.icon("search", self._p.text_muted))
         self.open_received_dir_button.setText(_("打开接收目录"))
-        self.received_list.setHeaderLabels([_("文件"), _("大小"), _("时间"), _("来源设备")])
+        self.received_list.setHeaderLabels([_("文件名"), _("大小"), _("日期"), _("来源设备")])
+        for value, chip in self.history_chip_rows.items():
+            chip.setText(_(_HISTORY_FILTER_LABELS[value]))
         self.code_label.setText(self._code_text())
         self.pass_label.setText(self._pass_text())
         self.listen_label.setText(self._listen_text())
         self.channel_label.setText(self._channel_text())
-        self.receive_dir_label.setText(_("保存到：{path}").format(path=receive_root()))
+        self.receive_dir_title.setText(_("保存到"))
+        self.receive_dir_field.setText(str(receive_root()))
         self.refresh_pair_button.setText(_("更换配对码和密码"))
         self.refresh_pair_button.setToolTip(
             _("换一组新的固定配对码和密码，二维码跟着变。已经连上的设备不受影响。")
@@ -722,8 +1370,8 @@ class TransferPanel(QWidget):
         self.pick_files_button.setText(_("选择文件…"))
         self.pick_dir_button.setText(_("选择文件夹…"))
         self.clear_stage_button.setText(_("清空"))
-        self.pick_peer_button.setText(_("从附近选择…"))
-        self.pick_peer_button.setToolTip(_("列出广播出来的候选设备，也可以手输地址或粘贴配对串。"))
+        self.pick_peer_button.setText(_("手输地址…"))
+        self.pick_peer_button.setToolTip(_("没在附近列表里的设备，可以输入它的地址，或粘贴 chuanshu:// 配对串。"))
         self.disconnect_button.setText(_("断开"))
         self.nearby_label.setText(self._nearby_text())
         self.code_edit.setPlaceholderText(_("{n} 位配对码").format(n=self.proto.pair_code_digits))
@@ -741,13 +1389,19 @@ class TransferPanel(QWidget):
         self.connect_button.setToolTip(self._connect_tip())
         self.send_button.setText(_("发送给所选设备"))
         self.qr_label.setToolTip(_("让对方扫这个码，就能带着配对码和密码连过来。"))
+        self.peer_now_label.setText(self._peer_now_text())
+        self.pace_label.setText(self._pace_text())
         self.stage_label.setText(self._stage_text())
         self.status_label.setText(self._status_text())
         for row in self._task_rows.values():
-            row["cancel"].setText(_("取消"))
+            # A closed row's button is its verdict, not a control: retranslating must not turn
+            # 完成 back into 取消 and offer a cancel for bytes that already landed.
+            if not row["done"]:
+                row["cancel"].setText(_("取消"))
         self._sync_chips()
         self._refresh_peers()
         self._refresh_received()
+        self._refresh_history()
 
     # -------------------------------------------------------------- receiving
 
@@ -928,34 +1582,55 @@ class TransferPanel(QWidget):
 
     # ------------------------------------------------------- incoming decisions
 
-    def _decide(self, manifest: dict, who: str, caller: str) -> bool:
+    def _decide(self, manifest: dict, who: str, caller: str) -> bool | Path:
         """Called from a server thread; blocks until the user answers or the offer lapses."""
         token = secrets.token_hex(6)
-        holder = {"answer": False, "event": threading.Event()}
+        holder = {"answer": False, "event": threading.Event(), "dialog": None}
         with self._ask_lock:
             self._decisions[token] = holder
         self._offer_arrived.emit(manifest, who or f"{caller[:12]}…", token)
         if not holder["event"].wait(self.proto.offer_wait_timeout_s + 5.0):
             log.warning("nobody answered offer %s", manifest.get("offer_id"))
+            # Closing it is a GUI-thread job, and this is not the GUI thread.
+            self._offer_expired.emit(token)
         with self._ask_lock:
             self._decisions.pop(token, None)
         return holder["answer"]
 
     def _on_offer(self, manifest: dict, who: str, token: str) -> None:
-        files = manifest.get("files", [])
-        listing = "\n".join(f"· {f.get('relpath')}（{_human(int(f.get('size') or 0))}）" for f in files[:12])
-        if len(files) > 12:
-            listing += "\n" + _("…共 {n} 个文件").format(n=len(files))
-        box = QMessageBox(self)
-        box.setWindowTitle(_("接收来自 {who} 的文件？").format(who=who))
-        box.setText(_("对方：{who}\n\n{listing}").format(who=who, listing=listing))
-        box.setInformativeText(_("保存到：{path}").format(path=receive_root() / str(manifest.get("offer_id", ""))))
-        accept = box.addButton(_("接收"), QMessageBox.AcceptRole)
-        box.addButton(_("拒绝"), QMessageBox.RejectRole)
-        box.exec()
-        self._resolve(token, box.clickedButton() is accept)
+        dialog = _OfferDialog(self, manifest, who)
+        dialog.move(self._center_of(dialog))
+        with self._ask_lock:
+            holder = self._decisions.get(token)
+        if holder is not None:
+            holder["dialog"] = dialog
+        answer: bool | Path = False
+        try:
+            if dialog.exec() == QDialog.Accepted:
+                # True means "the usual place"; the Path is a parent the user chose for this
+                # transfer alone. Either way the receiver files the batch under its own folder.
+                answer = dialog.parent_dir or True
+        finally:
+            if holder is not None:
+                holder["dialog"] = None
+            self._resolve(token, answer)
 
-    def _resolve(self, token: str, answer: bool) -> None:
+    def _center_of(self, dialog: QDialog) -> QPoint:
+        """Where to put a frameless card: the middle of the window it is asking a question of."""
+        host = self.window()
+        frame = host.geometry() if host.isMaximized() else host.frameGeometry()
+        size = dialog.sizeHint()
+        return QPoint(frame.center().x() - size.width() // 2, frame.center().y() - size.height() // 2)
+
+    def _close_offer(self, token: str) -> None:
+        """Throw away a card whose server thread has already stopped waiting for an answer."""
+        with self._ask_lock:
+            holder = self._decisions.get(token)
+        dialog = None if holder is None else holder.get("dialog")
+        if isinstance(dialog, QDialog):
+            dialog.close()
+
+    def _resolve(self, token: str, answer: bool | Path) -> None:
         with self._ask_lock:
             holder = self._decisions.get(token)
         if holder is not None:
@@ -994,8 +1669,8 @@ class TransferPanel(QWidget):
         return bool(peer.prefix) and any(fp.startswith(peer.prefix) for fp in self.identity.pinned_fingerprints())
 
     def _nearby_text(self) -> str:
-        """The line that says what 连接 will act on. The list above it cannot: it holds peers
-        already paired, and the target of the next handshake is by definition not in it."""
+        """The line under 附近设备 that says what 连接 will act on. The list itself cannot carry
+        that: a row is only a broadcast until a code is typed for it."""
         if self._connecting is not None:
             peer = self._connecting
             return _("正在连接 {name}（{host}）…").format(name=peer.name or peer.prefix or peer.host, host=peer.host)
@@ -1011,23 +1686,106 @@ class TransferPanel(QWidget):
         if holder is not None:
             return _("一次只连一台，现在连着 {name}。要换设备先点「断开」。").format(name=holder.name or holder.prefix)
         if self._discovery is None:
-            return _("自动发现没有运行。点「从附近选择…」手输对方地址。")
+            return _("自动发现没有运行。点「手输地址…」填对方地址，或粘贴它的配对串。")
         count = len(self._candidate_peers())
         if not count:
-            return _("附近暂时没有广播出来的设备。点「从附近选择…」手输地址。")
-        return _("附近发现 {n} 台设备，点「从附近选择…」连接。").format(n=count)
+            return _("附近暂时没有广播出来的设备。点「手输地址…」填对方地址，或让它扫上面的码。")
+        return _("点上面一台设备选中它，再填配对码连接；没广播出来的点「手输地址…」。")
 
     def _is_inbound(self, peer: Peer) -> bool:
         """True for a peer that dialled us: connected, but with no address to send through."""
         return peer.fingerprint in self._inbound and peer.fingerprint not in self._sessions
 
-    def _peer_row(self, peer: Peer) -> str:
-        """One roster row as the user reads it. An inbound peer has no known port, so the
-        row says what it is instead of printing a colon and a zero."""
-        label = peer.name or peer.prefix
-        if self._is_inbound(peer):
-            return f"{label}    {peer.host}    {_('（对方连进来，只能收）')}"
-        return f"{label}    {peer.host}:{peer.port}"
+    def _device_card(
+        self, name: str, status: str, kind: str, online: bool, chosen: bool = False
+    ) -> QPushButton:
+        """One discovered device, drawn the way the mockup draws it: a round tile, a name, a dot.
+
+        A button rather than a frame because it is the thing you pick a target with, and a
+        QPushButton gives the keyboard a stop on the way to the pairing code below it.
+        """
+        p = self._p
+        card = QPushButton()
+        card.setObjectName("DeviceCard")
+        card.setCheckable(True)
+        card.setChecked(chosen)
+        # QPushButton sizes itself from its text and icon, and this one has neither. Left alone it
+        # reports an empty button's height, the grid row honours that, and the card is a bare bar.
+        card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        box = QVBoxLayout(card)
+        box.setContentsMargins(16, 14, 16, 14)
+        box.setSpacing(6)
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        tile = QLabel(card)
+        tile.setObjectName("DeviceTileRound")
+        tile.setFixedSize(40, 40)
+        tile.setAlignment(Qt.AlignCenter)
+        tile.setPixmap(icons.pixmap(kind, p.accent, 22))
+        row.addWidget(tile)
+        words = QVBoxLayout()
+        words.setSpacing(2)
+        label = QLabel(card)
+        label.setObjectName("DeviceName")
+        label.setText(name)
+        label.setWordWrap(True)
+        words.addWidget(label)
+        dot = QLabel(card)
+        dot.setTextFormat(Qt.RichText)
+        dot.setText(
+            f'<span style="color:{p.ok_dot if online else p.off_dot}">●</span>'
+            f' <span style="color:{p.ok if online else p.text_muted}">{status}</span>'
+        )
+        words.addWidget(dot)
+        row.addLayout(words, 1)
+        box.addLayout(row)
+        card.setAccessibleName(f"{name} {status}")
+        return card
+
+    def _clear_nearby(self) -> None:
+        """Empty the grid without deleting a card while its own clicked handler is running.
+
+        ``takeAt`` leaves the widget parented, so a card waiting for deleteLater keeps painting
+        at its last geometry - which, once the grid has re-flowed, is on top of another card.
+        """
+        while self.nearby_grid.count():
+            widget = self.nearby_grid.takeAt(0).widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
+    def _refresh_nearby(self) -> None:
+        """The 附近设备 row under the picture: one card per beacon discovery is hearing now.
+
+        A candidate is a broadcast, not a session, so the cards say 在线 rather than promising
+        that 连接 will work; the line under them is what names the next step.
+        """
+        self._clear_nearby()
+        connected = {peer.fingerprint for peer in self._connected if peer.fingerprint}
+        for index, peer in enumerate(self._candidate_peers()):
+            name = peer.name or peer.prefix or peer.host
+            linked = peer.fingerprint in connected
+            # Choosing a candidate here names whose code belongs in the box below; it does not
+            # connect, so the card stays clickable even for a device already paired.
+            card = self._device_card(
+                name,
+                _("已连接") if linked else _("在线"),
+                self._peer_kind(peer),
+                True,
+                chosen=self._pending is not None and self._pending.fingerprint == peer.fingerprint,
+            )
+            # The mockup's card is two lines, so the address it has no room for goes to the
+            # pointer: it is the one number that says which machine this beacon came from.
+            card.setToolTip(
+                _("{addr}\n指纹前缀 {fp}；发现于 {via}。{state}").format(
+                    addr=f"{peer.host}:{peer.port}",
+                    fp=peer.prefix or _("未知"),
+                    via="+".join(sorted(peer.via)) or _("手动添加"),
+                    state=_("已连接") if linked else _("在线"),
+                )
+            )
+            card.clicked.connect(lambda _c=False, picked=peer: self._set_pending(picked))
+            self.nearby_grid.addWidget(card, index // _NEARBY_COLUMNS, index % _NEARBY_COLUMNS)
 
     def _refresh_peers(self) -> None:
         """Paint the connected roster. Discovery callbacks land here too, where they may only
@@ -1035,25 +1793,35 @@ class TransferPanel(QWidget):
         current = self._selected()
         self.peer_list.clear()
         for peer in self._connected:
-            item = QListWidgetItem(self._peer_row(peer))
+            item = QListWidgetItem()
+            # The mockup's row is one line: tile, name, dot. The address it has no room for goes
+            # to the pointer - except when the device dialled us, because "you cannot send to
+            # this one" is a state, not a detail, and a state has to be on the row.
+            inbound = self._is_inbound(peer)
+            row = self._device_row(
+                peer.name or peer.prefix, _("在线"), self._peer_kind(peer), True,
+                sub=_("（对方连进来，只能收）") if inbound else "")
+            row.setProperty("chosen", current is not None and peer.fingerprint == current.fingerprint)
+            row.setToolTip(
+                _("指纹前缀 {fp}。它主动连进来，本机没有可回拨的地址，所以只能收它的文件。"
+                  "要发给它，请由它来连本机。").format(fp=peer.prefix)
+                if inbound
+                else _("指纹前缀 {fp}，地址 {addr}。已配对，会话保留到点断开为止。").format(
+                    fp=peer.prefix, addr=f"{peer.host}:{peer.port}")
+            )
             item.setData(Qt.UserRole, peer)
-            if self._is_inbound(peer):
-                item.setToolTip(
-                    _("指纹前缀 {fp}。它主动连进来，本机没有可回拨的地址，所以只能收它的文件。"
-                      "要发给它，请由它来连本机。").format(fp=peer.prefix)
-                )
-            else:
-                item.setToolTip(_("指纹前缀 {fp}。已配对，会话保留到点断开为止。").format(fp=peer.prefix))
+            item.setSizeHint(row.sizeHint())
             self.peer_list.addItem(item)
+            self.peer_list.setItemWidget(item, row)
             if current is not None and peer.fingerprint == current.fingerprint:
                 self.peer_list.setCurrentItem(item)
-        if not self._connected:
-            self.peer_list.addItem(QListWidgetItem(_("还没有已连接的设备。点下面「从附近选择…」挑一台，或手输它的地址。")))
+        self.peer_note.setVisible(not self._connected)
         # The card is the truth about who holds this device's one session, in either direction,
         # so the receiver's door is set from here rather than from each place that moves a row.
         if self._receiver is not None:
             self._receiver.hold_slot_for(self._connected[0].fingerprint if len(self._connected) == 1 else "")
         self.nearby_label.setText(self._nearby_text())
+        self._refresh_nearby()
         self._sync_buttons()
 
     def _on_peer_paired(self, fingerprint: str, peer_id: str, name: str, client_ip: str) -> None:
@@ -1088,7 +1856,8 @@ class TransferPanel(QWidget):
                 return
 
     def _choose_peer(self) -> None:
-        """The 从附近选择… button: discovery's output, one at a time, in a picker."""
+        """The 手输地址… button: the picker, which also re-lists candidates and can verify a
+        bare address. The inline 附近设备 list cannot do that second half."""
         box = _CandidateDialog(self, self)
         if box.exec() and box.chosen is not None:
             self._set_pending(box.chosen)
@@ -1103,6 +1872,7 @@ class TransferPanel(QWidget):
             self.status_label.setText(_("{name} 已经连着，选文件发送即可。").format(name=connected.name or connected.prefix))
             return
         self._pending = peer
+        self._refresh_nearby()
         self.nearby_label.setText(self._nearby_text())
         self.code_edit.setFocus()
 
@@ -1159,7 +1929,7 @@ class TransferPanel(QWidget):
             return
         peer = self._pending
         if peer is None:
-            self.status_label.setText(_("先在「从附近选择…」里挑一台设备，或手输它的地址。"))
+            self.status_label.setText(_("先在「附近设备」里点一台，或点「手输地址…」填它的地址。"))
             return
         holder = self._locked_out(peer)
         if holder is not None:
@@ -1303,33 +2073,37 @@ class TransferPanel(QWidget):
         self.disconnect_button.setEnabled(selected is not None and not busy)
         self._sync_target(selected)
 
-    def _sync_target(self, selected: Peer | None) -> None:
-        """Say which device this page would send to, and at what pace it asked to be written at.
+    def _peer_now_text(self, selected: Peer | None = None) -> str:
+        selected = self._selected() if selected is None else selected
+        if selected is None:
+            return _("还没有选定接收设备。到「接收」页连一台，或在附近列表里点一台。")
+        who = selected.name or selected.prefix
+        return _("当前对端：{name}（{addr}，指纹前缀 {fp}）").format(
+            name=who, addr=f"{selected.host}:{selected.port}", fp=selected.prefix
+        )
+
+    def _pace_text(self, selected: Peer | None = None) -> str:
+        """Why this transfer is slow, when the reason is on the far end rather than the wire.
 
         The pace line is not decoration: a peer that declared ``chunk_pace_ms`` makes the
         transfer look exactly like a congested network, and only the receiver knows why.
         """
+        selected = self._selected() if selected is None else selected
         if selected is None:
-            self.peer_now_label.setText(_("还没有选定接收设备。到「设备」页连一台，或在附近列表里选一台。"))
-            self.pace_label.setText("")
-            return
-        who = selected.name or selected.prefix
-        self.peer_now_label.setText(
-            _("当前对端：{name}（{addr}，指纹前缀 {fp}）").format(
-                name=who, addr=f"{selected.host}:{selected.port}", fp=selected.prefix
-            )
-        )
+            return ""
         conn = self._sessions.get(selected.fingerprint)
         if conn is None:
-            self.pace_label.setText(_("这台设备还没有连接会话，点「连接」建立一条。"))
-        elif conn.pace_ms:
-            self.pace_label.setText(
-                _("对方要求每 {ms} 毫秒写一条 TLS 记录，所以这台设备比局域网正常水平慢，这不是网络故障。").format(
-                    ms=conn.pace_ms
-                )
-            )
-        else:
-            self.pace_label.setText(_("对方没有要求放慢写入，本机按最快速度发。"))
+            return _("这台设备还没有连接会话，点「连接」建立一条。")
+        if conn.pace_ms:
+            return _(
+                "对方要求每 {ms} 毫秒写一条 TLS 记录，所以这台设备比局域网正常水平慢，这不是网络故障。"
+            ).format(ms=conn.pace_ms)
+        return _("对方没有要求放慢写入，本机按最快速度发。")
+
+    def _sync_target(self, selected: Peer | None) -> None:
+        """Repaint the 目标设备 block from whatever selection the roster just settled on."""
+        self.peer_now_label.setText(self._peer_now_text(selected))
+        self.pace_label.setText(self._pace_text(selected))
 
     def dragEnterEvent(self, event) -> None:  # noqa: D102 - Qt hook
         if event.mimeData().hasUrls():
@@ -1395,10 +2169,19 @@ class TransferPanel(QWidget):
         self.stage_label.setText(self._stage_text())
         self._sync_buttons()
 
+    def _stage_size(self) -> int:
+        """Bytes on disk behind what is staged. The record row needs the number the sentence
+        below already contains, and walking a folder twice would let the two disagree."""
+        if not self._staged:
+            return 0
+        if len(self._staged) == 1 and self._staged[0].is_dir():
+            return sum(p.stat().st_size for p in self._staged[0].rglob("*") if p.is_file())
+        return sum(p.stat().st_size for p in self._staged if p.is_file())
+
     def _stage_text(self) -> str:
         if not self._staged:
             return _("还没选要发送的内容。")
-        total = sum(p.stat().st_size for p in self._staged if p.is_file())
+        total = self._stage_size()
         if len(self._staged) == 1 and self._staged[0].is_dir():
             folder = self._staged[0]
             total = sum(p.stat().st_size for p in folder.rglob("*") if p.is_file())
@@ -1416,7 +2199,12 @@ class TransferPanel(QWidget):
         self.progress.setFormat(_("准备中…"))
         self.send_button.setEnabled(False)
         self._cancelled.discard("send")
-        self._add_task_row("send", _("{what} → {who}").format(what=self._stage_text(), who=peer.name or peer.prefix))
+        entry = self._add_task_row(
+            "send", _("{what} → {who}").format(what=self._stage_text(), who=peer.name or peer.prefix)
+        )
+        entry["who"] = peer.name or peer.prefix or peer.host
+        entry["bytes"] = self._stage_size()
+        entry["file"] = paths[0].name if len(paths) == 1 else _("共 {n} 个文件").format(n=len(paths))
         self._worker = threading.Thread(
             target=self._send_worker, args=(peer, paths, base), name="chuanshu-send", daemon=True
         )
@@ -1425,60 +2213,86 @@ class TransferPanel(QWidget):
     # ---------------------------------------------------------------- task rows
 
     def _add_task_row(self, key: str, title: str) -> dict:
-        """One row per transfer: what, how far, how long, and a way to stop it.
+        """One row per transfer: mark, name, bar, how far, and a way to stop it.
 
         Rows stay after they finish. A bar that disappears the moment it hits 100% leaves the
         user with no answer to the only question they asked by pressing 发送.
         """
+        p = self._p
         row = QWidget(self.task_list)
         row.setObjectName("TaskRow")
         layout = QHBoxLayout(row)
-        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setContentsMargins(2, 11, 2, 11)
+        layout.setSpacing(10)
+        # Everything in this card is the same shape, so a live send is marked the way an arrival
+        # is: an arrow that says which way the bytes went.
+        mark = QLabel(row)
+        mark.setPixmap(icons.pixmap("upload-circle", p.text, 20))
+        layout.addWidget(mark)
         name = QLabel(title)
+        name.setObjectName("RecordName")
         name.setWordWrap(True)
+        layout.addWidget(name, 1)
         bar = QProgressBar()
         bar.setRange(0, 100)
         bar.setValue(0)
-        bar.setFixedSize(150, 16)
         bar.setTextVisible(False)
+        bar.setFixedHeight(6)
+        bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        bar.setMinimumWidth(120)
+        layout.addWidget(bar, 2)
+        percent = QLabel("0%")
+        percent.setObjectName("MutedOnCard")
+        layout.addWidget(percent)
         # An elapsed clock rather than a throughput estimate: bytes only become a rate once
-        # both ends agree the transfer is over, and a mid-flight guess would be a lie.
+        # both ends agree the transfer is over, and a mid-flight guess would be a lie. The row
+        # has no column left for it, so the pointer carries it.
         elapsed = QLabel("0:00")
         elapsed.setObjectName("Muted")
         cancel = QPushButton(_("取消"))
         cancel.setObjectName("Inline")
         cancel.setToolTip(_("停下这次传输，并让对方扔掉已经收到的半件。"))
         cancel.clicked.connect(lambda _checked=False, stop=key: self._cancel_task(stop))
-        layout.addWidget(name, 1)
-        layout.addWidget(bar)
         layout.addWidget(cancel)
         item = QListWidgetItem(self.task_list)
         item.setSizeHint(row.sizeHint())
         self.task_list.setItemWidget(item, row)
+        self.task_list.setVisible(True)
         entry = {
             "item": item,
             "widget": row,
             "name": name,
             "bar": bar,
+            "percent": percent,
             "elapsed": elapsed,
             "cancel": cancel,
             "started": time.time(),
             "title": title,
             "done": False,
+            "ok": None,
+            #: The 传输记录 page reads these to draw a row the way the mockup does: one file
+            #: name, one size, one device. The title above is a sentence, which is not.
+            "who": "",
+            "bytes": 0,
+            "file": title,
         }
         self._task_rows[key] = entry
         self._trim_tasks()
         return entry
 
     def _trim_tasks(self) -> None:
-        """Forget the oldest finished rows so a long session cannot grow the list forever."""
+        """Forget the oldest finished rows so a long session cannot grow the list forever.
+
+        An empty list is hidden: a QListWidget asks for a frame's worth of height even with
+        nothing in it, and at launch that blank sits between the card's heading and its rows.
+        """
         extra = len(self._task_rows) - _TASK_HISTORY_KEPT
-        if extra <= 0:
-            return
-        finished = [key for key, row in self._task_rows.items() if row["done"]]
-        for key in finished[:extra]:
-            entry = self._task_rows.pop(key)
-            self.task_list.takeItem(self.task_list.row(entry["item"]))
+        if extra > 0:
+            finished = [key for key, row in self._task_rows.items() if row["done"]]
+            for key in finished[:extra]:
+                entry = self._task_rows.pop(key)
+                self.task_list.takeItem(self.task_list.row(entry["item"]))
+        self.task_list.setVisible(self.task_list.count() > 0)
 
     def _cancel_task(self, key: str) -> None:
         """Ask a running send to stop between chunks.
@@ -1499,9 +2313,12 @@ class TransferPanel(QWidget):
         if entry is None:
             return
         seconds = int(time.time() - entry["started"])
-        entry["elapsed"].setText(f"{seconds // 60}:{seconds % 60:02d}")
+        clock = f"{seconds // 60}:{seconds % 60:02d}"
+        entry["elapsed"].setText(clock)
+        entry["widget"].setToolTip(_("已用 {clock}。").format(clock=clock))
         if percent is not None:
             entry["bar"].setValue(percent)
+            entry["percent"].setText(f"{percent}%")
         if note is not None:
             entry["name"].setText(note)
 
@@ -1510,10 +2327,30 @@ class TransferPanel(QWidget):
         if entry is None:
             return
         entry["bar"].setValue(100 if ok else 0)
+        # A finished row has nothing left to measure: the mockup's completed lines carry a name,
+        # a size and a state, and the bar that said 65% would only keep asking a closed question.
+        entry["bar"].setVisible(False)
+        entry["percent"].setVisible(False)
         entry["cancel"].setEnabled(False)
         entry["cancel"].setText(_("完成") if ok else _("失败"))
+        entry["cancel"].setProperty("state", "ok" if ok else "err")
+        # QSS caches a resolved style per widget, so a property set after the first polish
+        # needs the widget polished again before the attribute selector is read.
+        entry["cancel"].style().polish(entry["cancel"])
         entry["done"] = True
+        entry["ok"] = ok
+        entry["finished"] = time.time()
         self._tick_task(key, note=entry["title"])
+
+    def _throttle(self) -> Throttle | None:
+        """The sender's byte budget, straight from the settings page. None means no limit.
+
+        Read at the start of every transfer instead of cached here, so a switch flipped while a
+        session is open is honoured by the next 发送 rather than needing the pair redone.
+        """
+        if not bool(self.settings.get("limit_on", False)):
+            return None
+        return Throttle(max(1, int(self.settings.get("limit_mbps", 10))) * 1_000_000)
 
     def _send_worker(self, peer: Peer, paths: list[Path], base: Path | None) -> None:
         """Push the staged files through the session 连接 made, without closing it afterwards.
@@ -1526,6 +2363,9 @@ class TransferPanel(QWidget):
         if conn is None:
             self._finished.emit(False, _("这台设备已经没有连接会话，请重新连接它。"))
             return
+        # Read when the transfer starts rather than when the pair finished, so the switch on the
+        # settings page applies to the next 发送 without dropping the session it rides on.
+        conn.throttle = self._throttle()
         try:
             files = plan(paths, base=base)
             if not files:
@@ -1615,6 +2455,7 @@ class TransferPanel(QWidget):
         self._save_arrivals()
         self._refresh_received()
         total = sum(int(entry["size"]) for entry in landed)
+        self.arrived.emit(who, len(landed), _human(total))
         self.status_label.setText(
             _("已收到 {who} 发来的 {n} 个文件（{size}），逐个校验通过。").format(who=who, n=len(landed), size=_human(total))
         )
@@ -1658,21 +2499,32 @@ class TransferPanel(QWidget):
             chip.blockSignals(False)
 
     def _filtered_arrivals(self) -> list[dict]:
-        if self._received_filter == "all":
-            return list(self._received)
-        now = time.localtime()
-        midnight = time.mktime((now.tm_year, now.tm_mon, now.tm_mday, 0, 0, 0, 0, 0, -1))
-        days = 1 if self._received_filter == "today" else 7
-        since = midnight - (days - 1) * 86_400
-        return [entry for entry in self._received if float(entry.get("at") or 0) >= since]
+        needle = self.files_search.text().strip().lower()
+        out = []
+        for entry in self._received:
+            if self._received_filter != "all" and self._file_kind(str(entry["relpath"])) != self._received_filter:
+                continue
+            if needle and needle not in f"{entry['relpath']} {entry.get('who') or ''}".lower():
+                continue
+            out.append(entry)
+        return out
+
+    #: The mockup draws a sheet in front of every file name. The glyph is the kind the chips
+    #: filter by, so the pill above and the row below say the same thing.
+    _KIND_GLYPH = {"image": "file-image", "video": "file-video", "doc": "file-doc", "archive": "file-archive"}
 
     def _refresh_received(self) -> None:
         tree = self.received_list
+        p = self._p
         # Inserting into a sorted tree lets each row land where the previous order says, which
         # scrambles a list of identical timestamps. Sort once, at the end.
         tree.setSortingEnabled(False)
         tree.clear()
         arrivals = self._filtered_arrivals()
+        # Two transfers can carry a file with the same name, and the mockup's row has room for one
+        # word. So the folder stays out of the list until it is the only thing that tells two rows
+        # apart - which is exactly when leaving it out would be a lie by ambiguity.
+        taken = Counter(Path(str(entry["relpath"])).name for entry in arrivals)
         for entry in reversed(arrivals):
             path = str(entry["path"])
             gone = not Path(path).exists()
@@ -1681,7 +2533,20 @@ class TransferPanel(QWidget):
             size = int(entry.get("size") or 0)
             stamp = float(entry.get("at") or 0)
             who = str(entry.get("who") or "")
-            row.setText(0, str(entry["relpath"]) + (_("（已经不在了）") if gone else ""))
+            row.setIcon(0, icons.icon(self._KIND_GLYPH.get(self._file_kind(str(entry["relpath"])), "file-unknown"), p.accent))
+            label = Path(str(entry["relpath"])).name
+            if taken[label] > 1:
+                # Two batches can carry the same name. Say which batch this row came from: the
+                # folder the sender put it in, or - for a file at the top of a batch, where that
+                # says nothing - the folder this machine filed the batch into.
+                rel = Path(str(entry["relpath"]))
+                label = str(rel) if str(rel.parent) != "." else f"{Path(path).parent.name}/{label}"
+            row.setText(0, label + (_("（已经不在了）") if gone else ""))
+            # The mockup weights the row: the name is the thing you scan for, so it is the only
+            # word in the row that is bold.
+            name_font = row.font(0)
+            name_font.setBold(True)
+            row.setFont(0, name_font)
             row.setData(0, Qt.UserRole, str(entry["relpath"]))
             row.setText(1, _human(size))
             row.setData(1, Qt.UserRole, size)
@@ -1690,6 +2555,8 @@ class TransferPanel(QWidget):
             row.setText(3, who)
             row.setData(3, Qt.UserRole, who)
             row.setToolTip(0, path if not gone else _("原本落在：{path}").format(path=path))
+            if stamp:
+                row.setToolTip(2, time.strftime("%Y-%m-%d %H:%M", time.localtime(stamp)))
             if gone:
                 # Same row, visibly dimmed: the record still means something even though the
                 # bytes moved, and a palette brush keeps it readable in both themes.
@@ -1697,13 +2564,12 @@ class TransferPanel(QWidget):
         if not arrivals:
             placeholder = _ArrivalRow(tree)
             placeholder.path = ""
+            filtering = self._received_filter != "all" or bool(self.files_search.text().strip())
             placeholder.setText(
                 0,
-                _("还没有收到校验通过的文件。")
-                if self._received_filter == "all"
-                else _("这个时间里没有收到的文件。"),
+                _("没有符合条件的文件。") if filtering else _("还没有收到校验通过的文件。"),
             )
-            placeholder.setDisabled(True)
+            placeholder.setFlags(Qt.NoItemFlags)
         tree.setSortingEnabled(True)
 
     def _open_received(self, row: QTreeWidgetItem, _column: int = 0) -> None:
@@ -1718,6 +2584,172 @@ class TransferPanel(QWidget):
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
+    # ---------------------------------------------------------- 传输记录 page
+
+    @property
+    def _p(self) -> theme.Palette:
+        """The palette this panel is being drawn with. QSS cannot reach inside a QIcon, so a
+        row that carries an arrow or a check has to ask for the colour and re-rasterise it."""
+        return theme.palette_for(self.settings.get("theme", "auto"))
+
+    def _history_rows(self) -> list[dict]:
+        """Both kinds of "something moved" in one list, newest first.
+
+        Two sources because the honest answer to the question is two questions: what this
+        session tried to send, including the attempts that failed, and what is verified on
+        disk, which outlives the window but knows nothing about a send that never left.
+        """
+        rows: list[dict] = []
+        running = self._worker is not None and self._worker.is_alive()
+        for key, task in self._task_rows.items():
+            state = "running" if (key == "send" and running) or not task["done"] else (
+                "done" if task["ok"] else "failed"
+            )
+            rows.append(
+                {
+                    # The live card owns rows that came from a task; the history page owns the
+                    # rest. The key is what keeps one row from being drawn twice, in two widgets.
+                    "key": key,
+                    "dir": "up",
+                    "name": str(task.get("file") or task["title"]),
+                    "size": int(task.get("bytes") or 0),
+                    "at": float(task.get("finished") or task["started"]),
+                    "state": state,
+                    "who": str(task.get("who") or ""),
+                    "detail": f"{task['bar'].value()}%" if state == "running" else "",
+                }
+            )
+        for arrival in self._received:
+            rows.append(
+                {
+                    "key": None,
+                    "dir": "down",
+                    "name": Path(str(arrival["relpath"])).name,
+                    "size": int(arrival.get("size") or 0),
+                    "at": float(arrival.get("at") or 0),
+                    "state": "done",
+                    "who": str(arrival.get("who") or ""),
+                    "detail": "",
+                }
+            )
+        rows.sort(key=lambda row: row["at"], reverse=True)
+        return rows
+
+    def _day_label(self, stamp: float) -> str:
+        """今天 / 昨天, then a date - the grouping the mockup draws, in the words a user reads."""
+        if not stamp:
+            return _("更早")
+        today = time.localtime()
+        midnight = time.mktime((today.tm_year, today.tm_mon, today.tm_mday, 0, 0, 0, 0, 0, -1))
+        if stamp >= midnight:
+            return _("今天")
+        if stamp >= midnight - 86_400:
+            return _("昨天")
+        return time.strftime("%Y-%m-%d", time.localtime(stamp))
+
+    def _state_label(self, state: str) -> str:
+        return {"running": _("传输中"), "done": _("已完成"), "failed": _("失败")}[state]
+
+    def _choose_history_filter(self, chip: QPushButton) -> None:
+        self._history_filter = str(chip.property("filter") or "all")
+        for other in self.history_chips:
+            other.blockSignals(True)
+            other.setChecked(other is chip)
+            other.blockSignals(False)
+        self._refresh_history()
+
+    def _day_heading(self, label: str) -> QLabel:
+        head = QLabel()
+        head.setObjectName("DayHeading")
+        head.setText(label)
+        return head
+
+    def _record_row(self, row: dict) -> QFrame:
+        """One transfer, laid out the way the mockup lays it out: mark, name, size, status."""
+        p = self._p
+        frame = QFrame()
+        frame.setObjectName("RecordRow")
+        box = QHBoxLayout(frame)
+        box.setContentsMargins(2, 11, 2, 11)
+        box.setSpacing(10)
+        glyph = "upload-circle" if row["dir"] == "up" else "download-circle"
+        mark = QLabel(frame)
+        mark.setPixmap(icons.pixmap(glyph, p.text, 20))
+        box.addWidget(mark)
+        name = QLabel(frame)
+        name.setObjectName("RecordName")
+        name.setText(str(row["name"]))
+        box.addWidget(name)
+        size = QLabel(frame)
+        size.setObjectName("MutedOnCard")
+        size.setText(_human(int(row["size"])) if row["size"] else "")
+        box.addWidget(size)
+        box.addStretch(1)
+        state = str(row["state"])
+        if state == "done":
+            # Only the finished rows earn a tick: an arrow already says which way it went, and a
+            # running row that also carried a mark would read as two states at once.
+            tick = QLabel(frame)
+            tick.setPixmap(icons.pixmap("check-circle", p.ok, 16))
+            box.addWidget(tick)
+        status = QLabel(frame)
+        status.setObjectName({"running": "Running", "done": "Ok", "failed": "Err"}[state])
+        status.setText(self._state_label(state))
+        box.addWidget(status)
+        if row["detail"]:
+            rate = QLabel(frame)
+            rate.setObjectName("MutedOnCard")
+            rate.setText(str(row["detail"]))
+            box.addWidget(rate)
+        frame.setAccessibleName(f"{row['name']} {self._state_label(state)}")
+        if row["who"]:
+            frame.setToolTip(
+                _("发给 {who}").format(who=row["who"])
+                if row["dir"] == "up"
+                else _("来自 {who}").format(who=row["who"])
+            )
+        return frame
+
+    def _add_record_widget(self, box: QListWidget, widget: QWidget, *, selectable: bool = True) -> None:
+        item = QListWidgetItem(box)
+        item.setSizeHint(widget.sizeHint())
+        if not selectable:
+            item.setFlags(Qt.NoItemFlags)
+        box.setItemWidget(item, widget)
+
+    def _refresh_history(self) -> None:
+        """Rebuild the record list: a heading per day, a row per transfer under it."""
+        box = self.history_list
+        box.clear()
+        keep = self._history_filter
+        rows = [row for row in self._history_rows() if keep == "all" or row["state"] == keep]
+        day = ""
+        for row in rows:
+            label = self._day_label(row["at"])
+            if label != day:
+                day = label
+                self._add_record_widget(box, self._day_heading(label), selectable=False)
+            self._add_record_widget(box, self._record_row(row))
+        if not rows:
+            placeholder = QLabel()
+            placeholder.setObjectName("MutedOnCard")
+            placeholder.setText(_("还没有任何传输记录。") if keep == "all" else _("这个筛选下没有记录。"))
+            self._add_record_widget(box, placeholder, selectable=False)
+        self._refresh_recent()
+
+    def _refresh_recent(self) -> None:
+        """The arrivals the live card is not already showing, newest first.
+
+        The 传输 mockup's card has three finished rows in it before anything happens this
+        session, and they are received files. The rows a send put up are the live list's own
+        widgets - rebuilt here they would lose the progress bar mid-flight - so this only ever
+        adds the records that list does not hold.
+        """
+        box = self.recent_list
+        box.clear()
+        for row in [r for r in self._history_rows() if r["key"] is None][:_TASK_CARD_ROWS]:
+            self._add_record_widget(box, self._record_row(row))
+
     # --------------------------------------------------------------- lifecycle
 
     def shutdown(self) -> None:
@@ -1727,6 +2759,11 @@ class TransferPanel(QWidget):
         # The window can close while an incoming offer is still on screen, and the server
         # thread holding it is waiting on that answer. Quitting means declining.
         for holder in pending:
+            # The card runs a nested modal loop; dismissing it first is what lets the close
+            # finish instead of leaving a dialog whose parent has already been destroyed.
+            dialog = holder.get("dialog")
+            if isinstance(dialog, QDialog):
+                dialog.done(QDialog.Rejected)
             holder["event"].set()
         self.stop_listening()
         for conn in self._sessions.values():

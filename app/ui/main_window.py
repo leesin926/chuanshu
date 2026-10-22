@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QCheckBox,
+    QLabel,
     QMainWindow,
     QMessageBox,
     QSystemTrayIcon,
@@ -23,9 +24,8 @@ from PySide6.QtWidgets import (
 from app import autostart, icons
 from app.config import CLOSE_ASK, CLOSE_QUIT, CLOSE_TRAY, Settings
 from app.i18n import LanguageManager, N, _
-from app.logging_setup import log_file
 from app.meta import COPYRIGHT, VERSION, display_name
-from app.ui import theme
+from app.ui import theme, transfer
 from app.ui.settings_dialog import SettingsPage
 from app.ui.title_bar import EdgeResizeFilter, TitleBar, apply_rounded_corners
 from app.ui.transfer import TransferPanel
@@ -33,12 +33,32 @@ from app.ui.tray import TrayIcon
 
 log = logging.getLogger(__name__)
 
-#: Rail order, and the msgid each button carries. The four pages are the whole window; the
-#: gear on the caption is only ever a shortcut to the last one. N() because Babel only reads
-#: literals out of a call, and these reach _() as the tuple's second element.
-NAV_ITEMS = (("transfer", N("传输")), ("devices", N("设备")), ("files", N("文件")), ("settings", N("设置")))
+#: Rail order, the caption each button carries, and the glyph in front of it. The mockups put
+#: an icon on every rail item, so a language with long captions still reads at a glance.
+#: N() because Babel only reads literals out of a call, and these reach _() as the tuple's
+#: second element.
+#: key, caption, glyph, and the stack page it opens. The page is named rather than counted:
+#: 传输记录 sits between 文件 and 设置 in the stack but is not a rail entry, so a rail button's
+#: position and its page are two different numbers.
+NAV_ITEMS = (
+    ("transfer", N("传输"), "nav-transfer", transfer.PAGE_TRANSFER),
+    ("send", N("发送"), "nav-send", transfer.PAGE_SEND),
+    ("receive", N("接收"), "nav-receive", transfer.PAGE_RECEIVE),
+    ("files", N("文件"), "nav-files", transfer.PAGE_FILES),
+    ("settings", N("设置"), "settings", transfer.PAGE_SETTINGS),
+)
 #: Which entry of NAV_ITEMS is the settings page, and so which stack index it occupies.
-PAGE_SETTINGS = 3
+PAGE_SETTINGS = transfer.PAGE_SETTINGS
+#: Which rail entry each page lights up, by key rather than by count - 传输记录 is reached from
+#: the dashboard's own card and leaves 传输 lit, and 设置 is a page the rail opens last.
+RAIL_FOR_PAGE = {
+    transfer.PAGE_TRANSFER: "transfer",
+    transfer.PAGE_SEND: "send",
+    transfer.PAGE_RECEIVE: "receive",
+    transfer.PAGE_FILES: "files",
+    transfer.PAGE_HISTORY: "transfer",
+    transfer.PAGE_SETTINGS: "settings",
+}
 
 
 class MainWindow(QMainWindow):
@@ -79,7 +99,11 @@ class MainWindow(QMainWindow):
         layout.addLayout(self._build_body())
         self.setCentralWidget(central)
 
+        # No status strip. Every mockup ends the window at the last card, and a bar of permanent
+        # diagnostics is the one piece of chrome all six pages would have to make room for; the
+        # log path it used to carry now sits on 设置 › 关于, where it is a fact you go and read.
         self.status = self.statusBar()
+        self.status.hide()
 
         self._resize_filter = EdgeResizeFilter(self)
         self.installEventFilter(self._resize_filter)
@@ -87,6 +111,7 @@ class MainWindow(QMainWindow):
 
         self._build_popups()
         self._build_tray()
+        self.panel.arrived.connect(self._notify_arrival)
 
         self.languages.changed.connect(self.retranslate)
         # No fixed floor here on purpose. An explicit minimum overrides the layout's own,
@@ -101,17 +126,30 @@ class MainWindow(QMainWindow):
         self.retranslate()
 
     def _build_body(self) -> QHBoxLayout:
-        """The rail and the page it selects, side by side inside the window's margins.
+        """The rail and the page it selects.
 
         设置 became a page rather than a window because everything on it already took effect the
         moment it was typed; a second frame would promise a cancel button that cannot exist.
+
+        The rail goes flush to the window's left, top and bottom, because in the mockups the dark
+        column *is* the edge of the app - a margin around it reads as a widget floating on paper.
+        That also pushes the caption bar into the content column, so it only ever sits over the
+        light part.
         """
         body = QHBoxLayout()
-        body.setContentsMargins(18, 14, 18, 12)
-        body.setSpacing(12)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
         self.panel = TransferPanel(self.settings, self)
+        right = QVBoxLayout()
+        right.setContentsMargins(0, 0, 0, 0)
+        right.setSpacing(0)
+        right.addWidget(self.title_bar)
+        content = QHBoxLayout()
+        content.setContentsMargins(24, 18, 24, 16)
+        content.addWidget(self.panel, 1)
+        right.addLayout(content, 1)
         body.addWidget(self._build_nav())
-        body.addWidget(self.panel, 1)
+        body.addLayout(right, 1)
         return body
 
     def _build_nav(self) -> QWidget:
@@ -119,12 +157,29 @@ class MainWindow(QMainWindow):
         nav.setObjectName("Nav")
         self.nav = nav
         layout = QVBoxLayout(nav)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(4)
+        # The mockups pad the rail by about a fifth of its width. A tighter margin makes the
+        # pills touch the navy edge, which is the one thing that turns a rail into a list.
+        layout.setContentsMargins(18, 20, 18, 16)
+        layout.setSpacing(12)
+
+        brand = QHBoxLayout()
+        brand.setSpacing(9)
+        self.brand_icon = QLabel(nav)
+        self.brand_icon.setObjectName("BrandIcon")
+        self.brand_icon.setFixedSize(30, 30)
+        self.brand_icon.setAlignment(Qt.AlignCenter)
+        brand.addWidget(self.brand_icon)
+        self.brand_label = QLabel(nav)
+        self.brand_label.setObjectName("Brand")
+        brand.addWidget(self.brand_label)
+        brand.addStretch(1)
+        layout.addLayout(brand)
+        layout.addSpacing(26)
+
         group = QButtonGroup(self)
         group.setExclusive(True)
         self.nav_buttons: dict[str, QPushButton] = {}
-        for page, (key, msgid) in enumerate(NAV_ITEMS):
+        for key, msgid, _glyph, page in NAV_ITEMS:
             button = QPushButton(nav)
             button.setObjectName("NavButton")
             button.setCheckable(True)
@@ -132,17 +187,34 @@ class MainWindow(QMainWindow):
             # very first picture of the window already answers "what is this button".
             button.setAccessibleName(_(msgid))
             button.clicked.connect(lambda _checked=False, target=page: self.show_page(target))
+            button.toggled.connect(lambda _on=False, b=button: self._restyle_nav_icon(b))
             group.addButton(button)
             layout.addWidget(button)
             self.nav_buttons[key] = button
         self.nav_buttons["transfer"].setChecked(True)
         layout.addStretch(1)
+
+        # The mockups close the rail with a face rather than a footer: it is the account the
+        # pairing code belongs to, and clicking it is the shortest route to changing that name.
+        self.nav_user = QPushButton(nav)
+        self.nav_user.setObjectName("NavUser")
+        self.nav_user.setIcon(icons.icon("user", self.palette.nav_text))
+        self.nav_user.clicked.connect(lambda: self.show_page(PAGE_SETTINGS))
+        layout.addWidget(self.nav_user)
         return nav
+
+    def _restyle_nav_icon(self, button: QPushButton) -> None:
+        """A QIcon cannot follow a stylesheet, so the checked state repaints the glyph itself."""
+        p = self.palette
+        name = next((k for k, b in self.nav_buttons.items() if b is button), "")
+        glyph = dict((k, g) for k, _m, g, _p in NAV_ITEMS).get(name, "")
+        if glyph:
+            button.setIcon(icons.icon(glyph, p.nav_sel_text if button.isChecked() else p.nav_text))
 
     def _fit_nav(self) -> None:
         """Give the rail the width its widest caption needs; no language may lose a tail."""
         need = max(button.sizeHint().width() for button in self.nav_buttons.values())
-        self.nav.setFixedWidth(max(76, need + 4))
+        self.nav.setFixedWidth(max(180, need + 34))
 
     def show_page(self, page: int) -> None:
         """One place that knows a rail position is a stack index."""
@@ -153,8 +225,9 @@ class MainWindow(QMainWindow):
         self._sync_nav(page)
 
     def _sync_nav(self, page: int) -> None:
-        for index, (key, _msgid) in enumerate(NAV_ITEMS):
-            self.nav_buttons[key].setChecked(index == page)
+        lit = RAIL_FOR_PAGE.get(page, "transfer")
+        for key, button in self.nav_buttons.items():
+            button.setChecked(key == lit)
 
     def _build_popups(self) -> None:
         """Three icon buttons on the title bar, each popping its own menu."""
@@ -210,7 +283,7 @@ class MainWindow(QMainWindow):
 
     def _build_tray(self) -> None:
         color = theme.palette_for(self.settings.get("theme", "auto")).text
-        self.tray = TrayIcon(self, color)
+        self.tray = TrayIcon(self, color, self.brand())
         self.tray.restore_requested.connect(self.show_from_tray)
         self.tray.quit_requested.connect(self.quit_app)
         self.tray.autostart_toggled.connect(self.on_autostart_toggled)
@@ -225,6 +298,11 @@ class MainWindow(QMainWindow):
     def brand(self) -> str:
         """The product name in the language currently on screen."""
         return display_name(self.languages.current)
+
+    def _notify_arrival(self, who: str, count: int, size: str) -> None:
+        """The 通知 switch, honoured: a transfer that lands says so outside the window."""
+        if bool(self.settings.get("notify", True)) and self.tray.isVisible():
+            self.tray.notify_arrival(self.brand(), who, count, size)
 
     # ---------------------------------------------------------------- theme
 
@@ -250,6 +328,12 @@ class MainWindow(QMainWindow):
             app.setWindowIcon(icons.window_icon(p.text))
         self.title_bar.restyle(p.text, p.name == "dark")
         self.title_bar.set_maximized(self.is_maximized, p.text)
+        # The rail's glyphs are QIcons, and a stylesheet cannot reach inside one, so the theme
+        # switch has to hand each button a freshly rasterised glyph in the colour it now wears.
+        self.brand_icon.setPixmap(icons.pixmap("logo", "#ffffff", 18))
+        for button in self.nav_buttons.values():
+            self._restyle_nav_icon(button)
+        self.nav_user.setIcon(icons.icon("user", p.nav_text))
         tip = _("外观：{name}").format(name=self.theme_labels()[preference])
         self.title_bar.theme_button.setToolTip(tip)
         self.title_bar.theme_button.setAccessibleName(tip)
@@ -339,7 +423,7 @@ class MainWindow(QMainWindow):
     def _ask_close(self) -> None:
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Question)
-        box.setWindowTitle(_("关闭 {app}").format(app=self.brand()))
+        box.setWindowTitle(_("关闭{app}").format(app=self.brand()))
         box.setText(_("窗口关闭后，希望退出程序还是留在托盘后台运行？"))
         box.setStandardButtons(QMessageBox.NoButton)
         # Carry the decision on the button: PySide6 may hand out a different wrapper
@@ -402,13 +486,18 @@ class MainWindow(QMainWindow):
             button.setToolTip(tip)
             button.setAccessibleName(tip)
         self.action_tray.setText(_("隐藏到托盘"))
-        self.action_quit.setText(_("退出 {app}").format(app=brand))
-        self.action_about.setText(_("关于 {app}").format(app=brand))
+        self.action_quit.setText(_("退出{app}").format(app=brand))
+        self.action_about.setText(_("关于{app}").format(app=brand))
         labels = self.theme_labels()
         for action in self.theme_group.actions():
             action.setText(labels[action.data()])
         self.panel.retranslate()
-        for key, msgid in NAV_ITEMS:
+        self.brand_label.setText(brand)
+        user_tip = _("本机：{name}").format(name=self.panel.device_name)
+        self.nav_user.setToolTip(user_tip)
+        self.nav_user.setAccessibleName(user_tip)
+        self.nav_user.setText(self.panel.device_name)
+        for key, msgid, _glyph, _page in NAV_ITEMS:
             caption = _(msgid)
             button = self.nav_buttons[key]
             button.setText(caption)
@@ -417,24 +506,21 @@ class MainWindow(QMainWindow):
         self._fit_nav()
         if self.settings_page is not None:
             self.settings_page.retranslate()
-        # After the last caption is written: a page's height demand is a function of the words
-        # in it, so this is the moment the number is finally true for this language.
-        self.panel.fit_pages()
-        self.status.showMessage(
-            _("当前语言：{lang}    日志：{path}").format(
-                lang=self.languages.display_name(self.languages.current), path=log_file()
-            )
-        )
         for action in self.language_group.actions():
             action.setChecked(action.data() == self.languages.current)
         self.tray.retranslate(self.brand())
         if self.isVisible():
             self.apply_theme(self.settings.get("theme", "auto"), save=False)
+        # After the last caption is written *and* after the theme pass, which is what re-polishes
+        # every widget: a page asked for its minimum before that still answers with the previous
+        # language's number, and pinning the stack to it leaves the new captions with less room
+        # than their own words need.
+        self.panel.fit_pages()
 
     def show_about(self) -> None:
         QMessageBox.about(
             self,
-            _("关于 {app}").format(app=self.brand()),
+            _("关于{app}").format(app=self.brand()),
             f"{self.brand()} {VERSION}\n{COPYRIGHT}\n{_('Qt')} {qVersion()}",
         )
 

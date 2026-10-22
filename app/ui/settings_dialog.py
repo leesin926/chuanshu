@@ -1,4 +1,4 @@
-"""The settings page: a list of sections on the left, the chosen section on the right.
+"""The settings page: one sheet of rows, the caption on the left, the control on the right.
 
 It is a page in the window's rail rather than a dialog, because there is deliberately no OK
 button. Each control writes the value the rest of the app already reads and takes effect on
@@ -8,35 +8,41 @@ lying about one of the two states.
 Anything shown here has to be something the app can actually do, so the protocol numbers
 (port, chunk size, code lifetime) are read-only facts: they come from the frozen contract
 both ends check each other against, and changing them here would only break pairing.
+
+The mockup draws the sheet as six rows; this build has more that is worth changing than the
+drawing has room for, so the sheet scrolls instead of stretching the window. Row order keeps
+the mockup's: the folder, then the two bandwidth/notice switches, then the look.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 import PySide6
 
-from PySide6.QtCore import QSize, Qt, QUrl, qVersion
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import QRect, QSize, Qt, QUrl, qVersion
+from PySide6.QtGui import QBrush, QColor, QDesktopServices, QPainter, QPen
 from PySide6.QtWidgets import (
-    QCheckBox,
+    QAbstractButton,
     QComboBox,
     QFileDialog,
-    QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QPushButton,
-    QRadioButton,
-    QStackedWidget,
+    QScrollArea,
+    QSpinBox,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
 
 from app import autostart
+from app.ui import theme
 from app.config import CLOSE_ASK, CLOSE_QUIT, CLOSE_TRAY, Settings
 from app.i18n import LanguageManager, N, _
 from app.meta import COPYRIGHT, VERSION
@@ -48,17 +54,73 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-#: Left-hand menu, in the order the stack holds them. Each one is also a msgid, so N() is what
-#: puts it in the template: retranslate() hands the tuple element to _(), and Babel only reads
-#: literals out of a call.
-SECTIONS = (N("常规"), N("传输"), N("已配对设备"), N("关于"))
-
-#: Width an explanation keeps at the smallest window the user can drag this to.
+#: Width a caption keeps at the smallest window the user can drag this to.
 #: Qt counts a single line of a word-wrapped label when it works out a layout's minimum, so
-#: a page full of sentences asked to be 211 px tall and then cut the tail off three of them,
-#: squeezing the radio groups next door. Pin the width and the height becomes calculable,
-#: which lets the window's own minimum tell the truth.
-NOTE_WIDTH = 340
+#: a page full of sentences asked to be 211 px tall and then cut the tail off three of them.
+#: Pin the width and the height becomes calculable, which lets the window's floor tell the truth.
+#: 260 is not a taste number: the sheet adds 56 px of padding, the scroll area 17 of bar and the
+#: page 12 of margin, and the four content pages already hold the stack at 594. A caption column
+#: wider than this moves the floor for the whole window, not just for the page that asked.
+ROW_TEXT_WIDTH = 260
+
+#: The same arithmetic on the right-hand side, where the facts are paths and version strings.
+#: 40 px narrower than the caption column because a value has no button next to it to make room
+#: for; the widest thing this sheet holds is the 主题 pill row, and that is what sets the floor.
+ROW_VALUE_WIDTH = 220
+
+#: A fact too long for the right-hand slot goes under its own caption, across the sheet.
+#: 500 keeps the whole page inside the 594 px the four content pages already ask the window for.
+ROW_BLOCK_WIDTH = 500
+
+THEME_CHOICES = (("auto", N("跟随系统")), ("light", N("浅色")), ("dark", N("深色")))
+CLOSE_CHOICES = ((CLOSE_ASK, N("每次询问")), (CLOSE_TRAY, N("最小化到托盘")), (CLOSE_QUIT, N("直接退出")))
+
+
+class SwitchButton(QAbstractButton):
+    """The pill toggle from the mockups.
+
+    Qt's checkbox cannot be made into one by stylesheet - the indicator is a sub-control the
+    platform style paints, and QSS only resizes it. Drawing it here also means the switch is
+    still a button: space bar and click both work, and it is the same widget in both themes.
+    """
+
+    SIZE = QSize(52, 30)
+    KNOB = 24
+
+    def __init__(self, palette: Callable[[], theme.Palette], label: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._palette = palette
+        self.setCheckable(True)
+        self.setCursor(Qt.PointingHandCursor)
+        # The only thing saying what this switch is, since it carries no text of its own.
+        self.setAccessibleName(label)
+        self.setFixedSize(self.SIZE)
+        self.toggled.connect(self.update)
+
+    def hitButton(self, pos) -> bool:
+        return self.rect().contains(pos)
+
+    def paintEvent(self, _event) -> None:
+        p = self._palette()
+        on = self.isChecked()
+        live = self.isEnabled()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        # Off is grey-on-grey against the card if the track borrows the card's own recessed
+        # fill, and a switch nobody can see is a switch nobody can read. The mockup draws the
+        # off track a full step darker than the sheet, so it does too.
+        track = QColor(p.accent if on else p.pressed)
+        if not live:
+            track.setAlpha(120)
+        painter.setPen(QPen(QColor(p.hairline), 1) if not on else Qt.NoPen)
+        painter.setBrush(track)
+        painter.drawRoundedRect(QRect(1, 1, self.width() - 3, self.height() - 3), 14, 14)
+        knob = QRect(3, (self.height() - self.KNOB) // 2, self.KNOB, self.KNOB)
+        if on:
+            knob.moveLeft(self.width() - 3 - self.KNOB)
+        painter.setPen(QPen(QColor(p.hairline), 1))
+        painter.setBrush(QColor(p.card) if live else QColor(p.hover))
+        painter.drawEllipse(knob)
 
 
 class SettingsPage(QWidget):
@@ -70,33 +132,36 @@ class SettingsPage(QWidget):
         self.panel = panel
         #: (widget, msgid, setter) replayed by retranslate() so a language switch is enough.
         self._bound: list[tuple[object, str, object]] = []
-        #: Labels allowed to break into several lines; remeasured whenever their text changes.
-        self._wrapping: list[QLabel] = []
+        #: Labels allowed to break into several lines, with the width each one keeps.
+        self._wrapping: list[tuple[QLabel, int]] = []
 
         self.setObjectName("SettingsPage")
         # No explicit minimum: it would override the layout's own, and the window could then
-        # be sized narrower than the longest caption on a page, which clips the control
+        # be sized narrower than the longest caption on the sheet, which clips the control
         # instead of refusing the size. The layout floor moves with the language.
 
-        self.menu = QListWidget(self)
-        self.menu.setObjectName("SettingsMenu")
-        self._fit_menu()
-
-        self.stack = QStackedWidget(self)
-        for page in (self._general_page(), self._transfer_page(), self._peers_page(), self._about_page()):
-            self.menu.addItem(QListWidgetItem())
-            self.stack.addWidget(page)
-        self.menu.currentRowChanged.connect(self.stack.setCurrentIndex)
-        self.menu.setCurrentRow(0)
-
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(12)
-        row.addWidget(self.menu)
-        row.addWidget(self.stack, 1)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(6, 6, 6, 6)
-        outer.addLayout(row, 1)
+        outer.setSpacing(14)
+        outer.addWidget(self._bind(QLabel(self), "设置", None, "PageTitle"))
+
+        self.scroll = QScrollArea(self)
+        self.scroll.setObjectName("Page")
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setWidgetResizable(True)
+        # The sheet is as wide as the page, so a vertical bar is the only one that can appear -
+        # and a horizontal one would mean a row had outgrown the window it is sitting in.
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        self.sheet = QFrame(self.scroll)
+        self.sheet.setObjectName("Card")
+        self.rows = QVBoxLayout(self.sheet)
+        self.rows.setContentsMargins(28, 6, 28, 6)
+        self.rows.setSpacing(0)
+        self._build_rows()
+
+        self.scroll.setWidget(self.sheet)
+        outer.addWidget(self.scroll, 1)
 
         # The name is edited here and inline on the panel, so both have to follow it.
         self.panel.device_name_changed.connect(lambda _name: self.reload())
@@ -104,177 +169,270 @@ class SettingsPage(QWidget):
 
     # ------------------------------------------------------------------ widgets
 
-    def _bind(self, widget: QWidget, msgid: str, setter=None) -> QWidget:
-        """Remember where a translatable string lives so retranslate() can rewrite it."""
-        self._bound.append((widget, msgid, setter or widget.setText))
+    def _bind(
+        self,
+        widget: QWidget,
+        msgid: str,
+        setter=None,
+        object_name: str | None = None,
+        values: dict | None = None,
+    ) -> QWidget:
+        """Remember where a translatable string lives so retranslate() can rewrite it.
+
+        `values` is for the captions that carry the product name: the msgid stays a literal
+        the extractor can see, and the name is substituted every time the strings are replayed,
+        because 传书 in one language is ChuanShu in another. A value that is callable is called
+        then, so it follows the language instead of freezing the one this row was built in.
+        """
+        if object_name is not None:
+            widget.setObjectName(object_name)
+        write = setter or widget.setText
+        if values:
+            # `sink=write` binds the setter as it is now: closing over the name would make the
+            # lambda call itself.
+            write = lambda text, captured=values, sink=write: sink(
+                text.format(**{k: v() if callable(v) else v for k, v in captured.items()})
+            )
+        self._bound.append((widget, msgid, write))
         return widget
 
-    def _label(self, msgid: str, *, muted: bool = False) -> QLabel:
-        label = QLabel(self)
-        if muted:
-            label.setObjectName("Muted")
-            self._wrap(label)
-        return self._bind(label, msgid)
-
-    def _wrap(self, label: QLabel) -> QLabel:
-        """Mark a label as one that may need several lines; see NOTE_WIDTH."""
+    def _wrap(self, label: QLabel, width: int) -> QLabel:
+        """Mark a label as one that may need several lines; see ROW_TEXT_WIDTH."""
         label.setWordWrap(True)
-        self._wrapping.append(label)
+        self._wrapping.append((label, width))
         return label
 
-    def _fit_menu(self) -> None:
-        """Give the section list the width its longest name needs in the current language.
-
-        A fixed column truncated "Dispositivos emparejados" on screen, and this list is the
-        only place that says what the other pages are.
-        """
-        need = self.menu.sizeHintForColumn(0) + 2 * self.menu.frameWidth()
-        self.menu.setFixedWidth(max(150, need))
-
-    def _form(self, title: str) -> tuple[QWidget, QFormLayout]:
-        """A page with its heading. Rows are added by the caller, so every caption literal
-        stays visible to the message extractor instead of hiding inside a tuple."""
-        page = QWidget(self)
-        form = QFormLayout(page)
-        form.setContentsMargins(6, 6, 6, 6)
-        form.setHorizontalSpacing(18)
-        form.setVerticalSpacing(10)
-        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        heading = QLabel(self)
-        heading.setObjectName("SectionTitle")
-        form.addRow(self._bind(heading, title))
-        return page, form
-
-    def _radios(self, values: dict[str, str], chosen: str, on_change) -> tuple[QWidget, dict]:
+    def _words(self, title: str, note: str, extra: QWidget | None = None, values: dict | None = None) -> QWidget:
+        """The left half of a row: what it is called, and in plain terms what it does."""
         box = QWidget(self)
-        # Vertical: three captions side by side are wider than the page at its minimum, and
-        # a radio that has to share a row is the one that gets cut off.
+        box.setObjectName("SettingRow")
         layout = QVBoxLayout(box)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
-        buttons: dict[str, QRadioButton] = {}
-        for value, msgid in values.items():
-            radio = QRadioButton(box)  # one parent widget is what makes them mutually exclusive
-            self._bind(radio, msgid)
-            radio.setChecked(value == chosen)
-            radio.toggled.connect(lambda on, name=value: on and on_change(name))
-            layout.addWidget(radio)
-            buttons[value] = radio
-        return box, buttons
-
-    def _row(self, *widgets: QWidget) -> QWidget:
-        box = QWidget(self)
-        layout = QHBoxLayout(box)
-        layout.setContentsMargins(0, 0, 0, 0)
-        for widget in widgets:
-            layout.addWidget(widget)
-        layout.addStretch(1)
+        layout.addWidget(self._bind(QLabel(box), title, None, "RowTitle", values))
+        layout.addWidget(
+            self._wrap(self._bind(QLabel(box), note, None, "RowNote", values), ROW_TEXT_WIDTH)
+        )
+        if extra is not None:
+            # The actions that are not worth a button on the right - reset this one, open that
+            # folder - sit under the sentence they belong to, so the row keeps one clear control.
+            layout.addSpacing(2)
+            layout.addWidget(extra)
         return box
 
-    def _general_page(self) -> QWidget:
+    def _links(self, *buttons: QPushButton) -> QWidget:
+        box = QWidget(self)
+        box.setObjectName("SettingRow")
+        layout = QHBoxLayout(box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        for button in buttons:
+            layout.addWidget(button)
+        return box
+
+    def _hairline(self) -> QFrame:
+        line = QFrame(self)
+        line.setObjectName("Hairline")
+        line.setFixedHeight(1)
+        self.rows.addWidget(line)
+        return line
+
+    def _row(
+        self,
+        title: str,
+        note: str,
+        *controls: QWidget,
+        expand: QWidget | None = None,
+        extra: QWidget | None = None,
+        values: dict | None = None,
+    ) -> QWidget:
+        line = QWidget(self)
+        line.setObjectName("SettingRow")
+        layout = QHBoxLayout(line)
+        layout.setContentsMargins(0, 18, 0, 18)
+        layout.setSpacing(16)
+        if self.rows.count():
+            self._hairline()
+        layout.addWidget(self._words(title, note, extra, values))
+        if expand is None:
+            # The caption is the fixed half; everything else keeps to the right edge.
+            layout.addStretch(1)
+        for widget in controls:
+            layout.addWidget(widget, 1 if widget is expand else 0)
+        self.rows.addWidget(line)
+        return line
+
+    def _block_row(self, title: str, note: str, block: QWidget, *buttons: QWidget) -> QWidget:
+        """A row whose control is too wide for the right-hand slot and goes under the caption."""
+        if self.rows.count():
+            self._hairline()
+        line = QWidget(self)
+        line.setObjectName("SettingRow")
+        layout = QVBoxLayout(line)
+        layout.setContentsMargins(0, 18, 0, 18)
+        layout.setSpacing(12)
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(16)
+        top.addWidget(self._words(title, note))
+        top.addStretch(1)
+        for button in buttons:
+            top.addWidget(button)
+        layout.addLayout(top)
+        layout.addWidget(block)
+        self.rows.addWidget(line)
+        return line
+
+    def _field(self, *buttons: QWidget) -> tuple[QFrame, QLineEdit]:
+        """One outlined box holding a path and the buttons that act on it, as the mockup draws it."""
+        box = QFrame(self)
+        box.setObjectName("FieldGroup")
+        layout = QHBoxLayout(box)
+        layout.setContentsMargins(10, 5, 8, 5)
+        layout.setSpacing(8)
+        edit = QLineEdit(box)
+        edit.setObjectName("FieldBare")
+        edit.setReadOnly(True)
+        layout.addWidget(edit, 1)
+        for button in buttons:
+            layout.addWidget(button)
+        return box, edit
+
+    def _switch(self, msgid: str, on_change) -> SwitchButton:
+        switch = SwitchButton(lambda: self.host.palette, "", self)
+        # A painted pill carries no text, so the caption is all a screen reader has to say.
+        self._bound.append((switch, msgid, switch.setAccessibleName))
+        switch.toggled.connect(on_change)
+        return switch
+
+    def _pills(self, options: tuple, on_change) -> tuple[QWidget, dict]:
+        """A choice drawn as the mockups do it: a row of outlined buttons, the picked one accented."""
+        box = QWidget(self)
+        box.setObjectName("SettingRow")
+        layout = QHBoxLayout(box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        buttons: dict = {}
+        for value, msgid in options:
+            button = QPushButton(box)
+            button.setObjectName("Choice")
+            button.setCheckable(True)
+            self._bind(button, msgid)
+            button.clicked.connect(lambda _checked, name=value: on_change(name))
+            layout.addWidget(button)
+            buttons[value] = button
+        return box, buttons
+
+    def _value(self, selectable: bool = False, width: int = ROW_VALUE_WIDTH) -> QLabel:
+        """A fact you read here and change somewhere else - or nowhere.
+
+        The narrow ones sit at the right edge of their row, under the control column. A `width`
+        of ROW_BLOCK_WIDTH means the value goes under its caption instead, where a path or three
+        sentences have the sheet's whole width to be legible in.
+        """
+        across = width == ROW_BLOCK_WIDTH
+        label = QLabel(self)
+        label.setObjectName("RowValue")
+        label.setAlignment((Qt.AlignLeft if across else Qt.AlignRight) | Qt.AlignTop)
+        if selectable:
+            label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        return self._wrap(label, width)
+
+    def _build_rows(self) -> None:
+        self.browse_button = self._bind(QPushButton(self), "浏览", None, "Ghost")
+        self.browse_button.clicked.connect(self._choose_dir)
+        self.reset_dir_button = self._bind(QPushButton(self), "恢复默认", None, "Inline")
+        self.reset_dir_button.clicked.connect(self._reset_dir)
+        self.open_dir_button = self._bind(QPushButton(self), "打开接收目录", None, "Inline")
+        self.open_dir_button.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(receive_root())))
+        )
+        field, self.dir_edit = self._field(self.browse_button)
+        field.setMinimumWidth(ROW_VALUE_WIDTH)
+        self._row(
+            N("保存路径"),
+            N("接收文件保存位置"),
+            field,
+            expand=field,
+            extra=self._links(self.reset_dir_button, self.open_dir_button),
+        )
+
+        self.limit_spin = QSpinBox(self)
+        self.limit_spin.setRange(1, 1000)
+        self.limit_spin.setSingleStep(1)
+        self.limit_spin.setFixedWidth(120)
+        self.limit_spin.valueChanged.connect(self._apply_limit_rate)
+        self.limit_switch = self._switch("传输限速", self._apply_limit)
+        self._row(N("传输限速"), N("限制本机发出文件的速度，给同一网络里的别的程序省带宽"), self.limit_spin, self.limit_switch)
+
+        self.autostart_switch = self._switch("开机自启", self._apply_autostart)
+        self._row(N("开机自启"), N("开机时自动启动{app}"), self.autostart_switch, values={"app": self.host.brand})
+
+        self.notify_switch = self._switch("通知", self._apply_notify)
+        self._row(N("通知"), N("接收文件时发送系统通知"), self.notify_switch)
+
+        self.theme_box, self.theme_buttons = self._pills(THEME_CHOICES, self._apply_theme)
+        self._row(N("主题"), N("选择界面外观"), self.theme_box)
+
         self.name_edit = QLineEdit(self)
         self.name_edit.setMaxLength(40)
         self.name_edit.setClearButtonEnabled(True)
+        self.name_edit.setFixedWidth(220)
         self.name_edit.editingFinished.connect(self._apply_name)
+        self._row(N("设备名"), N("这个名称会出现在附近设备的名单里，改完立即生效。"), self.name_edit)
 
         self.language_box = QComboBox(self)
         for code in self.languages.available():
             self.language_box.addItem(self.languages.display_name(code), code)
         self.language_box.currentIndexChanged.connect(self._apply_language)
+        self._row(N("界面语言"), N("只改这个程序的界面文字"), self.language_box)
 
-        self.theme_box, self.theme_buttons = self._radios(
-            {"auto": N("跟随系统"), "light": N("浅色"), "dark": N("深色")},
-            str(self.settings.get("theme", "auto")),
-            self._apply_theme,
-        )
-        self.autostart_check = QCheckBox(self)
-        self._bind(self.autostart_check, "开机时自动启动")
-        self.autostart_check.toggled.connect(self._apply_autostart)
-        self.close_box, self.close_buttons = self._radios(
-            {CLOSE_ASK: N("每次询问"), CLOSE_TRAY: N("最小化到托盘"), CLOSE_QUIT: N("直接退出")},
-            str(self.settings.get("on_close", CLOSE_ASK)),
-            self._apply_close,
-        )
-        page, form = self._form("常规")
-        form.addRow(self._label("设备名"), self.name_edit)
-        form.addRow(QLabel(self), self._label("这个名称会出现在附近设备的名单里，改完立即生效。", muted=True))
-        form.addRow(self._label("界面语言"), self.language_box)
-        form.addRow(self._label("外观"), self.theme_box)
-        form.addRow(QLabel(self), self.autostart_check)
-        form.addRow(self._label("关闭窗口时"), self.close_box)
-        return page
+        # The mockup gives 主题 a row of pills, so it gets pills. What it never draws is a fourth
+        # choice - 跟随系统 - and the app has had one since the first build, so the pill row is
+        # three wide, not two. 关闭窗口时 has no drawing to be faithful to, and three captions side
+        # by side want more width than the sheet can borrow, because the stack is pinned to its
+        # widest page: a combo asks the same question in the width of the one answer it holds.
+        self.close_box = QComboBox(self)
+        for value, msgid in CLOSE_CHOICES:
+            self.close_box.addItem("", value)
+        self.close_box.currentIndexChanged.connect(self._apply_close_index)
+        self._row(N("关闭窗口时"), N("点窗口右上角的叉之后怎么办"), self.close_box)
 
-    def _transfer_page(self) -> QWidget:
-        self.dir_edit = QLineEdit(self)
-        self.dir_edit.setReadOnly(True)
-        self.browse_button = QPushButton(self)
-        self._bind(self.browse_button, "浏览…")
-        self.browse_button.clicked.connect(self._choose_dir)
-        self.reset_dir_button = QPushButton(self)
-        self._bind(self.reset_dir_button, "恢复默认")
-        self.reset_dir_button.clicked.connect(self._reset_dir)
-        dir_box = QWidget(self)
-        dir_layout = QHBoxLayout(dir_box)
-        dir_layout.setContentsMargins(0, 0, 0, 0)
-        dir_layout.addWidget(self.dir_edit, 1)
-        dir_layout.addWidget(self.browse_button)
-        dir_layout.addWidget(self.reset_dir_button)
-
-        self.port_label = self._wrap(QLabel(self))
-        self.chunk_label = self._wrap(QLabel(self))
-        self.code_life_label = self._wrap(QLabel(self))
-        # These three quote the contract in one sentence each, which is wider than the page
-        # in some languages; wrapping keeps the numbers readable instead of clipped.
-        self.open_dir_button = QPushButton(self)
-        self._bind(self.open_dir_button, "打开接收目录")
-        self.open_dir_button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(receive_root()))))
-        page, form = self._form("传输")
-        form.addRow(self._label("接收目录"), dir_box)
-        form.addRow(QLabel(self), self._label("对方发来的文件按每一次传输建一个子文件夹。", muted=True))
-        form.addRow(QLabel(self), self._row(self.open_dir_button))
-        form.addRow(self._label("端口"), self.port_label)
-        form.addRow(self._label("分块"), self.chunk_label)
-        form.addRow(self._label("配对码"), self.code_life_label)
-        form.addRow(QLabel(self), self._label(
-            "上面这几项由 protocol/protocol.json 冻结，手机端按同一份契约校验，改了就配不上对。",
-            muted=True,
-        ))
-        return page
-
-    def _peers_page(self) -> QWidget:
         self.pin_list = QListWidget(self)
+        self.pin_list.setObjectName("PinList")
+        self.pin_list.setFixedHeight(150)
         self.pin_list.itemSelectionChanged.connect(self._sync_unpin)
-        self.unpin_button = QPushButton(self)
-        self._bind(self.unpin_button, "撤销这台设备")
+        self.unpin_button = self._bind(QPushButton(self), "撤销这台设备", None, "Secondary")
         self.unpin_button.clicked.connect(self._unpin_selected)
-        page, form = self._form("已配对设备")
-        form.addRow(QLabel(self), self._label(
-            "配对成功过的设备记在这里，下次传文件不再问配对码。怀疑对方换过密钥就撤销它。",
-            muted=True,
-        ))
-        form.addRow(QLabel(self), self.pin_list)
-        form.addRow(QLabel(self), self._row(self.unpin_button))
-        return page
+        self._block_row(
+            N("已配对设备"),
+            N("配对成功过的设备记在这里，下次传文件不再问配对码。怀疑对方换过密钥就撤销它。"),
+            self.pin_list,
+            self.unpin_button,
+        )
 
-    def _about_page(self) -> QWidget:
-        self.version_label = QLabel(self)
-        self.copyright_label = QLabel(self)
-        self.copyright_label.setObjectName("Muted")
-        self.qt_label = QLabel(self)
-        self.protocol_label = QLabel(self)
-        self.data_label = self._wrap(QLabel(self))
-        self.data_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.open_log_button = QPushButton(self)
-        self._bind(self.open_log_button, "打开日志目录")
+        self.proto_label = self._value(width=ROW_BLOCK_WIDTH)
+        self._block_row(N("协议参数"), N("端口、分块和配对码由 protocol/protocol.json 冻结，手机端按同一份契约校验。"), self.proto_label)
+
+        self.data_label = self._value(selectable=True, width=ROW_BLOCK_WIDTH)
+        self._block_row(N("数据目录"), N("设置、已配对设备和收到的文件都存在这里，可以直接复制这个路径。"), self.data_label)
+
+        self.open_log_button = self._bind(QPushButton(self), "打开日志目录", None, "Ghost")
         self.open_log_button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(logs_dir()))))
-        page, form = self._form("关于")
-        form.addRow(self._label("版本"), self.version_label)
-        form.addRow(QLabel(self), self.copyright_label)
-        form.addRow(self._label("界面库"), self.qt_label)
-        form.addRow(self._label("协议"), self.protocol_label)
-        form.addRow(self._label("数据目录"), self.data_label)
-        form.addRow(self._label("日志"), self._row(self.open_log_button))
-        return page
+        self._row(N("日志"), N("出问题时把这里发给对方"), self.open_log_button)
+
+        self.version_label = self._value()
+        # No spaces around {app} in these Chinese ids. The mockup writes 关于传书, and it is right:
+        # the space between Han and Latin is a Chinese typographic convention, but 传书 is Han, so
+        # "关于 传书" breaks it. Latin locales keep their own space - it lives in their .po entry,
+        # "About ChuanShu", where the msgid cannot reach it.
+        self._row(N("关于{app}"), N("{app}版本与版权信息"), self.version_label, values={"app": self.host.brand})
+
+        self.qt_label = self._value()
+        self._row(N("界面库"), N("这个程序跑在 Qt 上"), self.qt_label)
+
+        self.protocol_label = self._value()
+        self._row(N("契约版本"), N("两端握手时互相核对的那份协议"), self.protocol_label)
 
     # ------------------------------------------------------------------ state in
 
@@ -290,43 +448,71 @@ class SettingsPage(QWidget):
         self.language_box.blockSignals(False)
 
         self._check(self.theme_buttons, str(self.settings.get("theme", "auto")))
-        self._check(self.close_buttons, str(self.settings.get("on_close", CLOSE_ASK)))
+        self._choose(self.close_box, str(self.settings.get("on_close", CLOSE_ASK)))
 
-        self.autostart_check.blockSignals(True)
-        self.autostart_check.setEnabled(autostart.is_supported())
-        self.autostart_check.setChecked(autostart.is_supported() and autostart.is_enabled())
-        self.autostart_check.blockSignals(False)
+        limited = bool(self.settings.get("limit_on", False))
+        self.limit_switch.blockSignals(True)
+        self.limit_switch.setChecked(limited)
+        self.limit_switch.blockSignals(False)
+        self.limit_spin.blockSignals(True)
+        self.limit_spin.setEnabled(limited)
+        self.limit_spin.setValue(max(1, int(self.settings.get("limit_mbps", 10))))
+        self.limit_spin.blockSignals(False)
+
+        self.notify_switch.blockSignals(True)
+        self.notify_switch.setChecked(bool(self.settings.get("notify", True)))
+        self.notify_switch.blockSignals(False)
+
+        self.autostart_switch.blockSignals(True)
+        self.autostart_switch.setEnabled(autostart.is_supported())
+        self.autostart_switch.setChecked(autostart.is_supported() and autostart.is_enabled())
+        self.autostart_switch.blockSignals(False)
 
         proto = self.panel.proto
-        self.port_label.setText(
-            _("局域网端口 {port}，发现端口 {discovery}").format(port=proto.transport_port, discovery=proto.discovery_port)
+        self.proto_label.setText(
+            "\n".join(
+                (
+                    _("局域网端口 {port}，发现端口 {discovery}").format(
+                        port=proto.transport_port, discovery=proto.discovery_port
+                    ),
+                    _("每块 {size} 字节，最多 {n} 块并行").format(
+                        size=f"{proto.chunk_size:,}", n=proto.max_parallel_chunks
+                    ),
+                    # The contract freezes whether a code lapses, so the page quotes whichever of
+                    # the two promises this build actually keeps.
+                    _("{digits} 位数字，固定不换；只有点主页面的「更换配对码和密码」才会换一组").format(
+                        digits=proto.pair_code_digits
+                    )
+                    if proto.pair_code_static
+                    else _("{digits} 位数字，{ttl} 秒后换一个").format(
+                        digits=proto.pair_code_digits, ttl=proto.pair_code_ttl_s
+                    ),
+                )
+            )
         )
-        self.chunk_label.setText(
-            _("每块 {size} 字节，最多 {n} 块并行").format(size=f"{proto.chunk_size:,}", n=proto.max_parallel_chunks)
-        )
-        self.code_life_label.setText(
-            # The contract freezes whether a code lapses, so the page quotes whichever of the
-            # two promises this build actually keeps.
-            _("{digits} 位数字，固定不换；只有点主页面的「更换配对码和密码」才会换一组").format(digits=proto.pair_code_digits)
-            if proto.pair_code_static
-            else _("{digits} 位数字，{ttl} 秒后换一个").format(digits=proto.pair_code_digits, ttl=proto.pair_code_ttl_s)
-        )
-        self.version_label.setText(f"{self.host.brand()} {VERSION}")
-        self.copyright_label.setText(COPYRIGHT)
+        self.version_label.setText(f"{self.host.brand()} {VERSION}\n{COPYRIGHT}")
         self.qt_label.setText(f"Qt {qVersion()} / PySide6 {PySide6.__version__}")
-        self.protocol_label.setText(_("契约版本 v{version}（{name}）").format(version=proto.version, name=proto.technical_name))
+        self.protocol_label.setText(_("v{version}（{name}）").format(version=proto.version, name=proto.technical_name))
         self.data_label.setText(str(user_data_dir()))
         self._refresh_pins()
         self._remeasure()
 
     def _remeasure(self) -> None:
-        """Tell the layout how tall each wrapping label really is at NOTE_WIDTH.
+        """Tell the layout how tall each wrapping label really is at the width it keeps.
 
-        Qt's own minimum for a word-wrapped label is one line, and a page of hints would
-        otherwise ask for 211 px, get 211 px, and lose the end of three sentences.
+        Qt's own minimum for a word-wrapped label is one line, and a sheet of hints would
+        otherwise ask for one line each, get it, and lose the end of half the sentences.
         """
-        for label in self._wrapping:
-            label.setMinimumSize(QSize(NOTE_WIDTH, label.heightForWidth(NOTE_WIDTH)))
+        for label, width in self._wrapping:
+            label.setMinimumSize(QSize(width, label.heightForWidth(width)))
+        self.rows.invalidate()
+        # The sheet's own width is what the page has to be able to show, bar included: the
+        # scroll area is the only thing between a row and the window edge, and it does not
+        # shrink the content, it moves it.
+        bar = self.scroll.style().pixelMetric(QStyle.PM_ScrollBarExtent)
+        self.scroll.setMinimumWidth(
+            self.sheet.minimumSizeHint().width() + max(0, bar) + 2 * self.scroll.frameWidth()
+        )
 
     @staticmethod
     def _check(buttons: dict, value: str) -> None:
@@ -335,6 +521,13 @@ class SettingsPage(QWidget):
             button.setChecked(name == value)
             button.blockSignals(False)
 
+    @staticmethod
+    def _choose(box: QComboBox, value: str) -> None:
+        """Move a combo to the row that holds this value, without telling it that the user did."""
+        box.blockSignals(True)
+        box.setCurrentIndex(max(0, box.findData(value)))
+        box.blockSignals(False)
+
     def _refresh_pins(self) -> None:
         """Rebuild the pinned list straight from identity/trusted.json."""
         # Hold the fingerprint, not the item: clear() destroys the C++ object under us.
@@ -342,6 +535,17 @@ class SettingsPage(QWidget):
         selected = "" if keep is None else str(keep.data(Qt.UserRole))
         pinned = self.panel.identity.pinned_fingerprints()
         self.pin_list.clear()
+        if not pinned:
+            # An empty grey box reads as a list that failed to load. Say that it is empty and
+            # where the first row would come from. It stays enabled so it paints in a readable
+            # grey rather than the style's disabled wash, but it is not selectable: there is
+            # nothing here for 撤销 to act on, and currentItem() must stay None.
+            blank = QListWidgetItem(_("还没有配对过设备。在「接收」页扫码或输配对码，第一次传完文件就会记在这里。"))
+            blank.setFlags(Qt.ItemIsEnabled)
+            blank.setForeground(QBrush(QColor(self.host.palette.text_muted)))
+            self.pin_list.addItem(blank)
+            self._sync_unpin()
+            return
         for fingerprint in pinned:
             entry = self.panel.identity.trusted_entry(fingerprint) or {}
             item = QListWidgetItem(f"{entry.get('name') or _('未知设备')}    {fingerprint[: self.panel.proto.prefix_chars]}")
@@ -374,8 +578,31 @@ class SettingsPage(QWidget):
 
     def _apply_autostart(self, checked: bool) -> None:
         self.host.on_autostart_toggled(checked)
-        # The registry, not the checkbox, decides what is now true.
+        # The registry, not the switch, decides what is now true.
         self.reload()
+
+    def _apply_notify(self, checked: bool) -> None:
+        self.settings.set("notify", bool(checked))
+        log.info("arrival notifications %s", "on" if checked else "off")
+
+    def _apply_limit(self, checked: bool) -> None:
+        self.settings.set("limit_on", bool(checked))
+        self.limit_spin.setEnabled(checked)
+        # The value is read when a transfer starts, so nothing already in flight changes speed.
+        self.host.status.showMessage(
+            _("发出文件限速 {n} MB/s，下一次传输开始生效。").format(n=self.limit_spin.value())
+            if checked
+            else _("发出文件不再限速。"),
+            8000,
+        )
+        log.info("send limit %s", "on" if checked else "off")
+
+    def _apply_limit_rate(self, value: int) -> None:
+        self.settings.set("limit_mbps", int(value))
+        log.info("send limit set to %d MB/s", value)
+
+    def _apply_close_index(self, index: int) -> None:
+        self._apply_close(str(self.close_box.itemData(index)))
 
     def _apply_close(self, value: str) -> None:
         self.settings.set("on_close", value)
@@ -421,18 +648,24 @@ class SettingsPage(QWidget):
         """Re-apply every string; also runs right after a language switch."""
         for widget, msgid, setter in self._bound:
             setter(_(msgid))
-        for row, title in enumerate(SECTIONS):
-            self.menu.item(row).setText(_(title))
-        self._fit_menu()
         self.name_edit.setPlaceholderText(self.panel.device_name)
         self.name_edit.setToolTip(_("这台设备对别人显示的名字"))
         self.language_box.setToolTip(_("只改这个程序的界面文字"))
-        self.autostart_check.setToolTip(
+        for i, (_value, msgid) in enumerate(CLOSE_CHOICES):
+            self.close_box.setItemText(i, _(msgid))
+        # A suffix is part of the field's text, not a label beside it, so it has to be replayed
+        # like the rest or the number keeps a unit nobody reading this language was offered.
+        self.limit_spin.setSuffix(_(" MB/s"))
+        self.limit_spin.setToolTip(_("一次传输最多每秒发出这么多兆字节"))
+        self.limit_switch.setToolTip(_("限制本机发出的文件速度；收文件不受影响"))
+        self.notify_switch.setToolTip(_("文件落地后在托盘冒一条消息，窗口最小化时也看得到"))
+        self.autostart_switch.setToolTip(
             _("只有打包好的 Windows 版本能改开机自启。")
-            if not self.autostart_check.isEnabled()
+            if not self.autostart_switch.isEnabled()
             else _("登录 Windows 后自动运行，并留在托盘")
         )
         self.browse_button.setToolTip(_("换一个存放收到文件的文件夹"))
         self.reset_dir_button.setToolTip(_("回到应用数据目录下的 received"))
+        self.open_dir_button.setToolTip(_("在文件管理器里打开现在这个文件夹"))
         self.unpin_button.setToolTip(_("忘记这台设备的密钥，下次传文件要重新输配对码"))
         self.reload()
