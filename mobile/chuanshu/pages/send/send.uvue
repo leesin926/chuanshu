@@ -1,63 +1,127 @@
 <template>
-	<scroll-view class="page" scroll-y="true">
-		<view class="card">
-			<view class="head">
-				<text class="h">发给谁</text>
-				<text class="badge" v-if="s.connected">已连接</text>
+	<scroll-view class="page pagepad" scroll-y="true">
+		<!-- 设计图这一页顶上是三枚胶囊分段控件，点哪一类就去选哪一类。这里不拿它当装饰：
+		     uni.chooseFile 的 type 在 Android / 鸿蒙 / Web 三端都支持，透传下去就是真筛选。 -->
+		<view class="seg">
+			<view class="segitem" :class="kind == 'image' ? 'segOn' : ''" @click="pick('image')">
+				<text class="seglabel" :class="kind == 'image' ? 'seglabelon' : ''">相册</text>
 			</view>
-			<text class="sub mt8">{{ s.sessionLabel }}</text>
-			<text class="sub" :class="s.netClass">{{ s.netLabel }}</text>
-			<view class="row mt8 wrap">
-				<button class="mini" @click="goHome" v-if="!s.connected">去首页连接对端</button>
-				<button class="mini" @click="goDetail">{{ s.running ? '传输中，看详情' : '传输详情' }}</button>
+			<view class="segitem" :class="kind == 'file' ? 'segOn' : ''" @click="pick('file')">
+				<text class="seglabel" :class="kind == 'file' ? 'seglabelon' : ''">文档</text>
+			</view>
+			<view class="segitem last" :class="kind == 'video' ? 'segOn' : ''" @click="pick('video')">
+				<text class="seglabel" :class="kind == 'video' ? 'seglabelon' : ''">视频</text>
 			</view>
 		</view>
 
-		<view class="card">
+		<view class="card mt16">
 			<view class="head">
 				<text class="h">待发送</text>
-				<view class="row">
-					<button class="mini" @click="pickFiles">选择文件</button>
-					<button class="mini" v-if="s.names.length > 0" @click="clearAll">清空</button>
-				</view>
+				<text class="sub">{{ s.names.length }} 个</text>
 			</view>
-			<text class="sub mt8" v-if="s.names.length == 0">还没有选择文件。一次最多选 20 个，选好以后按下面的顺序一个个发过去。</text>
-			<view class="filerow" v-for="(n, i) in s.names" :key="i">
-				<view class="col1">
-					<text class="fname">{{ n }}</text>
+			<text class="note" v-if="s.names.length == 0">还没有选文件。点上面任意一类去选，一次最多 20 个，按下面的顺序一个个发过去。</text>
+			<view class="grid mt8">
+				<view class="filecell" v-for="(n, i) in s.names" :key="i" @click="dropFile(i)">
+					<view class="tile" :class="typeOf(n)"></view>
+					<text class="cname">{{ n }}</text>
 					<text class="fsize">{{ s.meta[i] }}</text>
 					<text class="fstate" :class="s.stateClass[i]">{{ s.states[i] }}</text>
+					<text class="tick">✓</text>
 				</view>
-				<button class="mini" @click="dropFile(i)" :disabled="s.running">移除</button>
 			</view>
-			<view class="divider"></view>
-			<text class="sub">共 {{ s.names.length }} 个文件</text>
+			<text class="sub mt8" v-if="s.names.length > 0">点一个文件可以取消选择。</text>
 		</view>
 
-		<view class="card">
-			<button class="primary" :disabled="s.running || !s.canSend" @click="sendNow">{{ s.sendLabel }}</button>
-			<text class="sub mt8" v-if="!s.connected && !s.running">先连上对端才能发送。</text>
-			<text class="sub mt8" v-else-if="s.connected && s.names.length == 0 && !s.running">先选择文件。</text>
-			<view class="bar mt8">
-				<view class="fill" :style="{ width: s.fillWidth }"></view>
+		<text class="h mt16">选择目标设备</text>
+		<view class="devcard mt8" :class="linked ? 'selected' : ''" @click="goConnect">
+			<view class="tile devtile" :class="linked ? 'iconBlue' : 'iconWait'"></view>
+			<view class="rowmain">
+				<text class="fname">{{ peerTitle }}</text>
+				<view class="row mt8">
+					<view class="dot" :class="linked ? '' : 'dotoff'"></view>
+					<text class="onoff" :class="linked ? 'onlive' : ''">{{ linked ? '在线' : '未连接' }}</text>
+				</view>
+			</view>
+			<text class="chevron" v-if="!linked">›</text>
+		</view>
+		<text class="note" v-if="linked">{{ s.recvPeers }}</text>
+		<text class="note">传书 v1 一次只跟一个对端说话：连上以后其他设备要等这条连接断开才排得进来，所以这里只会有一张卡。</text>
+
+		<view class="card mt16" v-if="s.running">
+			<text class="h">正在发送</text>
+			<view class="row mt8">
+				<view class="bar"><view class="fill" :style="{ width: s.fillWidth }"></view></view>
+				<text class="pct">{{ s.progressPct }}</text>
 			</view>
 			<text class="sub mt8">{{ s.progressLabel }}</text>
+			<button class="mini mt8" @click="goDetail">看传输详情</button>
+		</view>
+
+		<view class="floatbar">
+			<view class="rowmain">
+				<text class="fname">{{ s.names.length }} 个文件</text>
+				<text class="fsize">{{ sendHint }}</text>
+			</view>
+			<button class="sendbtn" :disabled="s.running || !s.canSend" @click="sendNow">{{ s.sendLabel }}</button>
 		</view>
 	</scroll-view>
 </template>
 
 <script setup lang="uts">
-	import { s, initSession, choose, clearFiles, removeFile, onSend } from '@/store/session.uts'
+	import { s, initSession, chooseKind, removeFile, onSend } from '@/store/session.uts'
 
 	initSession()
 
-	/* 模板只点本页的函数：只被模板引用的 store 动作会被摇树丢掉，编译报“找不到名称 invoke”。 */
-	function pickFiles() {
-		choose()
+	const kind = ref('image')
+
+	const linked = computed((): boolean => {
+		return s.connected || s.peerAttached
+	})
+
+	const peerTitle = computed((): string => {
+		if (!linked.value) {
+			return '还没有连上对端'
+		}
+		return s.peerName == '' ? '对端' : s.peerName
+	})
+
+	/* 设备卡说「在线」而发送条说「先连对端」是同一种状态的两面，得说清楚：v1 里这一端只会往外拨，
+	   对端拨进来那条连接它拨不回去，所以在线也不等于能发。 */
+	const sendHint = computed((): string => {
+		if (s.canSend) {
+			return '可以发送'
+		}
+		if (s.running) {
+			return '传输中'
+		}
+		if (s.connected) {
+			return '先选文件'
+		}
+		if (s.peerAttached) {
+			return '这台对端是从它那一头连过来的，这一端拨不回去：要发文件请在对端那台设备上操作'
+		}
+		return '先连对端'
+	})
+
+	function typeOf(name: string): string {
+		const dot = name.indexOf('.')
+		const ext = dot < 0 ? '' : name.substring(dot + 1).toLowerCase()
+		if (ext == 'jpg' || ext == 'jpeg' || ext == 'png' || ext == 'gif' || ext == 'webp' || ext == 'heic') {
+			return 'iconViolet'
+		}
+		if (ext == 'mp4' || ext == 'mov' || ext == 'mkv' || ext == 'avi') {
+			return 'iconRun'
+		}
+		if (ext == 'zip' || ext == 'rar' || ext == '7z' || ext == 'gz') {
+			return 'iconOk'
+		}
+		return 'iconBlue'
 	}
 
-	function clearAll() {
-		clearFiles()
+	/* 模板只能点本页自己的函数：只被模板引用的 store 动作会被摇树丢掉，编译报“找不到名称 invoke”。 */
+	function pick(at: string) {
+		kind.value = at
+		chooseKind(at)
 	}
 
 	function dropFile(at: number) {
@@ -68,11 +132,134 @@
 		onSend()
 	}
 
-	function goHome() {
-		uni.switchTab({ url: '/pages/home/home' })
+	function goConnect() {
+		if (!linked.value) {
+			uni.navigateTo({ url: '/pages/scan/scan' })
+		}
 	}
 
 	function goDetail() {
-		uni.navigateTo({ url: '/pages/detail/detail' })
+		uni.switchTab({ url: '/pages/detail/detail' })
 	}
 </script>
+
+<style>
+	/* 这一页滚到底会被浮动的发送条压住最后一张卡，所以比公共 .page 多留一段底部空间。 */
+	.pagepad {
+		padding-bottom: 110px;
+	}
+
+	.seg {
+		flex-direction: row;
+		margin-top: 4px;
+	}
+
+	.segitem {
+		flex: 1;
+		height: 48px;
+		border-radius: 24px;
+		background-color: #eef0f4;
+		align-items: center;
+		justify-content: center;
+		margin-right: 10px;
+	}
+
+	.last {
+		margin-right: 0;
+	}
+
+	.segOn {
+		background-color: #2f7cf6;
+	}
+
+	.seglabel {
+		font-size: 16px;
+		color: #374151;
+	}
+
+	.seglabelon {
+		color: #ffffff;
+	}
+
+	/* 设计图的文件区是两列方块，不是单列长表：一屏能看到的文件数差一倍。 */
+	.filecell {
+		position: relative;
+		width: 48%;
+		background-color: #f7f8fa;
+		border-radius: 16px;
+		padding: 14px;
+		margin-bottom: 12px;
+	}
+
+	.cname {
+		margin-top: 10px;
+		font-size: 15px;
+		color: #1f2937;
+		lines: 1;
+		text-overflow: ellipsis;
+	}
+
+	.tick {
+		position: absolute;
+		right: 10px;
+		bottom: 10px;
+		width: 24px;
+		height: 24px;
+		border-radius: 12px;
+		background-color: #2f7cf6;
+		color: #ffffff;
+		font-size: 13px;
+		line-height: 24px;
+		text-align: center;
+	}
+
+	.devcard {
+		flex-direction: row;
+		align-items: center;
+		background-color: #ffffff;
+		border-radius: 16px;
+		padding: 18px;
+		box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
+	}
+
+	.devtile {
+		margin-right: 14px;
+	}
+
+	.onoff {
+		margin-left: 8px;
+		font-size: 15px;
+		color: #9ca3af;
+	}
+
+	.onlive {
+		color: #16a34a;
+	}
+
+	/* 发送条是浮的：设计图里它压在所有内容上面，滚动时不动。 */
+	.floatbar {
+		position: fixed;
+		left: 20px;
+		right: 20px;
+		bottom: 16px;
+		flex-direction: row;
+		align-items: center;
+		height: 72px;
+		background-color: #ffffff;
+		border-radius: 20px;
+		padding: 0 16px;
+		box-shadow: 0 6px 20px rgba(15, 23, 42, 0.16);
+		z-index: 10;
+	}
+
+	.sendbtn {
+		width: 120px;
+		height: 46px;
+		line-height: 46px;
+		font-size: 17px;
+		background-color: #2f7cf6;
+		color: #ffffff;
+		border-radius: 23px;
+		border-width: 0;
+	}
+</style>

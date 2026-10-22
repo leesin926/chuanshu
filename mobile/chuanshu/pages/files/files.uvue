@@ -7,21 +7,37 @@
 			</view>
 			<text class="note mt8" v-if="s.recvAsk != ''">{{ s.recvAsk }}</text>
 			<view class="row mt8 wrap" v-if="s.recvAsk != ''">
-				<button class="mini" @click="accept">接受</button>
+				<button class="primary col1" @click="accept">接受</button>
 				<button class="mini" @click="refuse">拒绝</button>
 			</view>
-			<text class="sub mt8" v-if="s.recvNames.length == 0">还没有收到文件。对端要用下面这组配对码连上本机，才能把文件发进来。</text>
-			<view class="filerow" v-for="(n, i) in s.recvNames" :key="i">
-				<view class="col1">
-					<text class="fname">{{ n }}</text>
-					<text class="fsize">{{ s.recvMeta[i] }}</text>
-					<text class="fstate" :class="s.recvStateClass[i]">{{ s.recvStates[i] }}</text>
+
+			<!-- 设计图这一页的第一个控件是搜索框，第二个是一排横向滚出去的分类胶囊。两个都真在过滤下面
+			     那张表。同名文件是可以收到的，所以过滤出来的是下标，不是名字。 -->
+			<view class="row mt16">
+				<input class="input col1" v-model="kw" placeholder="搜索文件名" />
+				<button class="mini" @click="refresh">刷新</button>
+			</view>
+			<scroll-view class="chips mt8" scroll-x="true" :show-scrollbar="false">
+				<view class="row">
+					<text class="chip" :class="kind == k ? 'chipon' : ''" v-for="(k, i) in kinds" :key="i" @click="pick(k)">{{ labelOf(k) }}</text>
+				</view>
+			</scroll-view>
+
+			<view class="divider"></view>
+			<text class="sub mt8" v-if="shown.length == 0">{{ emptyText }}</text>
+			<view class="filerow" v-for="(at, i) in shown" :key="i">
+				<view class="tile tilegap" :class="typeOf(s.recvNames[at])"></view>
+				<view class="rowmain">
+					<text class="fname">{{ s.recvNames[at] }}</text>
+					<text class="fsize">{{ s.recvMeta[at] }}</text>
+				</view>
+				<view class="rowright">
+					<text class="fstate" :class="s.recvStateClass[at]">{{ s.recvStates[at] }}</text>
 				</view>
 			</view>
 			<view class="divider"></view>
 			<text class="sub">{{ s.recvSummary }}</text>
 			<text class="sub">{{ s.recvPeers }}</text>
-			<button class="mini mt8" @click="refresh">刷新</button>
 		</view>
 
 		<view class="card">
@@ -44,7 +60,8 @@
 			<text class="h">待发送</text>
 			<text class="sub mt8" v-if="s.names.length == 0">还没有选好要发的文件。</text>
 			<view class="filerow" v-for="(n, i) in s.names" :key="i">
-				<view class="col1">
+				<view class="tile tilegap" :class="iconOf(s.stateClass[i])"></view>
+				<view class="rowmain">
 					<text class="fname">{{ n }}</text>
 					<text class="fsize">{{ s.meta[i] }}</text>
 					<text class="fstate" :class="s.stateClass[i]">{{ s.states[i] }}</text>
@@ -63,21 +80,111 @@
 
 	initSession()
 
+	const kw = ref('')
+	const kind = ref('all')
+	const kinds = ['all', 'image', 'video', 'doc', 'zip']
+
+	/* 排在 shown 前面：computed 编译成 const 箭头，抓不到后面才声明的函数。 */
+	function kindOf(name: string): string {
+		const dot = name.lastIndexOf('.')
+		const ext = dot < 0 ? '' : name.substring(dot + 1).toLowerCase()
+		if (ext == 'jpg' || ext == 'jpeg' || ext == 'png' || ext == 'gif' || ext == 'webp' || ext == 'heic' || ext == 'bmp') {
+			return 'image'
+		}
+		if (ext == 'mp4' || ext == 'mov' || ext == 'mkv' || ext == 'avi' || ext == 'webm') {
+			return 'video'
+		}
+		if (ext == 'zip' || ext == 'rar' || ext == '7z' || ext == 'tar' || ext == 'gz') {
+			return 'zip'
+		}
+		return 'doc'
+	}
+
+	const shown = computed((): number[] => {
+		const out: number[] = []
+		for (let i = 0; i < s.recvNames.length; i++) {
+			const n = s.recvNames[i]
+			if (kw.value != '' && n.indexOf(kw.value) < 0) {
+				continue
+			}
+			if (kind.value != 'all' && kindOf(n) != kind.value) {
+				continue
+			}
+			out.push(i)
+		}
+		return out
+	})
+
+	const emptyText = computed((): string => {
+		if (s.recvNames.length == 0) {
+			return '还没有收到文件。对端要用上面那组配对码连上本机，才能把文件发进来。'
+		}
+		return '按现在的搜索词和分类筛出来是空的。'
+	})
+
+	function labelOf(k: string): string {
+		if (k == 'image') {
+			return '图片'
+		}
+		if (k == 'video') {
+			return '视频'
+		}
+		if (k == 'zip') {
+			return '压缩包'
+		}
+		if (k == 'doc') {
+			return '文档'
+		}
+		return '全部'
+	}
+
+	/* 这一页的图标按类型着色（设计图的文件管理页就是这个规则），传输状态由右边那一列承担。 */
+	function typeOf(name: string): string {
+		const k = kindOf(name)
+		if (k == 'image') {
+			return 'iconViolet'
+		}
+		if (k == 'video') {
+			return 'iconRun'
+		}
+		if (k == 'zip') {
+			return 'iconOk'
+		}
+		return 'iconBlue'
+	}
+
+	function iconOf(cls: string): string {
+		if (cls == 'stateOk') {
+			return 'iconOk'
+		}
+		if (cls == 'stateRun') {
+			return 'iconRun'
+		}
+		if (cls == 'stateBad') {
+			return 'iconBad'
+		}
+		return 'iconWait'
+	}
+
+	function pick(k: string) {
+		kind.value = k
+	}
+
 	onShow(() => {
 		refreshReceive()
 	})
 
 	/* 模板只点本页的函数：只被模板引用的 store 动作会被摇树丢掉，编译报“找不到名称 invoke”。 */
+	function refresh() {
+		refreshReceive()
+	}
+
 	function accept() {
 		onRecvAccept()
 	}
 
 	function refuse() {
 		onRecvRefuse()
-	}
-
-	function refresh() {
-		refreshReceive()
 	}
 
 	function goMe() {
@@ -89,6 +196,14 @@
 	}
 
 	function goDetail() {
-		uni.navigateTo({ url: '/pages/detail/detail' })
+		uni.switchTab({ url: '/pages/detail/detail' })
 	}
 </script>
+
+<style>
+	/* 设计图那一排 chip 被屏幕右边缘裁断，说明这一行横向滚动。 */
+	.chips {
+		width: 100%;
+		height: 36px;
+	}
+</style>

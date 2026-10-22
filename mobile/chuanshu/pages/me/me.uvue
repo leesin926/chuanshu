@@ -1,50 +1,96 @@
 <template>
 	<scroll-view class="page" scroll-y="true">
-		<view class="card">
-			<view class="head">
-				<text class="h">本机</text>
-				<text class="badge" v-if="s.mocked">对端是模拟的</text>
+		<!-- 设计图这一页的第一块是蓝→紫渐变的用户卡。这一端的「用户」就是这台设备本身，所以卡里放的
+		     是设备名和它的身份指纹，而不是一个假的账号。 -->
+		<view class="avatarcard">
+			<view class="avatar">
+				<text class="avatartext">传</text>
 			</view>
-			<text class="big">{{ s.selfName }}</text>
-			<text class="sub">peer_id {{ s.selfId }}</text>
-			<text class="sub">指纹 {{ s.selfFpShort }}</text>
-			<text class="note" v-if="s.note != ''">{{ s.note }}</text>
-			<view class="row mt8 wrap">
-				<button class="mini" @click="openProbe">平台能力探针</button>
-				<button class="mini" @click="goDetail">传输详情</button>
+			<view class="col1">
+				<text class="avatarname">{{ s.selfName }}</text>
+				<text class="avatarsub">指纹 {{ s.selfFpShort }}</text>
+				<text class="avatarsub">peer_id {{ s.selfId }}</text>
 			</view>
+			<text class="badge" v-if="s.mocked">对端是模拟的</text>
 		</view>
 
-		<view class="card">
-			<text class="h">本机配对信息</text>
-			<text class="big">配对码 {{ s.recvCodeText }}</text>
-			<text class="big">密码 {{ s.recvPassText }}</text>
-			<text class="sub">{{ s.recvCodeLeft }}</text>
-			<view class="row mt8 wrap">
-				<button class="mini" @click="copyPair">复制配对信息</button>
-				<button class="mini" @click="rotatePair">更换配对码和密码</button>
+		<view class="card16 card">
+			<view class="setrow" @click="copyPair">
+				<view class="tile iconBlue"></view>
+				<text class="setlabel">配对码</text>
+				<text class="setval">{{ s.recvCodeText }}</text>
+				<text class="chevron">›</text>
+			</view>
+			<view class="divider"></view>
+			<view class="setrow" @click="copyPair">
+				<view class="tile iconViolet"></view>
+				<text class="setlabel">密码</text>
+				<text class="setval">{{ s.recvPassText }}</text>
+				<text class="chevron">›</text>
+			</view>
+			<view class="divider"></view>
+			<view class="setrow">
+				<view class="tile iconOk"></view>
+				<text class="setlabel">有效期</text>
+				<text class="setval">{{ s.recvCodeLeft }}</text>
+			</view>
+			<view class="divider"></view>
+			<view class="setrow" @click="rotatePair">
+				<view class="tile iconRun"></view>
+				<text class="setlabel">更换配对码和密码</text>
+				<text class="chevron">›</text>
 			</view>
 			<!-- #ifdef APP-ANDROID || APP-HARMONY -->
-			<text class="sub mt8" :class="s.recvListenClass">{{ s.recvListen }}</text>
-			<text class="sub" v-for="(a, i) in s.recvAddrs" :key="i">本机地址 {{ a }}</text>
-			<view class="row mt8 wrap">
-				<button class="mini" @click="startListen" v-if="!s.recvListening">开始监听</button>
-				<button class="mini" @click="stopListen" v-else>停止监听</button>
+			<view class="divider"></view>
+			<!-- 设计图里这种「一行的开关」右边是 switch 而不是「值 + chevron」，同一张卡两种右端控件混排。 -->
+			<view class="setrow" @click="toggleListen">
+				<view class="tile iconWait"></view>
+				<text class="setlabel">监听对端发来</text>
+				<view class="switch" :class="s.recvListening ? 'switchon' : ''">
+					<view class="knob" :class="s.recvListening ? 'knobon' : ''"></view>
+				</view>
 			</view>
+			<text class="sub" :class="s.recvListenClass">{{ s.recvListen }}</text>
+			<text class="sub" v-for="(a, i) in s.recvAddrs" :key="i">本机地址 {{ a }}</text>
 			<!-- #endif -->
-			<text class="note mt8" v-if="s.recvNote != ''">{{ s.recvNote }}</text>
-			<text class="note mt8">配对码固定不变，只有点「更换配对码和密码」才会换一组；已经固定过的对端不受影响。</text>
+			<text class="note" v-if="s.recvNote != ''">{{ s.recvNote }}</text>
+			<text class="note">配对码固定不变，只有点「更换配对码和密码」才会换一组；已经固定过的对端不受影响。</text>
 		</view>
 
-		<view class="card">
-			<text class="h">当前对端</text>
-			<text class="sub mt8">{{ s.sessionLabel }}</text>
+		<view class="card16 card">
+			<view class="setrow" @click="goConnect">
+				<view class="tile iconBlue"></view>
+				<text class="setlabel">当前对端</text>
+				<text class="setval">{{ s.connected ? '已连接' : '未连接' }}</text>
+				<text class="chevron">›</text>
+			</view>
+			<text class="sub">{{ s.sessionLabel }}</text>
 			<text class="sub">{{ s.pinnedLabel }}</text>
 			<text class="sub" :class="s.netClass">{{ s.netLabel }}</text>
 			<view class="row mt8 wrap">
-				<button class="mini" @click="goHome">去首页连接</button>
 				<button class="mini" @click="disconnect" v-if="s.connected">断开</button>
 			</view>
+		</view>
+
+		<view class="card16 card">
+			<view class="setrow" @click="goDetail">
+				<view class="tile iconRun"></view>
+				<text class="setlabel">传输详情与日志</text>
+				<text class="chevron">›</text>
+			</view>
+			<view class="divider"></view>
+			<view class="setrow" @click="openProbe">
+				<view class="tile iconViolet"></view>
+				<text class="setlabel">平台能力探针</text>
+				<text class="chevron">›</text>
+			</view>
+			<view class="divider"></view>
+			<view class="setrow">
+				<view class="tile iconWait"></view>
+				<text class="setlabel">关于传书</text>
+				<text class="setval">v1.0.0</text>
+			</view>
+			<text class="note" v-if="s.note != ''">{{ s.note }}</text>
 		</view>
 
 		<!-- #ifdef WEB -->
@@ -121,12 +167,12 @@
 	}
 
 	// #ifdef APP-ANDROID || APP-HARMONY
-	function startListen() {
-		onRecvListen()
-	}
-
-	function stopListen() {
-		onRecvListenStop()
+	function toggleListen() {
+		if (s.recvListening) {
+			onRecvListenStop()
+		} else {
+			onRecvListen()
+		}
 	}
 	// #endif
 
@@ -192,11 +238,15 @@
 		uni.navigateTo({ url: '/pages/probe/probe' })
 	}
 
-	function goHome() {
-		uni.switchTab({ url: '/pages/home/home' })
+	function goConnect() {
+		uni.navigateTo({ url: '/pages/scan/scan' })
 	}
 
 	function goDetail() {
-		uni.navigateTo({ url: '/pages/detail/detail' })
+		uni.switchTab({ url: '/pages/detail/detail' })
 	}
 </script>
+
+<style>
+	/* 头像里的「传」字和设置行的图标色块都是 App.uvue 的公共令牌，这一页没有自己的样式。 */
+</style>

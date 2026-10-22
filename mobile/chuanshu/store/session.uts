@@ -115,6 +115,8 @@ export type SessionState = {
 	connected: boolean
 	connectLabel: string
 	sessionLabel: string
+	peerName: string
+	peerAttached: boolean
 
 	/* 发送 */
 	names: string[]
@@ -125,6 +127,7 @@ export type SessionState = {
 	canSend: boolean
 	sendLabel: string
 	progressLabel: string
+	progressPct: string
 	fillWidth: string
 
 	/* 日志 */
@@ -188,6 +191,8 @@ export const s = reactive({
 	connected: false,
 	connectLabel: '连接',
 	sessionLabel: '未连接',
+	peerName: '',
+	peerAttached: false,
 	names: [] as string[],
 	meta: [] as string[],
 	states: [] as string[],
@@ -196,7 +201,8 @@ export const s = reactive({
 	canSend: false,
 	sendLabel: '发送',
 	progressLabel: '未开始',
-	fillWidth: '0px',
+	progressPct: '—',
+	fillWidth: '0%',
 	lines: [] as string[],
 	scrollTop: 0,
 	recvAsk: '',
@@ -357,12 +363,17 @@ function onFileState(relpath: string, status: string, done: number, total: numbe
 
 function onProgress(done: number, total: number) {
 	if (total <= 0) {
-		s.fillWidth = '0px'
+		s.fillWidth = '0%'
+		s.progressPct = '—'
 		s.progressLabel = done.toString() + ' 块'
 		return
 	}
-	s.fillWidth = Math.floor(done * 240 / total).toString() + 'px'
-	s.progressLabel = done.toString() + ' / ' + total.toString() + ' 块 · ' + Math.floor(done * 100 / total).toString() + '%'
+	/* A percentage, not a pixel count: the design puts the bar and the big blue number on one line,
+	   so the bar only gets whatever width is left after the number and cannot be a fixed 240px. */
+	const pct = Math.floor(done * 100 / total)
+	s.fillWidth = pct.toString() + '%'
+	s.progressPct = pct.toString() + '%'
+	s.progressLabel = done.toString() + ' / ' + total.toString() + ' 块 · ' + pct.toString() + '%'
 }
 
 /* ------------------------------------------------------------------ receiving */
@@ -567,6 +578,12 @@ export function refreshReceive() {
 	s.recvPeers = snap.connectedNames.length == 0
 		? '现在没有对端连着'
 		: '连着这台设备的对端：' + snap.connectedNames.join('、')
+	/* 对端也可能是从它那一头拨过来的：本机没有拨号会话，但单对端名额已经被占住。首页 banner
+	   和发送页的设备卡问的都是「现在有没有对端连着」，这个问题只有接收内核答得准。 */
+	s.peerAttached = snap.connectedNames.length > 0
+	if (s.peerAttached && s.peerName == '') {
+		s.peerName = snap.connectedNames[0]
+	}
 	// #ifdef WEB
 	s.pcIn = demoPcConnected()
 	// #endif
@@ -793,6 +810,9 @@ function markConnected(session: PeerSession, message: string) {
 	s.connected = true
 	s.connectLabel = '已连接'
 	s.sessionLabel = message
+	/* 对端自己报的名字。页面要把它单独显示在设备卡上，从 sessionLabel 那句人话里截是不可靠的：
+	   那是一句给人看的句子，不是一个字段。 */
+	s.peerName = session.peerName
 	// This end dialled out, so our own receiver has to know who already occupies the single
 	// session slot - the inbound half never sees this handshake (spec §3).
 	receiveHoldSlot(session.peerFingerprint)
@@ -805,6 +825,7 @@ function markDisconnected(message: string) {
 	s.connected = false
 	s.connectLabel = '连接'
 	s.sessionLabel = message
+	s.peerName = ''
 	receiveHoldSlot('')
 	syncSendable()
 }
@@ -999,10 +1020,12 @@ function onFinished(ok: boolean, summary: string) {
 	syncSendable()
 }
 
-export function choose() {
+/** 分段控件的三类对应 uni.chooseFile 的 type。App 端三个平台都支持这个字段（只有 count 在
+ *  Android 上被降级成单选/多选），所以这里直接透传，而不是自己按扩展名过滤。 */
+export function chooseKind(kind: string) {
 	uni.chooseFile({
 		count: 20,
-		type: 'all',
+		type: kind,
 		success: (res) => {
 			const list = res.tempFiles
 			for (let i = 0; i < list.length; i++) {
@@ -1037,7 +1060,7 @@ export function onSend() {
 	s.running = true
 	s.sendLabel = '传输中…'
 	s.progressLabel = '准备中'
-	s.fillWidth = '0px'
+	s.fillWidth = '0%'
 	syncSendable()
 
 	activeOptions = buildOptions()

@@ -1,40 +1,67 @@
 <template>
 	<scroll-view class="page" scroll-y="true">
+		<!-- 设计图把这一页做成「当前那一个任务」的特写：大号蓝色百分比和进度条同一行，右边是数字，
+		     左边是条。速度这一端算不出来（内核只报块数），所以那一行放的是块数和已传字节。 -->
 		<view class="card">
-			<view class="head">
-				<text class="h">这台设备发出去的任务</text>
-				<text class="badge" v-if="s.running">传输中</text>
+			<view class="row">
+				<view class="tile tilegap" :class="s.running ? 'iconRun' : 'iconWait'"></view>
+				<view class="rowmain">
+					<text class="fname">{{ currentName }}</text>
+					<text class="fsize">{{ currentMeta }}</text>
+				</view>
 			</view>
-			<view class="bar mt8">
-				<view class="fill" :style="{ width: s.fillWidth }"></view>
-			</view>
-			<text class="sub mt8">{{ s.progressLabel }}</text>
-			<text class="sub mt8" v-if="s.names.length == 0">这一轮还没有发过文件。</text>
-			<view class="filerow" v-for="(n, i) in s.names" :key="i">
+			<view class="row mt16">
 				<view class="col1">
+					<view class="bar">
+						<view class="fill" :style="{ width: s.fillWidth }"></view>
+					</view>
+				</view>
+				<text class="pct">{{ s.running ? s.progressPct : '—' }}</text>
+			</view>
+			<view class="row between mt8">
+				<text class="sub">{{ s.progressLabel }}</text>
+				<text class="sub">{{ currentNote }}</text>
+			</view>
+			<view class="divider"></view>
+			<view class="row mt16">
+				<button class="mini col1 pause" @click="pause" :disabled="true">暂停</button>
+				<button class="danger col1" @click="cancel" :disabled="!s.running && !s.connected">取消</button>
+			</view>
+			<!-- 暂停在这套协议里做不到：v1 没有暂停信令，停下来只能靠对端超时判定，所以按钮是灰的而不是不画。 -->
+			<text class="note mt8">协议 v1 没有暂停信令，「暂停」按下去对端只会当成掉线；「取消」是断开这条连接，已经传过去的块留在对方那边。</text>
+		</view>
+
+		<text class="h">这台设备发出去的任务</text>
+		<view class="card mt8">
+			<text class="sub" v-if="s.names.length == 0">这一轮还没有发过文件。</text>
+			<view class="filerow" v-for="(n, i) in s.names" :key="i">
+				<view class="tile tilegap" :class="iconOf(s.stateClass[i])"></view>
+				<view class="rowmain">
 					<text class="fname">{{ n }}</text>
 					<text class="fsize">{{ s.meta[i] }}</text>
 					<text class="fstate" :class="s.stateClass[i]">{{ s.states[i] }}</text>
 				</view>
 			</view>
 			<view class="row mt8 wrap">
-				<button class="mini" @click="goSend">回发送页</button>
+				<button class="mini" @click="goSend">去发送页</button>
 			</view>
 		</view>
 
-		<view class="card">
+		<view class="card mt16">
 			<view class="head">
 				<text class="h">这台设备收到的任务</text>
 				<text class="badge" v-if="s.recvAsk != ''">等你决定</text>
 			</view>
 			<text class="note mt8" v-if="s.recvAsk != ''">{{ s.recvAsk }}</text>
 			<view class="row mt8 wrap" v-if="s.recvAsk != ''">
-				<button class="mini" @click="accept">接受</button>
+				<button class="primary col1" @click="accept">接受</button>
 				<button class="mini" @click="refuse">拒绝</button>
 			</view>
 			<text class="sub mt8" v-if="s.recvNames.length == 0">还没有收到文件。</text>
 			<view class="filerow" v-for="(n, i) in s.recvNames" :key="i">
-				<view class="col1">
+				<text class="check" v-if="s.recvStateClass[i] == 'stateOk'">✓</text>
+				<view class="tile tilegap" v-else :class="iconOf(s.recvStateClass[i])"></view>
+				<view class="rowmain">
 					<text class="fname">{{ n }}</text>
 					<text class="fsize">{{ s.recvMeta[i] }}</text>
 					<text class="fstate" :class="s.recvStateClass[i]">{{ s.recvStates[i] }}</text>
@@ -45,7 +72,7 @@
 			<text class="sub">{{ s.recvPeers }}</text>
 		</view>
 
-		<view class="card">
+		<view class="card mt16">
 			<view class="head">
 				<text class="h">日志</text>
 				<text class="sub">{{ s.lines.length }} 条</text>
@@ -58,15 +85,63 @@
 </template>
 
 <script setup lang="uts">
-	import { s, initSession, refreshReceive, onRecvAccept, onRecvRefuse } from '@/store/session.uts'
+	import { s, initSession, refreshReceive, onRecvAccept, onRecvRefuse, onDisconnect } from '@/store/session.uts'
 
 	initSession()
+
+	/** 「当前那一个」：在跑的那条发出去的任务优先，其次是一个还没决定的入站清单。 */
+	const currentName = computed((): string => {
+		for (let i = 0; i < s.states.length; i++) {
+			if (s.stateClass[i] == 'stateRun') {
+				return s.names[i]
+			}
+		}
+		if (s.names.length > 0) {
+			return s.names[s.names.length - 1]
+		}
+		return s.recvNames.length > 0 ? s.recvNames[0] : '没有进行中的任务'
+	})
+
+	const currentMeta = computed((): string => {
+		for (let i = 0; i < s.states.length; i++) {
+			if (s.stateClass[i] == 'stateRun') {
+				return s.meta[i]
+			}
+		}
+		return s.names.length > 0 ? s.meta[s.names.length - 1] : (s.recvNames.length > 0 ? s.recvMeta[0] : '')
+	})
+
+	const currentNote = computed((): string => {
+		if (s.running) {
+			return '正在推分块'
+		}
+		return s.connected ? '空闲，等下一次提交清单' : '未连接'
+	})
 
 	onShow(() => {
 		refreshReceive()
 	})
 
+	function iconOf(cls: string): string {
+		if (cls == 'stateOk') {
+			return 'iconOk'
+		}
+		if (cls == 'stateRun') {
+			return 'iconRun'
+		}
+		if (cls == 'stateBad') {
+			return 'iconBad'
+		}
+		return 'iconWait'
+	}
+
 	/* 模板只点本页的函数：只被模板引用的 store 动作会被摇树丢掉，编译报“找不到名称 invoke”。 */
+	function pause() {}
+
+	function cancel() {
+		onDisconnect()
+	}
+
 	function accept() {
 		onRecvAccept()
 	}
@@ -79,3 +154,16 @@
 		uni.navigateTo({ url: '/pages/send/send' })
 	}
 </script>
+
+<style>
+	/* 设计图里暂停是灰底、取消是橙红渐变——主次和常规相反，因为取消才是用户此刻真想按的那个。
+	   这里灰底再叠一层禁用态，避免用户以为它只是颜色淡。 */
+	.pause {
+		background-color: #eef0f3;
+		color: #b6bcc4;
+		height: 46px;
+		line-height: 46px;
+		border-radius: 23px;
+		margin-right: 16px;
+	}
+</style>

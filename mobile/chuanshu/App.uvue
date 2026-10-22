@@ -40,8 +40,12 @@
 </script>
 
 <style>
-	/* 每个页面公共 css。放在这里而不是各页的 style 块里，是因为五个页面用的是同一套卡片和字级：
-	   一个类在两个页面里长得不一样，用户读出来就是两个产品。 */
+	/* 每个页面公共 css。放在这里而不是各页的 style 块里，是因为六个页面用的是同一套卡片和字级：
+	   一个类在两个页面里长得不一样，用户读出来就是两个产品。
+	   色值、圆角、字号取自设计图（手机 6 张），不是自己定的：主色 #2F7CF6 承担所有「可点/选中/进行中」，
+	   灰阶只有 #1F2937 / #6B7280 / #9CA3AF 三档，圆角只有 16 / 20 / 全圆三档。 */
+
+	/* ---- 容器 ---- */
 	.page {
 		flex-direction: column;
 		/*  Both, because neither alone bounds the scroll-view on Harmony: the page container is
@@ -49,16 +53,22 @@
 		    has no definite parent height to grow into. Together they give the scroll-view the viewport. */
 		flex: 1;
 		height: 100%;
-		padding: 12px;
-		background-color: #f2f3f5;
+		padding: 20px;
+		background-color: #eef0f5;
 	}
 
 	.card {
 		flex-direction: column;
 		background-color: #ffffff;
-		border-radius: 10px;
-		padding: 12px;
-		margin-bottom: 12px;
+		border-radius: 20px;
+		padding: 20px;
+		margin-bottom: 16px;
+		box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
+	}
+
+	/* 设计图里小卡（入口格、设置组）用 16，大内容卡（列表、详情）用 20，不是随手分的。 */
+	.card16 {
+		border-radius: 16px;
 	}
 
 	.head {
@@ -67,51 +77,58 @@
 		align-items: center;
 	}
 
-	.h {
-		font-size: 14px;
+	/* 页面级超大标题（首页的「传书」）。设计图里它不是导航条标题，是页面内第一个视觉重量。 */
+	.title {
+		font-size: 30px;
 		font-weight: bold;
-		color: #1f2329;
+		color: #1e293b;
+	}
+
+	/* 区块标题：「最近传输」「本次传输历史」「选择目标设备」都是这一档。 */
+	.h {
+		font-size: 20px;
+		font-weight: bold;
+		color: #1e293b;
 	}
 
 	.badge {
-		font-size: 11px;
+		font-size: 12px;
 		color: #d46b08;
 		background-color: #fff7e8;
-		border-radius: 4px;
-		padding: 2px 6px;
+		border-radius: 6px;
+		padding: 3px 8px;
 	}
 
 	.big {
-		margin-top: 6px;
-		font-size: 15px;
-		color: #1f2329;
+		margin-top: 8px;
+		font-size: 17px;
+		color: #1f2937;
 	}
 
-	/* 首页顶部那一行是用户打开应用第一眼要读的答案（连上了没有），所以比 .big 更重。 */
 	.hero {
-		margin-top: 6px;
+		margin-top: 8px;
 		font-size: 18px;
 		font-weight: bold;
-		color: #1f2329;
+		color: #1f2937;
 	}
 
 	.divider {
 		height: 1px;
-		background-color: #eceef1;
-		margin-top: 10px;
+		background-color: #eef0f4;
+		margin-top: 16px;
 	}
 
 	.sub {
-		margin-top: 4px;
-		font-size: 12px;
-		color: #8a9099;
+		margin-top: 6px;
+		font-size: 15px;
+		color: #6b7280;
 	}
 
 	.note {
-		margin-top: 6px;
-		font-size: 12px;
+		margin-top: 8px;
+		font-size: 15px;
 		color: #6b7280;
-		line-height: 18px;
+		line-height: 22px;
 	}
 
 	.row {
@@ -119,12 +136,25 @@
 		align-items: center;
 	}
 
+	.rowtop {
+		flex-direction: row;
+		align-items: flex-start;
+	}
+
 	.wrap {
 		flex-wrap: wrap;
 	}
 
+	.between {
+		justify-content: space-between;
+	}
+
 	.mt8 {
 		margin-top: 8px;
+	}
+
+	.mt16 {
+		margin-top: 16px;
 	}
 
 	.col1 {
@@ -133,97 +163,379 @@
 	}
 
 	.col2 {
-		width: 80px;
+		width: 90px;
 		flex-direction: column;
 	}
 
+	/* ---- 输入 ---- */
 	.input {
-		height: 38px;
-		font-size: 13px;
+		height: 44px;
+		font-size: 15px;
 		background-color: #f5f6f8;
-		border-radius: 6px;
-		padding: 0 8px;
-		margin-right: 8px;
+		border-radius: 22px;
+		padding: 0 16px;
+		margin-right: 10px;
+		color: #1f2937;
 	}
 
+	/* ---- 列表行：一整张白卡里多行 + 行间 hairline，行结构是「图标 + 主文本(+副文本) + 右状态」 ---- */
 	.filerow {
 		flex-direction: row;
 		align-items: center;
-		margin-top: 8px;
+		min-height: 60px;
+	}
+
+	/* 设计图首页的行图标是按状态着色的色块，不是文件类型图标——这里照它做，颜色即状态。
+	   同一个类也当四宫格的入口图标用，因为两处要的是同一个东西：一眼看出这一格是什么状态。 */
+	.tile {
+		width: 36px;
+		height: 36px;
+		border-radius: 11px;
+	}
+
+	/* 列表行里图标和文字之间要留 14，四宫格里图标是居中的，所以间距单独立一个类而不是塞进 .tile。 */
+	.tilegap {
+		margin-right: 14px;
+	}
+
+	.iconOk {
+		background-color: #34c77b;
+	}
+
+	.iconRun {
+		background-color: #f59e0b;
+	}
+
+	.iconWait {
+		background-color: #d1d5db;
+	}
+
+	.iconBad {
+		background-color: #ef4444;
+	}
+
+	/* 文件类型图标用这两档：设计图里「图片」是紫、「文档」是蓝，和状态色分开，免得读成成功/警告。 */
+	.iconBlue {
+		background-color: #2f7cf6;
+	}
+
+	.iconViolet {
+		background-color: #a78bfa;
+	}
+
+	/* 设计图历史行的成功标记是绿色实心圆里一个白勾，和首页的方形状态块不是一回事，所以单列一个类。 */
+	.check {
+		width: 30px;
+		height: 30px;
+		border-radius: 15px;
+		background-color: #10b981;
+		color: #ffffff;
+		font-size: 15px;
+		line-height: 30px;
+		text-align: center;
+		margin-right: 14px;
+	}
+
+	.rowmain {
+		flex: 1;
+		flex-direction: column;
+	}
+
+	.rowright {
+		flex-direction: column;
+		align-items: flex-end;
 	}
 
 	.fname {
-		font-size: 13px;
-		color: #1f2329;
+		font-size: 17px;
+		color: #1f2937;
 	}
 
 	.fsize {
-		font-size: 11px;
-		color: #8a9099;
-		margin-top: 2px;
+		font-size: 14px;
+		color: #6b7280;
+		margin-top: 4px;
+	}
+
+	.fdate {
+		font-size: 13px;
+		color: #9ca3af;
 	}
 
 	.fstate {
-		font-size: 11px;
-		margin-top: 2px;
+		font-size: 14px;
+		margin-top: 4px;
 	}
 
 	.stateWait {
-		color: #8a9099;
+		color: #9ca3af;
 	}
 
 	.stateRun {
-		color: #1456f0;
+		color: #2f7cf6;
 	}
 
 	.stateOk {
-		color: #2e9b57;
+		color: #16a34a;
 	}
 
 	.stateBad {
-		color: #d4380d;
+		color: #ef4444;
 	}
 
+	/* ---- 按钮：一切按钮都是胶囊（圆角 = 高度的一半），方角在这套设计里不存在 ---- */
 	.mini {
-		font-size: 12px;
-		background-color: #f0f2f5;
-		color: #1f2329;
-		border-radius: 6px;
-		padding: 4px 10px;
-		margin: 0 4px 4px 0;
+		height: 36px;
+		line-height: 36px;
+		font-size: 15px;
+		background-color: #e5e7eb;
+		color: #4b5563;
+		border-radius: 18px;
+		padding: 0 18px;
+		margin: 0 10px 10px 0;
+		border-width: 0;
 	}
 
 	.primary {
-		font-size: 15px;
-		background-color: #1456f0;
+		height: 46px;
+		line-height: 46px;
+		font-size: 17px;
+		background-color: #2f7cf6;
 		color: #ffffff;
-		border-radius: 8px;
+		border-radius: 23px;
+		border-width: 0;
 	}
 
+	/* 破坏性动作在设计图里只出现一次：橙→红渐变，比次按钮更醒目。 */
+	.danger {
+		height: 46px;
+		line-height: 46px;
+		font-size: 17px;
+		color: #ffffff;
+		border-radius: 23px;
+		border-width: 0;
+		background-image: linear-gradient(to right, #f6a609, #ef4444);
+	}
+
+	/* 选中态用描边表达（发送页的设备卡），而不是改底色。 */
+	.selected {
+		border-width: 2px;
+		border-style: solid;
+		border-color: #2f7cf6;
+	}
+
+	/* ---- 进度条：详情页 8px 粗条 + 右侧蓝色大号百分比；行内 4px 细条 + 灰色百分比 ---- */
 	.bar {
 		height: 8px;
-		background-color: #eef0f3;
+		background-color: #e5e7eb;
 		border-radius: 4px;
-		width: 240px;
-		overflow: hidden;
+		width: 100%;
 	}
 
 	.fill {
 		height: 8px;
-		background-color: #1456f0;
+		background-color: #2f7cf6;
 		border-radius: 4px;
 	}
 
+	.barthin {
+		height: 4px;
+		background-color: #e5e7eb;
+		border-radius: 2px;
+		flex: 1;
+	}
+
+	.fillthin {
+		height: 4px;
+		background-color: #2f7cf6;
+		border-radius: 2px;
+	}
+
+	.pct {
+		font-size: 22px;
+		font-weight: bold;
+		color: #2f7cf6;
+		width: 70px;
+		text-align: right;
+	}
+
+	/* ---- 首页的连接状态 banner：蓝→浅蓝渐变，右上角一个绿点 ---- */
+	.banner {
+		flex-direction: row;
+		align-items: center;
+		height: 64px;
+		border-radius: 16px;
+		padding: 0 20px;
+		margin-bottom: 16px;
+		background-image: linear-gradient(to right, #3b82f6, #8fc0fa);
+	}
+
+	.bannertext {
+		flex: 1;
+		font-size: 17px;
+		font-weight: bold;
+		color: #ffffff;
+	}
+
+	.bannerwait {
+		background-image: linear-gradient(to right, #94a3b8, #cbd5e1);
+	}
+
+	.dot {
+		width: 14px;
+		height: 14px;
+		border-radius: 7px;
+		background-color: #22c55e;
+	}
+
+	.dotoff {
+		background-color: #9ca3af;
+	}
+
+	/* ---- 四宫格入口 ---- */
+	.grid {
+		flex-direction: row;
+		flex-wrap: wrap;
+		justify-content: space-between;
+	}
+
+	.cell {
+		width: 48%;
+		height: 110px;
+		background-color: #ffffff;
+		border-radius: 16px;
+		align-items: center;
+		justify-content: center;
+		margin-bottom: 14px;
+		box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
+	}
+
+	.celllabel {
+		font-size: 16px;
+		color: #1f2937;
+		margin-top: 10px;
+	}
+
+	/* ---- 我的页：蓝→紫渐变用户卡 + 设置行 ---- */
+	.avatarcard {
+		flex-direction: row;
+		align-items: center;
+		height: 130px;
+		border-radius: 20px;
+		padding: 0 20px;
+		margin-bottom: 16px;
+		background-image: linear-gradient(to right, #60a5fa, #a78bfa);
+	}
+
+	.avatar {
+		width: 76px;
+		height: 76px;
+		border-radius: 38px;
+		background-color: #e5e7eb;
+		border-width: 2px;
+		border-style: solid;
+		border-color: #ffffff;
+		align-items: center;
+		justify-content: center;
+		margin-right: 18px;
+	}
+
+	.avatarname {
+		font-size: 21px;
+		font-weight: bold;
+		color: #ffffff;
+	}
+
+	.avatartext {
+		font-size: 30px;
+		font-weight: bold;
+		color: #ffffff;
+	}
+
+	.avatarsub {
+		font-size: 15px;
+		color: #ffffff;
+		margin-top: 6px;
+	}
+
+	/* 设计图「通知」那一行右边是个开关。这里不用 <switch> 组件而是自己画：一是它的 change 事件在
+	   UTS 里要带平台事件类型，二是自己画的那颗能精确按设计图的 52x30 / 蓝底白圆点来。 */
+	.switch {
+		width: 52px;
+		height: 30px;
+		border-radius: 15px;
+		background-color: #e5e7eb;
+	}
+
+	.switchon {
+		background-color: #2f7cf6;
+	}
+
+	.knob {
+		width: 26px;
+		height: 26px;
+		border-radius: 13px;
+		background-color: #ffffff;
+		margin: 2px;
+	}
+
+	.knobon {
+		margin-left: 24px;
+	}
+
+	/* 设计图里「通知」那一行是开关、其他行是「值 + chevron」，同一张卡里两种右端控件混排，照抄。 */
+	.setrow {
+		flex-direction: row;
+		align-items: center;
+		min-height: 58px;
+	}
+
+	.setlabel {
+		flex: 1;
+		font-size: 16px;
+		color: #1f2937;
+		margin-left: 14px;
+	}
+
+	.setval {
+		font-size: 14px;
+		color: #9ca3af;
+	}
+
+	.chevron {
+		font-size: 16px;
+		color: #9ca3af;
+		margin-left: 6px;
+	}
+
+	/* ---- 胶囊 chip：分类筛选和分段控件，选中蓝底白字，未选中灰底深灰字 ---- */
+	.chip {
+		height: 34px;
+		line-height: 34px;
+		font-size: 15px;
+		background-color: #e2e5ea;
+		color: #374151;
+		border-radius: 17px;
+		padding: 0 18px;
+		margin-right: 10px;
+	}
+
+	.chipon {
+		background-color: #2f7cf6;
+		color: #ffffff;
+	}
+
+	/* ---- 日志 ---- */
 	.log {
 		height: 240px;
 		background-color: #f7f8fa;
-		border-radius: 6px;
-		padding: 8px;
+		border-radius: 12px;
+		padding: 12px;
 	}
 
 	.logline {
-		font-size: 12px;
+		font-size: 13px;
 		color: #41474f;
-		line-height: 19px;
+		line-height: 21px;
 	}
 </style>

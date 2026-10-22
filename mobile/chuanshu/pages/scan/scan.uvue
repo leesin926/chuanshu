@@ -1,0 +1,224 @@
+<template>
+	<scroll-view class="page" scroll-y="true">
+		<!-- 设计图这一页是全站唯一的深色面：#0F172A 的取景面板、四个亮蓝直角括号、文字下面一条发光扫描线。
+		     它不撑满整屏，因为下面还要接手输配对码那一段——这一端没有免密自动发现。 -->
+		<view class="finder">
+			<view class="box">
+				<view class="corner lt"></view>
+				<view class="corner rt"></view>
+				<view class="corner lb"></view>
+				<view class="corner rb"></view>
+				<text class="hint">{{ scanHint }}</text>
+				<view class="line"></view>
+			</view>
+			<!-- #ifndef WEB -->
+			<button class="capsule mt16" @click="scan" :disabled="s.connecting || s.connected">打开摄像头扫码</button>
+			<!-- #endif -->
+			<!-- #ifdef WEB -->
+			<text class="tip mt16">浏览器没有摄像头，扫码这一步只能在手机上做；下面的配对码手输在浏览器里一样能跑通。</text>
+			<!-- #endif -->
+		</view>
+
+		<view class="card mt16">
+			<view class="head">
+				<text class="h">连接到对端</text>
+				<text class="badge" v-if="s.connected">已连接</text>
+			</view>
+			<text class="sub mt8">{{ s.sessionLabel }}</text>
+			<text class="sub" :class="s.netClass">{{ s.netLabel }}</text>
+			<text class="sub">{{ s.pinnedLabel }}</text>
+
+			<view class="row mt16 wrap">
+				<button class="mini" @click="showPaste">{{ s.pasteLabel }}</button>
+				<button class="mini" @click="eraseTarget" v-if="s.targetLabel != ''">清除对端</button>
+				<!-- #ifndef WEB -->
+				<button class="mini" @click="dropPin" v-if="s.pinnedFp != '' && !s.connected">解除固定</button>
+				<!-- #endif -->
+			</view>
+			<view class="row mt8" v-if="s.showPaste">
+				<input class="input col1" v-model="s.pairText" placeholder="粘贴 PC 上二维码的内容 chuanshu://p?…" />
+				<button class="mini" @click="paste">解析</button>
+			</view>
+			<view class="row mt8">
+				<input class="input col1" v-model="s.code" :maxlength="s.codeDigits" :placeholder="s.codeHint" />
+				<input class="input col1" v-model="s.secret" :maxlength="s.passChars" :placeholder="s.passHint" />
+			</view>
+			<view class="row mt8 wrap">
+				<button class="primary col1" @click="connect" :disabled="s.connecting || s.connected">{{ s.connectLabel }}</button>
+				<button class="mini" @click="disconnect" v-if="s.connected">断开</button>
+			</view>
+			<text class="sub mt8" v-if="s.targetLabel != ''">{{ s.targetLabel }}</text>
+			<button class="mini mt8" @click="showAdvanced">{{ s.advancedLabel }}</button>
+			<view class="row mt8" v-if="s.showAdvanced">
+				<input class="input col1" v-model="s.host" placeholder="地址，如 192.168.1.12" />
+				<input class="input col2" v-model="s.port" type="number" placeholder="端口" />
+			</view>
+			<text class="note mt8" v-if="s.showAdvanced">地址和端口通常来自扫码。手输时本机没有可预先核对的指纹，只建议在信任的网络里用。密码留空等于只按配对码握手：对端已经设过密码时会被拒。</text>
+		</view>
+
+		<view class="card">
+			<text class="h">本机给对方核对的信息</text>
+			<text class="big">配对码 {{ s.recvCodeText }}</text>
+			<text class="big">密码 {{ s.recvPassText }}</text>
+			<text class="sub">{{ s.recvCodeLeft }}</text>
+			<view class="row mt8 wrap">
+				<button class="mini" @click="copy">复制配对信息</button>
+				<button class="mini" @click="goMe">更换配对码 / 开监听</button>
+			</view>
+			<text class="note mt8" v-if="s.recvNote != ''">{{ s.recvNote }}</text>
+		</view>
+	</scroll-view>
+</template>
+
+<script setup lang="uts">
+	import { s, initSession, refreshReceive, copyPairing, onPaste, onConnect, onDisconnect, clearTarget, togglePaste, toggleAdvanced, unpin } from '@/store/session.uts'
+	// #ifndef WEB
+	import { onScan } from '@/store/session.uts'
+	// #endif
+
+	initSession()
+
+	const scanHint = computed((): string => {
+		// #ifdef WEB
+		return '把 PC 上的二维码对准手机摄像头'
+		// #endif
+		// #ifndef WEB
+		return '将二维码放入框内即可自动扫描'
+		// #endif
+	})
+
+	onShow(() => {
+		refreshReceive()
+	})
+
+	/* 模板只能点本页自己的函数：只被模板引用的 store 动作会被摇树丢掉，Kotlin 那头报“找不到名称 invoke”。 */
+	// #ifndef WEB
+	function scan() {
+		onScan()
+	}
+	// #endif
+
+	function paste() {
+		onPaste()
+	}
+
+	function connect() {
+		onConnect()
+	}
+
+	function disconnect() {
+		onDisconnect()
+	}
+
+	function eraseTarget() {
+		clearTarget()
+	}
+
+	function showPaste() {
+		togglePaste()
+	}
+
+	function showAdvanced() {
+		toggleAdvanced()
+	}
+
+	function dropPin() {
+		unpin()
+	}
+
+	function copy() {
+		copyPairing()
+	}
+
+	function goMe() {
+		uni.switchTab({ url: '/pages/me/me' })
+	}
+</script>
+
+<style>
+	.finder {
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		background-color: #0f172a;
+		border-radius: 20px;
+		padding: 30px 20px;
+	}
+
+	.box {
+		width: 240px;
+		height: 240px;
+		border-radius: 8px;
+		border-width: 1px;
+		border-style: solid;
+		border-color: rgba(255, 255, 255, 0.12);
+		align-items: center;
+		justify-content: center;
+	}
+
+	/* 四个 L 形直角括号：每角只留两条可见边框，靠方块的四条边各显其二。 */
+	.corner {
+		position: absolute;
+		width: 30px;
+		height: 30px;
+		border-color: #2f80ff;
+		border-style: solid;
+	}
+
+	.lt {
+		left: -1px;
+		top: -1px;
+		border-width: 5px 0 0 5px;
+	}
+
+	.rt {
+		right: -1px;
+		top: -1px;
+		border-width: 5px 5px 0 0;
+	}
+
+	.lb {
+		left: -1px;
+		bottom: -1px;
+		border-width: 0 0 5px 5px;
+	}
+
+	.rb {
+		right: -1px;
+		bottom: -1px;
+		border-width: 0 5px 5px 0;
+	}
+
+	.hint {
+		font-size: 16px;
+		color: #ffffff;
+		text-align: center;
+	}
+
+	/* 扫描线在文字下方，不是顶部；设计图那条是发光的，这里用一条实心浅蓝近似。 */
+	.line {
+		margin-top: 14px;
+		width: 200px;
+		height: 3px;
+		border-radius: 2px;
+		background-color: #bfe0ff;
+	}
+
+	.capsule {
+		width: 200px;
+		height: 52px;
+		line-height: 52px;
+		font-size: 17px;
+		color: #2f7cf6;
+		background-color: #ffffff;
+		border-radius: 26px;
+		border-width: 0;
+	}
+
+	.tip {
+		font-size: 14px;
+		color: rgba(255, 255, 255, 0.72);
+		text-align: center;
+		line-height: 21px;
+	}
+</style>
