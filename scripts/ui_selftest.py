@@ -59,7 +59,7 @@ from app.logging_setup import setup_logging  # noqa: E402
 from app.net import spec as protocol_spec  # noqa: E402
 from app.net.discovery import DiscoveryService, Peer  # noqa: E402
 from app.net.identity import Identity, client_context, fingerprint_of, load_or_create  # noqa: E402
-from app.net.receive import ReceiveService  # noqa: E402
+from app.net.receive import STATE_FILE, ReceiveService  # noqa: E402
 from app.net.send import PeerConnection, plan  # noqa: E402
 from app.paths import receive_root, user_data_dir  # noqa: E402
 from app.ui import theme  # noqa: E402
@@ -722,6 +722,10 @@ def phase_incoming(app: QApplication, dialog: AutoDialog, panel, sender: Identit
     root = (landing or receive_root()) / conn.offer_id
     bad = [f.relpath for f in files if not (root / f.relpath).is_file() or hashlib.sha256((root / f.relpath).read_bytes()).hexdigest() != f.sha256]
     check("files landed byte-identical where the card said they would", not bad, bad or str(root))
+    # The ledger is what makes an interrupted offer resumable - and what makes it look abandoned.
+    # A finished one has to take it away, or the next run's reclaim is deleting somebody's files.
+    check("a finished transfer leaves no resumable ledger behind", not list(root.glob(STATE_FILE)),
+          [str(p) for p in root.glob(STATE_FILE)])
     # The list is painted from finalize's verdict, so a file that arrived on disk but failed to
     # hash would have to stay off it - and a declined one already did, above.
     rows = [[panel.received_list.topLevelItem(i).text(col) for col in range(4)] for i in range(panel.received_list.topLevelItemCount())]
@@ -1008,6 +1012,61 @@ def phase_single_slot(app: QApplication, dialog: AutoDialog, panel, hidden) -> N
     check("the receiver refuses a stranger too", refused and "PEER_BUSY one peer at a time" in refused[0], refused)
     panel._pending = None
     app.processEvents()
+
+
+def phase_reclaim(app: QApplication, panel, proto: protocol_spec.Protocol) -> None:
+    """A connection that stopped moving hands the one session slot back by itself (spec §3).
+
+    Nothing is clicked here, which is the point: the panel's pairing tick is what notices the
+    silence, so the row has to leave the card, 连接 has to stop being greyed, and the status line
+    has to say which window closed - the peer is still pinned and can come back without a code.
+    """
+    if not panel._connected:
+        check("the reclaim had a connected peer to watch", False, roster_texts(panel))
+        return
+    peer = panel._connected[0]
+    minutes = proto.session_idle_timeout_s // 60
+    panel._receiver._seen[peer.fingerprint] = time.time() - proto.session_idle_timeout_s - 1
+    panel._refresh_pairing()  # the slot the pairing timer fires
+    app.processEvents()
+    check("a stalled peer's row leaves the card", roster_fingerprint(panel, peer.fingerprint) is None, roster_texts(panel))
+    check("the slot is free again", panel._locked_out() is None, panel._locked_out())
+    check("连接 is clickable again", panel.connect_button.isEnabled(), panel.connect_button.toolTip())
+    shown = panel.status_label.text()
+    check("the screen names the peer and the window it ran out",
+          f"{peer.name or peer.prefix} 已经 {minutes} 分钟没有动静" in shown, shown)
+    check("and says the key is kept", "不用再报配对码" in shown, shown)
+    check("the peer is still pinned, so its next pair needs no code", panel.identity.trusted_entry(peer.fingerprint) is not None, "")
+    check("the receiver keeps no clock for a session nobody holds", peer.fingerprint not in panel._receiver._seen,
+          sorted(panel._receiver._seen))
+
+    # The same clock on the half this machine did not dial: a phone that paired its way in.
+    stranger = load_or_create(SCRATCH / "peer-e")
+    conn = PeerConnection(stranger, "Probe-Stalled", "127.0.0.1", panel._receiver.port, panel.identity.fingerprint)
+    seen: list = []
+
+    def handshake() -> None:
+        try:
+            conn.hello()
+            seen.append(conn.pair(panel._receiver.current_pair_code(), panel._receiver.passphrase())["token"])
+        except BaseException as error:  # noqa: BLE001 - whatever the sender saw is the finding
+            seen.append(error)
+
+    thread = threading.Thread(target=handshake, daemon=True, name="probe-stall")
+    thread.start()
+    done = pump_until(app, lambda: not thread.is_alive(), 30.0)
+    thread.join(timeout=5)
+    check("a stranger that dialled in is on the card", done and roster_fingerprint(panel, stranger.fingerprint) is not None, seen)
+    panel._receiver._seen[stranger.fingerprint] = time.time() - proto.session_idle_timeout_s - 1
+    panel._refresh_pairing()
+    app.processEvents()
+    check("an inbound peer is held to the same clock", roster_fingerprint(panel, stranger.fingerprint) is None, roster_texts(panel))
+    check("its token is really taken away", stranger.fingerprint not in panel._receiver._tokens, sorted(panel._receiver._tokens))
+    conn.close()
+    # The reclaim's counterpart: a finished transfer must not look like an abandoned one to the
+    # next run, because both are a folder with a ledger - and only one of them may be deleted.
+    adopted = panel._receiver.adopt_interrupted_offers()
+    check("a restart finds nothing to resume among the finished arrivals", adopted == 0, adopted)
 
 
 def phase_manual(app: QApplication, dialog: AutoDialog, panel, paths, base, files, hidden, hidden_root) -> None:
@@ -1357,6 +1416,7 @@ def main() -> int:
         # the only situation where the button on the task row means anything.
         phase_cancel(app, panel, paths, base, files, target_root)
         phase_single_slot(app, dialog, panel, hidden)
+        phase_reclaim(app, panel, proto)
         clear_roster(app, panel)
         phase_manual(app, dialog, panel, paths, base, files, hidden, silent_root)
         phase_settings(app, window)

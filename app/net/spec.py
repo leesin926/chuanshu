@@ -39,6 +39,8 @@ class Protocol:
     chunk_size: int
     max_parallel_chunks: int
     offer_wait_timeout_s: int
+    session_idle_timeout_s: int
+    offer_idle_timeout_s: int
     pair_code_ttl_s: int
     pair_code_digits: int
     pair_code_static: bool
@@ -85,6 +87,10 @@ def load() -> Protocol:
         chunk_size=int(transport["chunk_size"]),
         max_parallel_chunks=int(transport["max_parallel_chunks"]),
         offer_wait_timeout_s=int(transport["offer_wait_timeout_s"]),
+        # spec §3/§4: floors for how long a stalled peer may hold the one session slot and how long
+        # an accepted offer may go without a chunk before the receiver calls it abandoned.
+        session_idle_timeout_s=int(transport["session_idle_timeout_s"]),
+        offer_idle_timeout_s=int(transport["offer_idle_timeout_s"]),
         pair_code_ttl_s=int(transport["pair_code_ttl_s"]),
         pair_code_digits=int(transport["pair_code_digits"]),
         # A peer that has no opinion about this keeps rotating on pair_code_ttl_s, so the

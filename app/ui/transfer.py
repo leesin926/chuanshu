@@ -510,6 +510,9 @@ class TransferPanel(QWidget):
     #: answered, so it has to go - a 接收 button that can no longer be honoured is a lie.
     _offer_expired = Signal(str)  # token
     _peers_changed = Signal()  # emitted from discovery threads
+    #: The idle reclaim took a session back (spec §3). Emitted from the receiver's threads and
+    #: from the panel's own tick, so the roster has to stop naming a device it cannot reach.
+    _peer_lost = Signal(str)  # fingerprint
     _progressed = Signal(int, int, str)  # chunks done, chunks total, current file
     _finished = Signal(bool, str)
     #: A transfer finished and every byte of it verified. The window turns this into a tray
@@ -586,6 +589,7 @@ class TransferPanel(QWidget):
         self._offer_arrived.connect(self._on_offer)
         self._offer_expired.connect(self._close_offer)
         self._peers_changed.connect(self._refresh_peers)
+        self._peer_lost.connect(self._on_peer_lost)
         self._progressed.connect(self._on_progress)
         self._finished.connect(self._on_finished)
         self._connected_ok.connect(self._on_connected)
@@ -1426,6 +1430,7 @@ class TransferPanel(QWidget):
             root=root,
             on_received=self._received_arrived.emit,
             on_paired=self._peer_paired.emit,
+            on_lost=self._peer_lost.emit,
         )
 
     def start_listening(self) -> None:
@@ -1531,6 +1536,9 @@ class TransferPanel(QWidget):
     def _refresh_pairing(self) -> None:
         if self._receiver is None or self._discovery is None:
             return
+        # The same tick that repaints the pairing picture is what notices a peer going quiet:
+        # a stalled connection sends no requests, so nothing else would sweep while it stalls.
+        self._receiver.sweep()
         payload = self._discovery.pairing_qr(
             self._receiver.current_pair_code(), host=local_ipv4(), passphrase=self._receiver.passphrase()
         )
@@ -2060,6 +2068,22 @@ class TransferPanel(QWidget):
             self._receiver.release(fingerprint)
         return len(self._connected) != before
 
+    def _on_peer_lost(self, fingerprint: str) -> None:
+        """The idle reclaim took a session back (spec §3), so the row stops promising it.
+
+        Say it out loud rather than letting the device vanish on the next repaint: the peer is
+        still pinned, and a user who wonders what happened needs to know the window that closed
+        was this machine's, not the phone's.
+        """
+        known = next((peer for peer in self._connected if peer.fingerprint == fingerprint), None)
+        self.forget(fingerprint)
+        if known is not None:
+            self.status_label.setText(
+                _("{name} 已经 {minutes} 分钟没有动静，本机把会话名额收回了；它的密钥还在，重连不用再报配对码。").format(
+                    name=known.name or known.prefix, minutes=self.proto.session_idle_timeout_s // 60
+                )
+            )
+
     def _sync_buttons(self) -> None:
         busy = self._worker is not None and self._worker.is_alive()
         connecting = self._connect_worker is not None and self._connect_worker.is_alive()
@@ -2387,6 +2411,10 @@ class TransferPanel(QWidget):
                 if "send" in self._cancelled:
                     raise _Cancelled
                 done[0] += 1
+                # Outbound chunks are this machine's only heartbeat: the peer we dialled never
+                # shows up in an inbound request, so its half of the idle clock is kept here.
+                if self._receiver is not None:
+                    self._receiver.seen(peer.fingerprint)
                 self._progressed.emit(done[0], total_chunks, relpath)
 
             conn.offer(files)

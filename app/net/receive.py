@@ -59,6 +59,9 @@ ReceivedHandler = Callable[[str, list[dict]], None]
 #: story: the phone sending files to a PC never appears on that PC.
 #: (fingerprint, peer_id, name, client ip)
 PairedHandler = Callable[[str, str, str, str], None]
+#: Fires when the idle reclaim of spec §3 takes a session back, so the roster can stop
+#: promising a connection that this machine no longer honours.
+LostHandler = Callable[[str], None]
 
 
 def _digest(data: bytes) -> str:
@@ -98,6 +101,11 @@ class OfferState:
     #: The name this machine's pin list gives the sender, not what the manifest called itself.
     who: str = ""
     created: float = field(default_factory=time.time)
+    #: When a chunk last landed. The idle window of spec §4 is measured from here, not from
+    #: ``created``: a 4 GiB transfer that keeps writing is never idle, however long it takes.
+    touched: float = field(default_factory=time.time)
+    #: Set once every file verified: there is nothing left to resume, so the state file goes.
+    complete: bool = False
 
     def chunk_count(self, file: dict) -> int:
         size = int(file["size"])
@@ -122,6 +130,9 @@ class OfferState:
             "offer_id": self.offer_id,
             "who": self.who,
             "files": self.files,
+            # Written so a crash between finalize and the ledger going away cannot hand the next
+            # run an unfinished offer - unfinished is what the reclaim is allowed to delete.
+            "complete": self.complete,
             "received": {
                 fid: {str(index): digest for index, digest in chunks.items()}
                 for fid, chunks in self.received.items()
@@ -152,6 +163,7 @@ class OfferState:
             proto=proto,
             received=received,
             who=str(body.get("who", "")),
+            complete=bool(body.get("complete", False)),
         )
 
 
@@ -269,16 +281,21 @@ class ReceiveService:
         root: Path | None = None,
         on_received: ReceivedHandler | None = None,
         on_paired: PairedHandler | None = None,
+        on_lost: LostHandler | None = None,
     ) -> None:
         self.identity = identity
         self.device_name = device_name
         self.handler = handler
         self.on_received = on_received
         self.on_paired = on_paired
+        self.on_lost = on_lost
         self.proto = protocol_spec.load()
         self.root = Path(root or receive_root())
         self._offers: dict[str, OfferState] = {}
         self._tokens: dict[str, str] = {}
+        #: When each peer last said anything with a token, and when this machine last leaned on
+        #: the session it dialled out. Both feed the idle reclaim; neither is ever sent anywhere.
+        self._seen: dict[str, float] = {}
         self._seen_nonces: dict[str, float] = {}
         self._code_failures: dict[str, list[float]] = {}
         # Only used when the contract says the code lapses (pair_code_static=false).
@@ -316,6 +333,12 @@ class ReceiveService:
                 continue
             state = OfferState.load(child, self.proto)
             if state is not None:
+                if state.complete:
+                    # A ledger that outlived its own deletion (a crash between the two writes) is
+                    # not an interrupted offer, and treating it as one is how finished bytes get
+                    # mistaken for garbage later.
+                    (child / STATE_FILE).unlink(missing_ok=True)
+                    continue
                 self._offers[state.offer_id] = state
                 count += 1
         if count:
@@ -359,6 +382,9 @@ class ReceiveService:
         """
         with self._lock:
             gone = self._tokens.pop(fingerprint, None)
+            self._seen.pop(fingerprint, None)
+            if self._held_by == fingerprint:
+                self._held_by = ""
         if gone is None:
             return False
         log.info("released the session of %s", fingerprint[:12])
@@ -372,7 +398,65 @@ class ReceiveService:
         pair beside the session the user already sees on screen.
         """
         with self._lock:
+            changed = self._held_by != (fingerprint or "")
             self._held_by = fingerprint or ""
+            # Only taking the slot starts the clock. This is called from every roster repaint,
+            # and stamping it each time would keep a stalled outbound session alive forever.
+            if fingerprint and changed:
+                self._seen[fingerprint] = time.time()
+
+    def seen(self, fingerprint: str) -> None:
+        """Say that a session is still moving, so the idle clock starts again from now.
+
+        The one peer this machine dialled out never appears in an inbound request, so this is the
+        only way its half of the slot can be kept honest - the sender calls it as chunks land.
+        """
+        with self._lock:
+            if fingerprint:
+                self._seen[fingerprint] = time.time()
+
+    def sweep(self) -> list[str]:
+        """Reclaim what has stopped moving: a silent peer's slot, and an offer nobody is filling.
+
+        Called from a request thread and from the panel's tick, so it has to be cheap and idempotent.
+        Both windows are floors from the contract, and a peer whose clock runs out is not lost: it
+        re-pairs without a code (spec §3), and a finished transfer keeps everything it verified.
+        """
+        now = time.time()
+        lost: list[str] = []
+        with self._lock:
+            for fingerprint in list(self._seen):
+                idle = now - self._seen[fingerprint]
+                held = self._tokens.get(fingerprint) or (self._held_by == fingerprint)
+                if not held:
+                    # Nobody is leaning on this session any more - the row left the roster, or the
+                    # token was released by hand. Keeping the stamp would let the table grow one
+                    # entry per device the machine ever talked to, and the next claim on the slot
+                    # starts its own clock anyway.
+                    self._seen.pop(fingerprint, None)
+                    continue
+                if idle >= self.proto.session_idle_timeout_s:
+                    self._tokens.pop(fingerprint, None)
+                    self._seen.pop(fingerprint, None)
+                    if self._held_by == fingerprint:
+                        self._held_by = ""
+                    log.info("session of %s reclaimed after %ds of silence", fingerprint[:12], int(idle))
+                    lost.append(fingerprint)
+            for offer_id, state in list(self._offers.items()):
+                if now - state.touched < self.proto.offer_idle_timeout_s:
+                    continue
+                log.info("offer %s reclaimed after %ds without a chunk", offer_id[:8], int(now - state.touched))
+                self._offers.pop(offer_id, None)
+                if not state.complete:
+                    # Same thing the sender's own 取消 does: the half-written batch is nobody's
+                    # file, and leaving it would keep the sparse allocation the offer reserved.
+                    for child in sorted(state.directory.rglob("*"), reverse=True):
+                        if child.is_file():
+                            child.unlink()
+        for fingerprint in lost:
+            if self.on_lost is not None:
+                self.on_lost(fingerprint)
+        return lost
 
     def _prune(self) -> None:
         now = time.time()
@@ -388,6 +472,9 @@ class ReceiveService:
     def handle_pair(self, body: dict, client_ip: str) -> dict:
         with self._lock:
             self._prune()
+            # A peer that went silent must not be the reason a live one gets PEER_BUSY, so the
+            # slot is swept for silence before it is counted - this is the moment it matters.
+            self.sweep()
             peer_id = str(body.get("peer_id", ""))
             name = str(body.get("name", ""))
             nonce = str(body.get("nonce", ""))
@@ -459,6 +546,7 @@ class ReceiveService:
             self._seen_nonces[nonce] = time.time()
             token = secrets.token_hex(32)
             self._tokens[fingerprint] = token
+            self._seen[fingerprint] = time.time()
             if self.on_paired is not None:
                 self.on_paired(fingerprint, peer_id, name, client_ip)
             return {
@@ -566,6 +654,7 @@ class ReceiveService:
         if claimed_digest and claimed_digest != digest:
             raise protocol_spec.ProtocolError("CHUNK_DIGEST_MISMATCH", {"index": index, "expected": claimed_digest})
         stored = state.received.setdefault(file_id, {})
+        state.touched = time.time()
         if stored.get(index) == digest:
             return {"index": index, "stored": True, "idempotent": True}
         target = self._target(state, sanitize_relpath(str(file["relpath"]), self.proto))
@@ -594,6 +683,14 @@ class ReceiveService:
                 log.warning("finalize rejected %s: %s", file["relpath"], "missing chunks" if missing else "digest mismatch")
         if landed and self.on_received is not None:
             self.on_received(state.who, landed)
+        if all(item["ok"] for item in results):
+            # Nothing left to resume, and a state file is exactly what an interrupted offer looks
+            # like after a restart: leaving it here would re-adopt a finished transfer as one. Say
+            # it is finished first, then take the ledger away - a crash between the two still tells
+            # the next run the truth.
+            state.complete = True
+            state.persist()
+            (state.directory / STATE_FILE).unlink(missing_ok=True)
         return {"offer_id": offer_id, "verified": results}
 
     def handle_abort(self, offer_id: str) -> dict:
@@ -625,6 +722,10 @@ class ReceiveService:
         token = request.headers.get("X-Chuanshu-Auth", "")
         if not self.token_valid(token):
             raise protocol_spec.ProtocolError("NOT_PAIRED")
+        # Every authenticated request is a heartbeat: it resets the peer's idle clock, and it is
+        # the cheapest place to sweep - a stalled offer and a silent session both stop moving here.
+        self.seen(self.caller_fingerprint(token))
+        self.sweep()
         if method == "POST" and parts == ["v1", "offer"]:
             request._reply(200, self.handle_offer(request._json_body(), self.caller_fingerprint(token)))
             return

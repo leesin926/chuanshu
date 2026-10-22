@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: ChuanShu 0.1.0\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2026-10-22 22:21+0800\n"
+"POT-Creation-Date: 2026-10-23 00:48+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -85,7 +85,7 @@ msgstr ""
 msgid "传输"
 msgstr ""
 
-#: app/ui/main_window.py:45 app/ui/transfer.py:1318
+#: app/ui/main_window.py:45 app/ui/transfer.py:1322
 msgid "发送"
 msgstr ""
 
@@ -136,8 +136,8 @@ msgstr ""
 msgid "退出程序"
 msgstr ""
 
-#: app/ui/main_window.py:436 app/ui/transfer.py:296 app/ui/transfer.py:1405
-#: app/ui/transfer.py:2256
+#: app/ui/main_window.py:436 app/ui/transfer.py:296 app/ui/transfer.py:1409
+#: app/ui/transfer.py:2280
 msgid "取消"
 msgstr ""
 
@@ -176,7 +176,7 @@ msgstr ""
 msgid "关于{app}"
 msgstr ""
 
-#: app/ui/main_window.py:496 app/ui/transfer.py:1373
+#: app/ui/main_window.py:496 app/ui/transfer.py:1377
 #, python-brace-format
 msgid "本机：{name}"
 msgstr ""
@@ -201,8 +201,8 @@ msgstr ""
 msgid "恢复默认"
 msgstr ""
 
-#: app/ui/settings_dialog.py:346 app/ui/transfer.py:1356
-#: app/ui/transfer.py:1371
+#: app/ui/settings_dialog.py:346 app/ui/transfer.py:1360
+#: app/ui/transfer.py:1375
 msgid "打开接收目录"
 msgstr ""
 
@@ -247,7 +247,7 @@ msgstr ""
 msgid "选择界面外观"
 msgstr ""
 
-#: app/ui/settings_dialog.py:382 app/ui/transfer.py:1559
+#: app/ui/settings_dialog.py:382 app/ui/transfer.py:1567
 msgid "设备名"
 msgstr ""
 
@@ -453,7 +453,7 @@ msgstr ""
 msgid "还原"
 msgstr ""
 
-#: app/ui/transfer.py:111 app/ui/transfer.py:1218
+#: app/ui/transfer.py:111 app/ui/transfer.py:1222
 msgid "全部"
 msgstr ""
 
@@ -461,19 +461,19 @@ msgstr ""
 msgid "进行中"
 msgstr ""
 
-#: app/ui/transfer.py:113 app/ui/transfer.py:2655
+#: app/ui/transfer.py:113 app/ui/transfer.py:2683
 msgid "已完成"
 msgstr ""
 
-#: app/ui/transfer.py:114 app/ui/transfer.py:2339 app/ui/transfer.py:2655
+#: app/ui/transfer.py:114 app/ui/transfer.py:2363 app/ui/transfer.py:2683
 msgid "失败"
 msgstr ""
 
-#: app/ui/transfer.py:171 app/ui/transfer.py:2649
+#: app/ui/transfer.py:171 app/ui/transfer.py:2677
 msgid "今天"
 msgstr ""
 
-#: app/ui/transfer.py:173 app/ui/transfer.py:2651
+#: app/ui/transfer.py:173 app/ui/transfer.py:2679
 msgid "昨天"
 msgstr ""
 
@@ -495,7 +495,7 @@ msgstr ""
 msgid "连接设备"
 msgstr ""
 
-#: app/ui/transfer.py:295 app/ui/transfer.py:1393
+#: app/ui/transfer.py:295 app/ui/transfer.py:1397
 msgid "连接"
 msgstr ""
 
@@ -503,7 +503,7 @@ msgstr ""
 msgid "下面是广播出来的候选设备。选中一台，回到主界面填它的配对码和密码，再点连接。"
 msgstr ""
 
-#: app/ui/transfer.py:307 app/ui/transfer.py:1378
+#: app/ui/transfer.py:307 app/ui/transfer.py:1382
 msgid "手输地址…"
 msgstr ""
 
@@ -511,7 +511,7 @@ msgstr ""
 msgid "没在局域网里广播出来的设备，可以输入它的地址，或粘贴 chuanshu:// 配对串。"
 msgstr ""
 
-#: app/ui/transfer.py:309 app/ui/transfer.py:1331
+#: app/ui/transfer.py:309 app/ui/transfer.py:1335
 msgid "刷新"
 msgstr ""
 
@@ -519,7 +519,7 @@ msgstr ""
 msgid "（已连接）"
 msgstr ""
 
-#: app/ui/transfer.py:321 app/ui/transfer.py:322 app/ui/transfer.py:1787
+#: app/ui/transfer.py:321 app/ui/transfer.py:322 app/ui/transfer.py:1795
 msgid "手动添加"
 msgstr ""
 
@@ -564,7 +564,7 @@ msgstr ""
 msgid "…还有 {n} 个文件没有列出"
 msgstr ""
 
-#: app/ui/transfer.py:434 app/ui/transfer.py:1364
+#: app/ui/transfer.py:434 app/ui/transfer.py:1368
 msgid "保存到"
 msgstr ""
 
@@ -576,578 +576,583 @@ msgstr ""
 msgid "选择这次存放的文件夹"
 msgstr ""
 
-#: app/ui/transfer.py:1010 app/ui/transfer.py:1396
+#: app/ui/transfer.py:1014 app/ui/transfer.py:1400
 msgid "让对方扫这个码，就能带着配对码和密码连过来。"
 msgstr ""
 
-#: app/ui/transfer.py:1219
+#: app/ui/transfer.py:1223
 msgid "图片"
 msgstr ""
 
-#: app/ui/transfer.py:1220
+#: app/ui/transfer.py:1224
 msgid "视频"
 msgstr ""
 
-#: app/ui/transfer.py:1221
+#: app/ui/transfer.py:1225
 msgid "文档"
 msgstr ""
 
-#: app/ui/transfer.py:1222
+#: app/ui/transfer.py:1226
 msgid "压缩包"
 msgstr ""
 
-#: app/ui/transfer.py:1316
+#: app/ui/transfer.py:1320
 msgid "传书 - 文件互传"
 msgstr ""
 
-#: app/ui/transfer.py:1317
+#: app/ui/transfer.py:1321
 msgid "文件放在这里，拖进来就能发给连上的设备。"
 msgstr ""
 
-#: app/ui/transfer.py:1319
+#: app/ui/transfer.py:1323
 msgid "文件在「传输」页拖进来；这一页决定它去哪。"
 msgstr ""
 
-#: app/ui/transfer.py:1320
+#: app/ui/transfer.py:1324
 msgid "扫码连接手机"
 msgstr ""
 
-#: app/ui/transfer.py:1321
+#: app/ui/transfer.py:1325
 msgid "请使用传书手机端扫描二维码完成连接"
 msgstr ""
 
-#: app/ui/transfer.py:1322 app/ui/transfer.py:1342
+#: app/ui/transfer.py:1326 app/ui/transfer.py:1346
 msgid "传输记录"
 msgstr ""
 
-#: app/ui/transfer.py:1323
+#: app/ui/transfer.py:1327
 msgid "文件管理"
 msgstr ""
 
-#: app/ui/transfer.py:1324
+#: app/ui/transfer.py:1328
 msgid "已连接设备"
 msgstr ""
 
-#: app/ui/transfer.py:1325
+#: app/ui/transfer.py:1329
 msgid "还没有已连接的设备。点下面「扫码连接」，或在「接收」页选一台。"
 msgstr ""
 
-#: app/ui/transfer.py:1326
+#: app/ui/transfer.py:1330
 msgid "扫码连接"
 msgstr ""
 
-#: app/ui/transfer.py:1327
+#: app/ui/transfer.py:1331
 msgid "查看全部"
 msgstr ""
 
-#: app/ui/transfer.py:1328
+#: app/ui/transfer.py:1332
 msgid "目标设备"
 msgstr ""
 
-#: app/ui/transfer.py:1329
+#: app/ui/transfer.py:1333
 msgid "这次发什么"
 msgstr ""
 
-#: app/ui/transfer.py:1330
+#: app/ui/transfer.py:1334
 msgid "附近设备"
 msgstr ""
 
-#: app/ui/transfer.py:1332
+#: app/ui/transfer.py:1336
 msgid "我的设备"
 msgstr ""
 
-#: app/ui/transfer.py:1339
+#: app/ui/transfer.py:1343
 msgid "拖拽文件到此处，或点击选择"
 msgstr ""
 
-#: app/ui/transfer.py:1340
+#: app/ui/transfer.py:1344
 msgid "支持图片 视频 文档 压缩包"
 msgstr ""
 
-#: app/ui/transfer.py:1341
+#: app/ui/transfer.py:1345
 msgid "对方要先点接受，文件才会落到它的接收目录。"
 msgstr ""
 
-#: app/ui/transfer.py:1345
+#: app/ui/transfer.py:1349
 msgid "搜索文件"
 msgstr ""
 
-#: app/ui/transfer.py:1357
+#: app/ui/transfer.py:1361
 msgid "文件名"
 msgstr ""
 
-#: app/ui/transfer.py:1357
+#: app/ui/transfer.py:1361
 msgid "大小"
 msgstr ""
 
-#: app/ui/transfer.py:1357
+#: app/ui/transfer.py:1361
 msgid "日期"
 msgstr ""
 
-#: app/ui/transfer.py:1357
+#: app/ui/transfer.py:1361
 msgid "来源设备"
 msgstr ""
 
-#: app/ui/transfer.py:1366
+#: app/ui/transfer.py:1370
 msgid "更换配对码和密码"
 msgstr ""
 
-#: app/ui/transfer.py:1368
+#: app/ui/transfer.py:1372
 msgid "换一组新的固定配对码和密码，二维码跟着变。已经连上的设备不受影响。"
 msgstr ""
 
-#: app/ui/transfer.py:1370
+#: app/ui/transfer.py:1374
 msgid "打开"
 msgstr ""
 
-#: app/ui/transfer.py:1372
+#: app/ui/transfer.py:1376
 msgid "编辑"
 msgstr ""
 
-#: app/ui/transfer.py:1374
+#: app/ui/transfer.py:1378
 msgid "收到的文件都校验通过、已经落盘。记录存在本机，重启也还在。"
 msgstr ""
 
-#: app/ui/transfer.py:1375
+#: app/ui/transfer.py:1379
 msgid "选择文件…"
 msgstr ""
 
-#: app/ui/transfer.py:1376
+#: app/ui/transfer.py:1380
 msgid "选择文件夹…"
 msgstr ""
 
-#: app/ui/transfer.py:1377
+#: app/ui/transfer.py:1381
 msgid "清空"
 msgstr ""
 
-#: app/ui/transfer.py:1379
+#: app/ui/transfer.py:1383
 msgid "没在附近列表里的设备，可以输入它的地址，或粘贴 chuanshu:// 配对串。"
 msgstr ""
 
-#: app/ui/transfer.py:1380
+#: app/ui/transfer.py:1384
 msgid "断开"
 msgstr ""
 
-#: app/ui/transfer.py:1382
+#: app/ui/transfer.py:1386
 #, python-brace-format
 msgid "{n} 位配对码"
 msgstr ""
 
-#: app/ui/transfer.py:1384
+#: app/ui/transfer.py:1388
 #, python-brace-format
 msgid "输入对方屏幕上显示的 {n} 位配对码。本机存过它的密钥时留空即可，用签名重连。"
 msgstr ""
 
-#: app/ui/transfer.py:1386
+#: app/ui/transfer.py:1390
 msgid "连接密码（可留空）"
 msgstr ""
 
-#: app/ui/transfer.py:1389
+#: app/ui/transfer.py:1393
 #, python-brace-format
 msgid "输入对方屏幕上显示的 {n} 位连接密码。对方是还没有密码的旧版本时留空，这时只用配对码完成首次配对。"
 msgstr ""
 
-#: app/ui/transfer.py:1395
+#: app/ui/transfer.py:1399
 msgid "发送给所选设备"
 msgstr ""
 
-#: app/ui/transfer.py:1491
+#: app/ui/transfer.py:1496
 msgid "已换成新的配对码和密码，旧二维码作废。已连接的设备不受影响。"
 msgstr ""
 
-#: app/ui/transfer.py:1496
+#: app/ui/transfer.py:1501
 msgid "配对码要等接收端口打开才有"
-msgstr ""
-
-#: app/ui/transfer.py:1497
-#, python-brace-format
-msgid "配对码：{code}"
 msgstr ""
 
 #: app/ui/transfer.py:1502
 #, python-brace-format
+msgid "配对码：{code}"
+msgstr ""
+
+#: app/ui/transfer.py:1507
+#, python-brace-format
 msgid "密码：{secret}"
 msgstr ""
 
-#: app/ui/transfer.py:1506
+#: app/ui/transfer.py:1511
 msgid "本机接收端口没有打开。"
 msgstr ""
 
-#: app/ui/transfer.py:1508
+#: app/ui/transfer.py:1513
 msgid "接收已停止，对方连不进来。"
 msgstr ""
 
-#: app/ui/transfer.py:1509
+#: app/ui/transfer.py:1514
 #, python-brace-format
 msgid "端口：{port}"
 msgstr ""
 
-#: app/ui/transfer.py:1517
+#: app/ui/transfer.py:1522
 msgid "发现通道：mDNS 与 UDP 都可用。"
 msgstr ""
 
-#: app/ui/transfer.py:1518
+#: app/ui/transfer.py:1523
 msgid "mDNS"
 msgstr ""
 
-#: app/ui/transfer.py:1518
+#: app/ui/transfer.py:1523
 msgid "UDP 广播"
-msgstr ""
-
-#: app/ui/transfer.py:1521
-#, python-brace-format
-msgid "发现通道：{which} 都不可用，只能手输地址或粘贴配对串。"
-msgstr ""
-
-#: app/ui/transfer.py:1522
-#, python-brace-format
-msgid "发现通道：{which} 不可用，仍可手输地址或粘贴配对串。"
 msgstr ""
 
 #: app/ui/transfer.py:1526
 #, python-brace-format
+msgid "发现通道：{which} 都不可用，只能手输地址或粘贴配对串。"
+msgstr ""
+
+#: app/ui/transfer.py:1527
+#, python-brace-format
+msgid "发现通道：{which} 不可用，仍可手输地址或粘贴配对串。"
+msgstr ""
+
+#: app/ui/transfer.py:1531
+#, python-brace-format
 msgid "这台机器开不了接收端口，但仍能主动发出去：{error}"
 msgstr ""
 
-#: app/ui/transfer.py:1528
+#: app/ui/transfer.py:1533
 #, python-brace-format
 msgid "上次有 {n} 个传输没传完，对方接着传就会续上。"
 msgstr ""
 
-#: app/ui/transfer.py:1559
+#: app/ui/transfer.py:1567
 msgid "这台设备对别人显示的名字："
 msgstr ""
 
-#: app/ui/transfer.py:1632
+#: app/ui/transfer.py:1640
 msgid "对方的这次发送已经等不到回答，确认框已关闭。"
 msgstr ""
 
-#: app/ui/transfer.py:1680
+#: app/ui/transfer.py:1688
 #, python-brace-format
 msgid "正在连接 {name}（{host}）…"
 msgstr ""
 
-#: app/ui/transfer.py:1685
+#: app/ui/transfer.py:1693
 #, python-brace-format
 msgid "已选择 {name}（{host}）。本机存过它的密钥，留空配对码点连接。"
 msgstr ""
 
-#: app/ui/transfer.py:1686
+#: app/ui/transfer.py:1694
 #, python-brace-format
 msgid "已选择 {name}（{host}）。输入它屏幕上的 {n} 位配对码{extra}，再点连接。"
 msgstr ""
 
-#: app/ui/transfer.py:1687
+#: app/ui/transfer.py:1695
 #, python-brace-format
 msgid "和 {m} 位密码"
 msgstr ""
 
-#: app/ui/transfer.py:1691
+#: app/ui/transfer.py:1699
 #, python-brace-format
 msgid "一次只连一台，现在连着 {name}。要换设备先点「断开」。"
 msgstr ""
 
-#: app/ui/transfer.py:1693
+#: app/ui/transfer.py:1701
 msgid "自动发现没有运行。点「手输地址…」填对方地址，或粘贴它的配对串。"
 msgstr ""
 
-#: app/ui/transfer.py:1696
+#: app/ui/transfer.py:1704
 msgid "附近暂时没有广播出来的设备。点「手输地址…」填对方地址，或让它扫上面的码。"
 msgstr ""
 
-#: app/ui/transfer.py:1697
+#: app/ui/transfer.py:1705
 msgid "点上面一台设备选中它，再填配对码连接；没广播出来的点「手输地址…」。"
 msgstr ""
 
-#: app/ui/transfer.py:1776 app/ui/transfer.py:1788
+#: app/ui/transfer.py:1784 app/ui/transfer.py:1796
 msgid "已连接"
 msgstr ""
 
-#: app/ui/transfer.py:1776 app/ui/transfer.py:1788 app/ui/transfer.py:1806
+#: app/ui/transfer.py:1784 app/ui/transfer.py:1796 app/ui/transfer.py:1814
 msgid "在线"
 msgstr ""
 
-#: app/ui/transfer.py:1784
+#: app/ui/transfer.py:1792
 #, python-brace-format
 msgid ""
 "{addr}\n"
 "指纹前缀 {fp}；发现于 {via}。{state}"
 msgstr ""
 
-#: app/ui/transfer.py:1786
+#: app/ui/transfer.py:1794
 msgid "未知"
 msgstr ""
 
-#: app/ui/transfer.py:1807
+#: app/ui/transfer.py:1815
 msgid "（对方连进来，只能收）"
 msgstr ""
 
-#: app/ui/transfer.py:1810
+#: app/ui/transfer.py:1818
 #, python-brace-format
 msgid "指纹前缀 {fp}。它主动连进来，本机没有可回拨的地址，所以只能收它的文件。要发给它，请由它来连本机。"
 msgstr ""
 
-#: app/ui/transfer.py:1813
+#: app/ui/transfer.py:1821
 #, python-brace-format
 msgid "指纹前缀 {fp}，地址 {addr}。已配对，会话保留到点断开为止。"
 msgstr ""
 
-#: app/ui/transfer.py:1852
+#: app/ui/transfer.py:1860
 #, python-brace-format
 msgid "{name} 已连上本机（{ip}），现在只等它发文件过来。"
 msgstr ""
 
-#: app/ui/transfer.py:1876
+#: app/ui/transfer.py:1884
 #, python-brace-format
 msgid "{name} 已经连着，选文件发送即可。"
 msgstr ""
 
-#: app/ui/transfer.py:1893
+#: app/ui/transfer.py:1901
 #, python-brace-format
 msgid "{addr} 应答了，但不是能配的版本：{why}"
 msgstr ""
 
-#: app/ui/transfer.py:1896 app/ui/transfer.py:1986
+#: app/ui/transfer.py:1904 app/ui/transfer.py:1994
 #, python-brace-format
 msgid "连不上 {addr}：{error}"
 msgstr ""
 
-#: app/ui/transfer.py:1923
+#: app/ui/transfer.py:1931
 #, python-brace-format
 msgid "一次只连一台。先断开 {name}，再连新设备。"
 msgstr ""
 
-#: app/ui/transfer.py:1924
+#: app/ui/transfer.py:1932
 msgid "用上面的配对码和密码连接选中的设备。"
 msgstr ""
 
-#: app/ui/transfer.py:1936
+#: app/ui/transfer.py:1944
 msgid "先在「附近设备」里点一台，或点「手输地址…」填它的地址。"
 msgstr ""
 
-#: app/ui/transfer.py:1941
+#: app/ui/transfer.py:1949
 #, python-brace-format
 msgid "本机一次只连一台，现在连着 {name}。要先点「断开」再连它。"
 msgstr ""
 
-#: app/ui/transfer.py:1946
+#: app/ui/transfer.py:1954
 #, python-brace-format
 msgid "还差对方屏幕上那 {n} 位配对码。"
 msgstr ""
 
-#: app/ui/transfer.py:1970
+#: app/ui/transfer.py:1978
 #, python-brace-format
 msgid "配对码或密码不对。请照着对方屏幕上现在的 {n} 位码和 {m} 位密码再输一次。"
 msgstr ""
 
-#: app/ui/transfer.py:1979
+#: app/ui/transfer.py:1987
 #, python-brace-format
 msgid "它已经连着 {peer}，一次只允许一台。请那边先断开。"
 msgstr ""
 
-#: app/ui/transfer.py:1982 app/ui/transfer.py:2416
+#: app/ui/transfer.py:1990 app/ui/transfer.py:2444
 #, python-brace-format
 msgid "对方说：{text}"
 msgstr ""
 
-#: app/ui/transfer.py:2015
+#: app/ui/transfer.py:2023
 #, python-brace-format
 msgid "已连接 {name}，指纹前缀 {fp}。核对无误再发。"
 msgstr ""
 
-#: app/ui/transfer.py:2041
+#: app/ui/transfer.py:2049
 #, python-brace-format
 msgid "已断开 {name}。它的密钥还留在本机，留空配对码就能重连；要彻底撤销请去设置。"
 msgstr ""
 
-#: app/ui/transfer.py:2072
+#: app/ui/transfer.py:2082
+#, python-brace-format
+msgid "{name} 已经 {minutes} 分钟没有动静，本机把会话名额收回了；它的密钥还在，重连不用再报配对码。"
+msgstr ""
+
+#: app/ui/transfer.py:2096
 msgid "这台设备是连进来的，本机没有可回拨的地址。要发给它，请改由它连接本机。"
 msgstr ""
 
-#: app/ui/transfer.py:2083
+#: app/ui/transfer.py:2107
 msgid "还没有选定接收设备。到「接收」页连一台，或在附近列表里点一台。"
 msgstr ""
 
-#: app/ui/transfer.py:2085
+#: app/ui/transfer.py:2109
 #, python-brace-format
 msgid "当前对端：{name}（{addr}，指纹前缀 {fp}）"
 msgstr ""
 
-#: app/ui/transfer.py:2100
+#: app/ui/transfer.py:2124
 msgid "这台设备还没有连接会话，点「连接」建立一条。"
 msgstr ""
 
-#: app/ui/transfer.py:2103
+#: app/ui/transfer.py:2127
 #, python-brace-format
 msgid "对方要求每 {ms} 毫秒写一条 TLS 记录，所以这台设备比局域网正常水平慢，这不是网络故障。"
 msgstr ""
 
-#: app/ui/transfer.py:2105
+#: app/ui/transfer.py:2129
 msgid "对方没有要求放慢写入，本机按最快速度发。"
 msgstr ""
 
-#: app/ui/transfer.py:2142
+#: app/ui/transfer.py:2166
 msgid "选择要发送的文件夹"
 msgstr ""
 
-#: app/ui/transfer.py:2151
+#: app/ui/transfer.py:2175
 msgid "选择要发送的文件"
 msgstr ""
 
-#: app/ui/transfer.py:2163
+#: app/ui/transfer.py:2187
 msgid "这些文件不在同一个文件夹下，请分开发送。"
 msgstr ""
 
-#: app/ui/transfer.py:2187
+#: app/ui/transfer.py:2211
 msgid "还没选要发送的内容。"
 msgstr ""
 
-#: app/ui/transfer.py:2192
+#: app/ui/transfer.py:2216
 #, python-brace-format
 msgid "已选：{name}（整个文件夹，约 {size}）"
 msgstr ""
 
-#: app/ui/transfer.py:2193
+#: app/ui/transfer.py:2217
 #, python-brace-format
 msgid "已选 {n} 个文件，共 {size}"
 msgstr ""
 
-#: app/ui/transfer.py:2203
+#: app/ui/transfer.py:2227
 msgid "准备中…"
 msgstr ""
 
-#: app/ui/transfer.py:2207
+#: app/ui/transfer.py:2231
 #, python-brace-format
 msgid "{what} → {who}"
 msgstr ""
 
-#: app/ui/transfer.py:2211
+#: app/ui/transfer.py:2235
 #, python-brace-format
 msgid "共 {n} 个文件"
 msgstr ""
 
-#: app/ui/transfer.py:2258
+#: app/ui/transfer.py:2282
 msgid "停下这次传输，并让对方扔掉已经收到的半件。"
 msgstr ""
 
-#: app/ui/transfer.py:2313
+#: app/ui/transfer.py:2337
 msgid "（正在取消…）"
 msgstr ""
 
-#: app/ui/transfer.py:2322
+#: app/ui/transfer.py:2346
 #, python-brace-format
 msgid "已用 {clock}。"
 msgstr ""
 
-#: app/ui/transfer.py:2339
+#: app/ui/transfer.py:2363
 msgid "完成"
 msgstr ""
 
-#: app/ui/transfer.py:2368
+#: app/ui/transfer.py:2392
 msgid "这台设备已经没有连接会话，请重新连接它。"
 msgstr ""
 
-#: app/ui/transfer.py:2376
+#: app/ui/transfer.py:2400
 msgid "这里没有可发的文件。"
-msgstr ""
-
-#: app/ui/transfer.py:2398
-#, python-brace-format
-msgid "已发给 {name}：{n} 个文件（{size}），对方逐个校验通过。"
-msgstr ""
-
-#: app/ui/transfer.py:2411
-#, python-brace-format
-msgid "已取消发给 {name}：本机停止发送，对方那半件也撤掉了。"
-msgstr ""
-
-#: app/ui/transfer.py:2414
-msgid "对方不再认识本机的密钥。选中它，输入它屏幕上新显示的配对码再连接。"
-msgstr ""
-
-#: app/ui/transfer.py:2418
-#, python-brace-format
-msgid "有文件已经不在了：{path}"
-msgstr ""
-
-#: app/ui/transfer.py:2423
-#, python-brace-format
-msgid "连不上对方，它可能已经退出或换了端口：{error}"
 msgstr ""
 
 #: app/ui/transfer.py:2426
 #, python-brace-format
+msgid "已发给 {name}：{n} 个文件（{size}），对方逐个校验通过。"
+msgstr ""
+
+#: app/ui/transfer.py:2439
+#, python-brace-format
+msgid "已取消发给 {name}：本机停止发送，对方那半件也撤掉了。"
+msgstr ""
+
+#: app/ui/transfer.py:2442
+msgid "对方不再认识本机的密钥。选中它，输入它屏幕上新显示的配对码再连接。"
+msgstr ""
+
+#: app/ui/transfer.py:2446
+#, python-brace-format
+msgid "有文件已经不在了：{path}"
+msgstr ""
+
+#: app/ui/transfer.py:2451
+#, python-brace-format
+msgid "连不上对方，它可能已经退出或换了端口：{error}"
+msgstr ""
+
+#: app/ui/transfer.py:2454
+#, python-brace-format
 msgid "传输中断：{error}"
 msgstr ""
 
-#: app/ui/transfer.py:2434
+#: app/ui/transfer.py:2462
 #, python-brace-format
 msgid "{title}（正在发送 {name}）"
 msgstr ""
 
-#: app/ui/transfer.py:2437
+#: app/ui/transfer.py:2465
 #, python-brace-format
 msgid "正在发送：{name}"
 msgstr ""
 
-#: app/ui/transfer.py:2442
+#: app/ui/transfer.py:2470
 msgid "未开始"
 msgstr ""
 
-#: app/ui/transfer.py:2464
+#: app/ui/transfer.py:2492
 #, python-brace-format
 msgid "已收到 {who} 发来的 {n} 个文件（{size}），逐个校验通过。"
 msgstr ""
 
-#: app/ui/transfer.py:2548
+#: app/ui/transfer.py:2576
 msgid "（已经不在了）"
 msgstr ""
 
-#: app/ui/transfer.py:2557
+#: app/ui/transfer.py:2585
 msgid "时间未知"
 msgstr ""
 
-#: app/ui/transfer.py:2561
+#: app/ui/transfer.py:2589
 #, python-brace-format
 msgid "原本落在：{path}"
 msgstr ""
 
-#: app/ui/transfer.py:2574
+#: app/ui/transfer.py:2602
 msgid "没有符合条件的文件。"
 msgstr ""
 
-#: app/ui/transfer.py:2574
+#: app/ui/transfer.py:2602
 msgid "还没有收到校验通过的文件。"
 msgstr ""
 
-#: app/ui/transfer.py:2586
+#: app/ui/transfer.py:2614
 #, python-brace-format
 msgid "这条记录还在，文件已经不在这个位置了：{path}"
 msgstr ""
 
-#: app/ui/transfer.py:2645
+#: app/ui/transfer.py:2673
 msgid "更早"
 msgstr ""
 
-#: app/ui/transfer.py:2655
+#: app/ui/transfer.py:2683
 msgid "传输中"
 msgstr ""
 
-#: app/ui/transfer.py:2711
+#: app/ui/transfer.py:2739
 #, python-brace-format
 msgid "发给 {who}"
 msgstr ""
 
-#: app/ui/transfer.py:2713
+#: app/ui/transfer.py:2741
 #, python-brace-format
 msgid "来自 {who}"
 msgstr ""
 
-#: app/ui/transfer.py:2740
+#: app/ui/transfer.py:2768
 msgid "还没有任何传输记录。"
 msgstr ""
 
-#: app/ui/transfer.py:2740
+#: app/ui/transfer.py:2768
 msgid "这个筛选下没有记录。"
 msgstr ""
 
