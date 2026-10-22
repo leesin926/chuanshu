@@ -109,15 +109,16 @@ Name: "zh_CN"; MessagesFile: "{#BundledZh}"; LicenseFile: "{#LicZh}"
 [Tasks]
 ; {cm:xxx} 引用的是当前 .isl 里的消息键，换语言文件时键名不能改。
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
-; 默认不勾：这条任务要弹 UAC 提权，让用户自己决定。
-Name: "firewall"; Description: "{cm:FirewallTask}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+; 默认勾上。不勾的后果不是"少一个可选功能"而是这台设备在局域网里彻底隐身，
+; 用户不会得到任何提示；勾上的代价只是一次 UAC，拒绝它也不会让安装失败。
+Name: "firewall"; Description: "{cm:FirewallTask}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [CustomMessages]
 ; 任务描述与提示按向导语言各一份；键前缀必须和 [Languages] 的 Name 对得上。
-FirewallTask=Let Windows Firewall accept incoming files from other devices (needs admin)
-zh_CN.FirewallTask=允许 Windows 防火墙放行来自其它设备的传入连接（需要管理员权限）
-FirewallSkipped=The firewall rule was not added. ChuanShu will ask Windows for permission the first time it listens; if you answer cancel, Windows leaves a permanent block rule and the LAN stops finding this device. Add it later yourself with:
-zh_CN.FirewallSkipped=没有添加防火墙规则。传书第一次监听时 Windows 会弹窗询问，一旦点了"取消"，系统会留下一条永久的阻止规则，局域网里就再也发现不到这台设备。可以稍后自行执行：
+FirewallTask=Let Windows Firewall accept connections from other devices on this LAN (needs admin)
+zh_CN.FirewallTask=允许 Windows 防火墙放行同一局域网内其它设备的连接（需要管理员权限）
+FirewallSkipped=The firewall rules were not written. ChuanShu will ask Windows for permission the first time it listens; answering that dialog is easy to get wrong - a denial leaves a block rule behind, and Windows obeys a block rule even when an allow rule for the same program exists. Run these two commands yourself from an elevated prompt (first one clears whatever is already pinned to this exe):
+zh_CN.FirewallSkipped=没有写入防火墙规则。传书第一次监听时 Windows 会弹窗询问，而那个框很容易点错：一旦拒绝过，系统留下的是阻止规则，而 Windows 判定阻止优先——同一个程序就算再加一条允许规则也不会生效。可以稍后在管理员命令提示符里自己执行这两条（第一条先把钉在这个 exe 上的旧入站规则清掉）：
 
 [Files]
 ; 整棵 one-folder 树原样复制：ChuanShu.exe + _internal\（含 PySide6、locale\**.mo 与 assets\icons\）。
@@ -137,31 +138,54 @@ Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(
 [Code]
 // [Code] 段里注释只能用 //，分号在这里是语句分隔符而不是注释，写错了编译期就报 'BEGIN' expected。
 // 传书靠 mDNS 与 UDP 广播互相发现，而 Windows 防火墙默认拦入站。不放行时首次监听会弹
-// 系统授权框；实测点"取消"后系统留下的是两条永久"阻止"规则（按程序路径匹配），之后这台
-// 设备在局域网里彻底隐身，比没装还难查。所以安装期就把规则加好，让用户根本遇不到那个框。
+// 系统授权框，那个框点错一次就再也退不回来：Windows 判定规则时阻止优先于允许，所以只要
+// 这个 exe 名下留着一条阻止规则，之后补多少条允许规则都是废纸。安装期把规则写死，让用户
+// 根本遇不到那个框。
+//
+// 本机实测（netsh advfirewall firewall show rule name=all verbose）：系统弹窗点"允许"留下的是
+// 按 exe 路径成对的 UDP+TCP 两条入站规则，规则名取 exe 文件名（chuanshu），配置文件只有弹窗时
+// 生效的那一个——这台机器的 WLAN 是 Public，所以那四条全是"公用"。"点取消会留下阻止规则"这半句
+// 没法在这台机器上复现（要真的拒绝一次系统弹窗，那是写系统的事），所以这里不赌它到底留下什么，
+// 直接先把这个路径的入站规则清空再重写：无论留下的是阻止还是允许，结果都一样。
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
-  Rule: string;
+  Exe: string;
+  DelCmd: string;
+  AddCmd: string;
 begin
   if CurStep <> ssPostInstall then Exit;
   if not WizardIsTaskSelected('firewall') then Exit;
-  // 只放子网内、只放专用与域配置文件：连公用网络也放行是没必要的口子，这里刻意不放。
-  Rule := 'advfirewall firewall add rule name="{#AppName}" dir=in action=allow'
-    + ' profile=domain,private remoteip=LocalSubnet'
-    + ' program="' + ExpandConstant('{app}\{#AppExeName}') + '"';
-  // 安装器默认是普通权限，加规则得单独提权；用户拒绝 UAC 只影响这一条规则，不该让安装失败。
-  if not ShellExec('runas', 'netsh.exe', Rule, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
-    MsgBox(ExpandConstant('{cm:FirewallSkipped}') + #10#10 + 'netsh ' + Rule, mbInformation, MB_OK);
+  Exe := ExpandConstant('{app}\{#AppExeName}');
+  // 删除条件用 name=all + program + dir=in：netsh 的多个过滤条件是求交集的（help 里的例子就是
+  // name=all protocol=tcp localport=80），所以只会命中这个 exe 自己的入站规则——用户给别的程序
+  // 加的规则、以及这个程序名下的出站规则都不会被碰到。卸载后残留的、指向已删掉的路径的旧规则
+  // 也不在这里，因为路径对不上。
+  DelCmd := 'advfirewall firewall delete rule name=all dir=in program="' + Exe + '"';
+  // 三个配置文件全放，边界交给 remoteip=LocalSubnet 守：手机开热点时 Windows 把这张网卡判成"公用"，
+  // 只放"专用+域"的规则在传书最主要的使用场景里根本不生效，这条实测过（当前网卡 NetworkCategory=Public）。
+  // 端口不写死：协议里 transport_default 被占用时会退回临时端口，钉在 43720 的规则那时候就是假的。
+  AddCmd := 'advfirewall firewall add rule name="{#AppName}" dir=in action=allow'
+    + ' profile=any remoteip=LocalSubnet'
+    + ' program="' + Exe + '"';
+  // 安装器默认是普通权限（[Setup] PrivilegesRequired=lowest），提权只为了这两条 netsh。
+  // 两条命令走同一个 cmd.exe，是为了让用户只看到一次 UAC 框——netsh 命令行一次只吃一条命令，
+  // 分两次 ShellExec('runas') 就会问两遍。路径带空格或 & 也没关系：它们在双引号里面，
+  // cmd 不会把引号内的 & 当成语句分隔符。
+  if not ShellExec('runas', 'cmd.exe', '/c netsh ' + DelCmd + ' & netsh ' + AddCmd,
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+    MsgBox(ExpandConstant('{cm:FirewallSkipped}') + #10#10 + 'netsh ' + DelCmd + #10 + 'netsh ' + AddCmd,
+      mbInformation, MB_OK);
 end;
 
 function InitializeUninstall(): Boolean;
 var
   ResultCode: Integer;
 begin
-  // 名字和路径两个条件同时匹配才删，绝不会碰到用户自己加的其它规则；删不掉也照常卸载。
+  // 和安装时同一个删除条件：按程序路径匹配，所以连当初系统弹窗自己建的那对
+  // name=chuanshu 规则也一并清掉，不会在防火墙里留下指向已删除文件的僵尸条目。删不掉也照常卸载。
   ShellExec('runas', 'netsh.exe',
-    'advfirewall firewall delete rule name="{#AppName}" program="' + ExpandConstant('{app}\{#AppExeName}') + '"',
+    'advfirewall firewall delete rule name=all dir=in program="' + ExpandConstant('{app}\{#AppExeName}') + '"',
     '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Result := True;
 end;
