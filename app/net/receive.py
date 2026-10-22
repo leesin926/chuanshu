@@ -44,8 +44,8 @@ _WINDOWS_RESERVED = re.compile(r"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$", 
 _REPLAY_WINDOW_S = 300
 _CODE_LOCK_S = 60
 _CODE_MAX_FAILS = 5
-#: How much of an unconsumed request body an error reply is allowed to swallow.
-_MAX_ERROR_DRAIN = 65536
+#: How much of an unread request body a reply is allowed to swallow before it is written.
+_MAX_DRAIN = 65536
 
 #: What the UI answers an offer with: false to turn it down, true to take it into the usual
 #: folder under this machine's receive root, or that folder's parent when the user chose one.
@@ -181,12 +181,26 @@ class _RequestHandler(BaseHTTPRequestHandler):
         return self.server.service  # type: ignore[attr-defined]
 
     def _reply(self, status: int, body: dict) -> None:
+        self._drain()
         payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
+
+    def _drain(self) -> None:
+        # Nothing may be written to the peer while its request body is still unread: the leftovers
+        # are what the next request line gets parsed out of, and the connection is wrong from then
+        # on. Read the body here (a route that wanted it has already marked it consumed), or give up
+        # on the connection when it is too big to swallow. The same rule guards error replies and the
+        # routes that ignore their body - finalize and abort are answered from the offer id alone.
+        length = int(self.headers.get("Content-Length") or 0)
+        if length and not self._body_consumed:
+            if length <= _MAX_DRAIN:
+                self._raw_body()
+            else:
+                self.close_connection = True
 
     def _json_body(self) -> dict:
         self._body_consumed = True
@@ -206,15 +220,6 @@ class _RequestHandler(BaseHTTPRequestHandler):
         return self.rfile.read(length) if length else b""
 
     def _fail(self, error: protocol_spec.ProtocolError) -> None:
-        # An error raised before the body was read leaves that body in the socket, and the
-        # next request line would then be parsed out of it. Drain it - but only once, since
-        # reading a body that is already gone blocks until the client times out.
-        length = int(self.headers.get("Content-Length") or 0)
-        if length and not self._body_consumed:
-            if length <= _MAX_ERROR_DRAIN:
-                self._raw_body()
-            else:
-                self.close_connection = True
         self._reply(self.service.proto.http_status(error.code), {"code": error.code, "detail": error.detail})
 
     def _dispatch(self, method: str) -> None:
