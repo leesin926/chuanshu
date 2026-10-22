@@ -185,55 +185,50 @@
 		min-height: 60px;
 	}
 
-	/* 设计图首页的行图标是按状态着色的色块，不是文件类型图标——这里照它做，颜色即状态。
-	   同一个类也当四宫格的入口图标用，因为两处要的是同一个东西：一眼看出这一格是什么状态。 */
-	.tile {
-		width: 36px;
-		height: 36px;
-		border-radius: 11px;
-	}
-
-	/* 列表行里图标和文字之间要留 14，四宫格里图标是居中的，所以间距单独立一个类而不是塞进 .tile。 */
+	/* 列表行里图标和文字之间要留 14；四宫格里的图标是居中的，所以间距单独立一个类。 */
 	.tilegap {
 		margin-right: 14px;
 	}
 
-	.iconOk {
-		background-color: #34c77b;
+	/* 设计图里的图标是有形状的（上传箭头、文件夹、放大镜、显示器…），不是一个色块。形状用 .probe/mkicons.py 栅格成 PNG 放进 static/icons，这里只管尺寸：
+	   鸿蒙的 <image> 不认 SVG，只认位图，tabBar 那八个已经是这条路的证据。 */
+	.icoHome {
+		width: 40px;
+		height: 40px;
 	}
 
-	.iconRun {
-		background-color: #f59e0b;
+	.icoRow {
+		width: 34px;
+		height: 34px;
 	}
 
-	.iconWait {
-		background-color: #d1d5db;
-	}
-
-	.iconBad {
-		background-color: #ef4444;
-	}
-
-	/* 文件类型图标用这两档：设计图里「图片」是紫、「文档」是蓝，和状态色分开，免得读成成功/警告。 */
-	.iconBlue {
-		background-color: #2f7cf6;
-	}
-
-	.iconViolet {
-		background-color: #a78bfa;
-	}
-
-	/* 设计图历史行的成功标记是绿色实心圆里一个白勾，和首页的方形状态块不是一回事，所以单列一个类。 */
-	.check {
-		width: 30px;
-		height: 30px;
-		border-radius: 15px;
-		background-color: #10b981;
-		color: #ffffff;
-		font-size: 15px;
-		line-height: 30px;
-		text-align: center;
+	.icoMe {
+		width: 26px;
+		height: 26px;
 		margin-right: 14px;
+	}
+
+	.icoBig {
+		width: 56px;
+		height: 56px;
+		margin-right: 16px;
+	}
+
+	.icoChip {
+		width: 18px;
+		height: 18px;
+		margin-right: 6px;
+	}
+
+	.icoSearch {
+		width: 20px;
+		height: 20px;
+		margin-right: 8px;
+	}
+
+	.icoAvatar {
+		width: 44px;
+		height: 44px;
 	}
 
 	.rowmain {
@@ -442,12 +437,6 @@
 
 	.avatarname {
 		font-size: 21px;
-		font-weight: bold;
-		color: #ffffff;
-	}
-
-	.avatartext {
-		font-size: 30px;
 		font-weight: bold;
 		color: #ffffff;
 	}

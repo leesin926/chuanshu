@@ -993,7 +993,12 @@ export function stateJson(inbox: Inbox, offerId: string): string {
 			size: file.size,
 			sha256: file.sha256,
 			mtime: file.mtime,
-			type: file.type
+			type: file.type,
+			/** A restart that re-adopts a finished transfer has to know it finished: without this the
+			 *  row comes back with every chunk counted and no verdict, which the screen reads as a
+			 *  transfer still running. */
+			verdict: file.verdict,
+			dest: file.dest
 		}
 		files.push(entry)
 		const chunks: UTSJSONObject = {}
@@ -1047,7 +1052,11 @@ export function adopt(inbox: Inbox, text: string): boolean {
 		file.sha256 = entry.getString('sha256', '')
 		file.mtime = Math.floor(entry.getNumber('mtime', 0))
 		file.type = entry.getString('type', 'application/octet-stream')
-		file.dest = file.relpath
+		file.verdict = Math.floor(entry.getNumber('verdict', 0))
+		file.dest = entry.getString('dest', '')
+		if (file.dest == '') {
+			file.dest = file.relpath
+		}
 		if (received != null) {
 			const chunks = received!.getJSON(file.id)
 			if (chunks != null) {
@@ -1116,4 +1125,53 @@ export function adoptPairing(inbox: Inbox, text: string): boolean {
 	inbox.passphrase = passphrase
 	inbox.pairCodeUntil = 0
 	return true
+}
+
+/** The peers allowed to send into this device, in the shape the PC writes as identity/trusted.json:
+ *  keyed by the identity fingerprint, with the TLS leaf digest only for the peers that serve one
+ *  signed by another key. restartLike() deliberately leaves `trusted` in memory, and on a browser
+ *  that is the process; on a phone the process ends when the app does, so the host writes this
+ *  document out and reads it back before the listener opens. Without it every restart asks a person
+ *  to retype a code whose whole purpose is to be typed once. */
+export function trustJson(inbox: Inbox): string {
+	const body: UTSJSONObject = {}
+	for (let i = 0; i < inbox.trusted.length; i++) {
+		const pin = inbox.trusted[i]
+		const entry: UTSJSONObject = { peer_id: pin.peerId, name: pin.name, public_key: pin.publicKeyB64 }
+		if (pin.tlsFingerprint != '') {
+			entry.set('tls_fingerprint', pin.tlsFingerprint)
+		}
+		body.set(pin.fingerprint, entry)
+	}
+	return JSON.stringify(body)
+}
+
+/** Merged, not replaced: a host that loads last week's file after this process already pinned
+ *  somebody new must not answer for the new one with a stale list. */
+export function adoptTrust(inbox: Inbox, text: string): number {
+	const body = parseJson(text)
+	if (body == null) {
+		return 0
+	}
+	let added = 0
+	const keys = UTSJSONObject.keys(body!)
+	for (let i = 0; i < keys.length; i++) {
+		const fingerprint = keys[i]
+		if (trustByFp(inbox, fingerprint) != null) {
+			continue
+		}
+		const entry = body!.getJSON(fingerprint)
+		if (entry == null) {
+			continue
+		}
+		const pin = new Trust()
+		pin.fingerprint = fingerprint
+		pin.peerId = entry!.getString('peer_id', '')
+		pin.name = entry!.getString('name', '')
+		pin.publicKeyB64 = entry!.getString('public_key', '')
+		pin.tlsFingerprint = entry!.getString('tls_fingerprint', '')
+		inbox.trusted.push(pin)
+		added = added + 1
+	}
+	return added
 }

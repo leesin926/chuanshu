@@ -4,13 +4,22 @@
 		     uni.chooseFile 的 type 在 Android / 鸿蒙 / Web 三端都支持，透传下去就是真筛选。 -->
 		<view class="seg">
 			<view class="segitem" :class="kind == 'image' ? 'segOn' : ''" @click="pick('image')">
-				<text class="seglabel" :class="kind == 'image' ? 'seglabelon' : ''">相册</text>
+				<view class="seginner">
+					<image class="icoChip" :src="kind == 'image' ? '/static/icons/picture-ffffff.png' : '/static/icons/picture-6b7280.png'"></image>
+					<text class="seglabel" :class="kind == 'image' ? 'seglabelon' : ''">相册</text>
+				</view>
 			</view>
 			<view class="segitem" :class="kind == 'file' ? 'segOn' : ''" @click="pick('file')">
-				<text class="seglabel" :class="kind == 'file' ? 'seglabelon' : ''">文档</text>
+				<view class="seginner">
+					<image class="icoChip" :src="kind == 'file' ? '/static/icons/doc-ffffff.png' : '/static/icons/doc-6b7280.png'"></image>
+					<text class="seglabel" :class="kind == 'file' ? 'seglabelon' : ''">文档</text>
+				</view>
 			</view>
 			<view class="segitem last" :class="kind == 'video' ? 'segOn' : ''" @click="pick('video')">
-				<text class="seglabel" :class="kind == 'video' ? 'seglabelon' : ''">视频</text>
+				<view class="seginner">
+					<image class="icoChip" :src="kind == 'video' ? '/static/icons/video-ffffff.png' : '/static/icons/video-6b7280.png'"></image>
+					<text class="seglabel" :class="kind == 'video' ? 'seglabelon' : ''">视频</text>
+				</view>
 			</view>
 		</view>
 
@@ -22,7 +31,7 @@
 			<text class="note" v-if="s.names.length == 0">还没有选文件。点上面任意一类去选，一次最多 20 个，按下面的顺序一个个发过去。</text>
 			<view class="grid mt8">
 				<view class="filecell" v-for="(n, i) in s.names" :key="i" @click="dropFile(i)">
-					<view class="tile" :class="typeOf(n)"></view>
+					<image class="icoRow" :src="typeIcon(n)"></image>
 					<text class="cname">{{ n }}</text>
 					<text class="fsize">{{ s.meta[i] }}</text>
 					<text class="fstate" :class="s.stateClass[i]">{{ s.states[i] }}</text>
@@ -34,7 +43,7 @@
 
 		<text class="h mt16">选择目标设备</text>
 		<view class="devcard mt8" :class="linked ? 'selected' : ''" @click="goConnect">
-			<view class="tile devtile" :class="linked ? 'iconBlue' : 'iconWait'"></view>
+			<image class="icoRow devtile" :src="peerIcon()"></image>
 			<view class="rowmain">
 				<text class="fname">{{ peerTitle }}</text>
 				<view class="row mt8">
@@ -103,19 +112,34 @@
 		return '先连对端'
 	})
 
-	function typeOf(name: string): string {
+	/* 设计图里文件方块和设备的图标是有形状的，不是一个色块；<image> 换不了色，所以一种类型一张 PNG。 */
+	function typeIcon(name: string): string {
 		const dot = name.indexOf('.')
 		const ext = dot < 0 ? '' : name.substring(dot + 1).toLowerCase()
 		if (ext == 'jpg' || ext == 'jpeg' || ext == 'png' || ext == 'gif' || ext == 'webp' || ext == 'heic') {
-			return 'iconViolet'
+			return '/static/icons/picture-2f7cf6.png'
 		}
 		if (ext == 'mp4' || ext == 'mov' || ext == 'mkv' || ext == 'avi') {
-			return 'iconRun'
+			return '/static/icons/video-2f7cf6.png'
 		}
 		if (ext == 'zip' || ext == 'rar' || ext == '7z' || ext == 'gz') {
-			return 'iconOk'
+			return '/static/icons/zipbox-2f7cf6.png'
 		}
-		return 'iconBlue'
+		return '/static/icons/doc-2f7cf6.png'
+	}
+
+	/** 设备卡分「电脑」和「手机」两种形状（设计图就是这么画的）。对端名字是它自己上报的，
+	    认不出来就按电脑画——这一端目前唯一能连的就是 PC 客户端。 */
+	function peerIcon(): string {
+		if (!linked.value) {
+			return '/static/icons/pc-6b7280.png'
+		}
+		const n = s.peerName.toLowerCase()
+		if (n.indexOf('phone') >= 0 || n.indexOf('手机') >= 0 || n.indexOf('iphone') >= 0
+			|| n.indexOf('mate') >= 0 || n.indexOf('pura') >= 0 || n.indexOf('harmony') >= 0) {
+			return '/static/icons/phone-2f7cf6.png'
+		}
+		return '/static/icons/pc-2f7cf6.png'
 	}
 
 	/* 模板只能点本页自己的函数：只被模板引用的 store 动作会被摇树丢掉，编译报“找不到名称 invoke”。 */
@@ -170,6 +194,12 @@
 
 	.segOn {
 		background-color: #2f7cf6;
+	}
+
+	/* 设计图的分段控件是「图标 + 字」横着排，.segitem 自己是竖排居中的，所以里面再套一层横排。 */
+	.seginner {
+		flex-direction: row;
+		align-items: center;
 	}
 
 	.seglabel {

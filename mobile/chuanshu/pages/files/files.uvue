@@ -14,7 +14,10 @@
 			<!-- 设计图这一页的第一个控件是搜索框，第二个是一排横向滚出去的分类胶囊。两个都真在过滤下面
 			     那张表。同名文件是可以收到的，所以过滤出来的是下标，不是名字。 -->
 			<view class="row mt16">
-				<input class="input col1" v-model="kw" placeholder="搜索文件名" />
+				<view class="searchbox">
+					<image class="icoSearch" src="/static/icons/search-6b7280.png"></image>
+					<input class="searchfield" v-model="kw" placeholder="搜索文件名" />
+				</view>
 				<button class="mini" @click="refresh">刷新</button>
 			</view>
 			<scroll-view class="chips mt8" scroll-x="true" :show-scrollbar="false">
@@ -26,13 +29,13 @@
 			<view class="divider"></view>
 			<text class="sub mt8" v-if="shown.length == 0">{{ emptyText }}</text>
 			<view class="filerow" v-for="(at, i) in shown" :key="i">
-				<view class="tile tilegap" :class="typeOf(s.recvNames[at])"></view>
+				<image class="icoRow tilegap" :src="typeIcon(s.recvNames[at])"></image>
 				<view class="rowmain">
 					<text class="fname">{{ s.recvNames[at] }}</text>
 					<text class="fsize">{{ s.recvMeta[at] }}</text>
 				</view>
 				<view class="rowright">
-					<text class="fstate" :class="s.recvStateClass[at]">{{ s.recvStates[at] }}</text>
+					<text class="fstate" :class="s.recvStateClass[at]">{{ shortOf(s.recvStates[at]) }}</text>
 				</view>
 			</view>
 			<view class="divider"></view>
@@ -60,11 +63,11 @@
 			<text class="h">待发送</text>
 			<text class="sub mt8" v-if="s.names.length == 0">还没有选好要发的文件。</text>
 			<view class="filerow" v-for="(n, i) in s.names" :key="i">
-				<view class="tile tilegap" :class="iconOf(s.stateClass[i])"></view>
+				<image class="icoRow tilegap" :src="iconSrc(s.stateClass[i])"></image>
 				<view class="rowmain">
 					<text class="fname">{{ n }}</text>
 					<text class="fsize">{{ s.meta[i] }}</text>
-					<text class="fstate" :class="s.stateClass[i]">{{ s.states[i] }}</text>
+					<text class="fstate" :class="s.stateClass[i]">{{ shortOf(s.states[i]) }}</text>
 				</view>
 			</view>
 			<view class="row mt8 wrap">
@@ -76,7 +79,7 @@
 </template>
 
 <script setup lang="uts">
-	import { s, initSession, refreshReceive, onRecvAccept, onRecvRefuse } from '@/store/session.uts'
+	import { s, initSession, refreshReceive, onRecvAccept, onRecvRefuse, shortState } from '@/store/session.uts'
 
 	initSession()
 
@@ -138,32 +141,40 @@
 		return '全部'
 	}
 
-	/* 这一页的图标按类型着色（设计图的文件管理页就是这个规则），传输状态由右边那一列承担。 */
-	function typeOf(name: string): string {
+	/* 这一页的图标按文件类型给形状（设计图的文件管理页就是这个规则：文档折角、视频里带播放三角、
+	   压缩包是拉链、图片是相框），传输状态由右边那一列承担。形状换不了色，所以一个类型一张 PNG。 */
+	function typeIcon(name: string): string {
 		const k = kindOf(name)
 		if (k == 'image') {
-			return 'iconViolet'
+			return '/static/icons/picture-2f7cf6.png'
 		}
 		if (k == 'video') {
-			return 'iconRun'
+			return '/static/icons/video-2f7cf6.png'
 		}
 		if (k == 'zip') {
-			return 'iconOk'
+			return '/static/icons/zipbox-2f7cf6.png'
 		}
-		return 'iconBlue'
+		return '/static/icons/doc-2f7cf6.png'
 	}
 
-	function iconOf(cls: string): string {
+	function iconSrc(cls: string): string {
 		if (cls == 'stateOk') {
-			return 'iconOk'
+			return '/static/icons/folder-34c77b.png'
 		}
 		if (cls == 'stateRun') {
-			return 'iconRun'
+			return '/static/icons/folder-f59e0b.png'
 		}
 		if (cls == 'stateBad') {
-			return 'iconBad'
+			return '/static/icons/folder-ef4444.png'
 		}
-		return 'iconWait'
+		return '/static/icons/folder-d1d5db.png'
+	}
+
+	/* 右列只放一个词。整句（已校验，落到 …）留给传输详情页：这一行的右边写满整句会把
+	   .rowmain 挤成零宽，文件名和大小就没了——首页短、有名字，文件页长、没名字，
+	   同一套 CSS 下的这个差别就是证据。薄壳也兼任模板对 store 函数的引用。 */
+	function shortOf(text: string): string {
+		return shortState(text)
 	}
 
 	function pick(k: string) {
@@ -205,5 +216,29 @@
 	.chips {
 		width: 100%;
 		height: 36px;
+	}
+
+	/* 搜索框左边那颗放大镜是 <input> 装不下的子节点，所以外面套一层同色的胶囊。
+	   两层都写死 #f5f6f8 而不是让内层透明：鸿蒙上 input 自带底色，透明这条不一定生效。
+	   宽度自己吃 flex:1，不借公共的 .col1——那个类除了 flex 还带 flex-direction:column，
+	   套上来这一行就竖着了（放大镜跑到文字上面，就是这么来的）。 */
+	.searchbox {
+		flex: 1;
+		flex-direction: row;
+		align-items: center;
+		height: 44px;
+		background-color: #f5f6f8;
+		border-radius: 22px;
+		padding-left: 14px;
+		margin-right: 10px;
+	}
+
+	.searchfield {
+		flex: 1;
+		height: 44px;
+		font-size: 15px;
+		background-color: #f5f6f8;
+		padding: 0;
+		color: #1f2937;
 	}
 </style>

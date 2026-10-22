@@ -37,6 +37,11 @@ const TLS_CERT_FILE = 'chuanshu-tls-rsa.der'
  *  Android, and just as disposable on uninstall. */
 const RECV_DIR = KEY_DIR + '/chuanshu-receive'
 const PAIR_FILE = 'chuanshu-pairing.json'
+/** Who may send into this device, and what this inbox has already taken. The state machine keeps
+ *  both in memory on every platform; only Harmony has to be told where to put them when the app
+ *  ends, because on a phone the app ending is the process ending. */
+const RX_TRUST_FILE = 'chuanshu-receiver-trust.json'
+const RX_STATE_FILE = 'chuanshu-receiver-offers.json'
 const TRACE_FILE = 'chuanshu-serve.log'
 /** DER for SubjectPublicKeyInfo{ ed25519 OID, 32-byte key }. The pair message carries only the raw 32
  *  bytes, so this is what has to go back in front of them before the digest is taken. */
@@ -1063,6 +1068,29 @@ export function loadPairing(): string {
 
 export function savePairing(text: string): void {
 	writeBytesOfFile(PAIR_FILE, bytesOf(text))
+}
+
+/* ---------------------------------------------------------- receiver-state persistence */
+
+/** Two more documents, both of them the receiver's memory: who may send here, and which offers this
+ *  inbox has already taken. The ArkTS half cannot read either one - the state machine runs as JS
+ *  beside the page - so the page asks for these by name. `TRUST_FILE` above is a different list:
+ *  the peers this device dialled, keyed by address, used when this end is the sender. */
+export function loadTrustedPeers(): string {
+	return readTextFile(RX_TRUST_FILE)
+}
+
+export function saveTrustedPeers(text: string): void {
+	writeBytesOfFile(RX_TRUST_FILE, bytesOf(text))
+}
+
+/** One offer per line, because the state machine hands over a list rather than one document. */
+export function loadOfferStates(): string {
+	return readTextFile(RX_STATE_FILE)
+}
+
+export function saveOfferStates(text: string): void {
+	writeBytesOfFile(RX_STATE_FILE, bytesOf(text))
 }
 
 /* --------------------------------------------------------------------------- same-network */

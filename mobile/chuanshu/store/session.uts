@@ -61,7 +61,11 @@ import {
 	passphraseOf,
 	rotatePairing,
 	holdSlotFor,
-	adoptPin
+	adoptPin,
+	trustJson,
+	adoptTrust,
+	stateAll,
+	adoptAll
 } from '@/uni_modules/cs-transport/utssdk/cs-receive.uts'
 import {
 	serveBind,
@@ -79,7 +83,11 @@ import {
 	deviceNameText,
 	identityFingerprint,
 	loadPairing,
-	savePairing
+	savePairing,
+	loadTrustedPeers,
+	saveTrustedPeers,
+	loadOfferStates,
+	saveOfferStates
 } from '@/uni_modules/cs-transport'
 // #endif
 
@@ -250,6 +258,9 @@ let netLevel = ''
 // #ifdef APP-HARMONY
 const recvInbox: Inbox = newInbox()
 let recvSelf: LocalPeer | null = null
+/** The two documents as they were when last written, so a refresh that changed nothing writes nothing. */
+let lastTrustText = ''
+let lastOfferText = ''
 // #endif
 
 /* ------------------------------------------------------------------ small helpers
@@ -400,6 +411,41 @@ function syncPairing(): void {
 	}
 	currentPairCode(recvInbox, nowSecs())
 	savePairing(pairingJson(recvInbox, nowSecs()))
+}
+
+/** The receiver's other two memories: which peers may send here, and which offers this inbox already
+ *  took. restartLike() says out loud that the trust store is not supposed to leave memory - on a
+ *  browser it does not, because the process is the page - but a phone that is closed and reopened
+ *  loses it, and then the peer that pinned its key is refused and a person is asked to type a code
+ *  whose entire job is to be typed once. The offer list is the same story one level down: the bytes
+ *  stay on disk, so a restart that forgets the records shows an empty 收到的文件 over a full folder.
+ *  Read once, before the listener opens; written by saveReceiveMemory() whenever either changes. */
+function syncReceiveMemory(): void {
+	const peers = loadTrustedPeers()
+	if (peers != '') {
+		adoptTrust(recvInbox, peers)
+	}
+	const offers = loadOfferStates()
+	if (offers != '') {
+		adoptAll(recvInbox, offers.split('\n'))
+	}
+	lastTrustText = trustJson(recvInbox)
+	lastOfferText = stateAll(recvInbox).join('\n')
+}
+
+/** Cheap by design: both documents are rewritten only when their own serialisation moved, so the
+ *  one-second refresh that watches a transfer costs nothing while nothing is being written. */
+function saveReceiveMemory(): void {
+	const peers = trustJson(recvInbox)
+	if (peers != lastTrustText) {
+		lastTrustText = peers
+		saveTrustedPeers(peers)
+	}
+	const offers = stateAll(recvInbox).join('\n')
+	if (offers != lastOfferText) {
+		lastOfferText = offers
+		saveOfferStates(offers)
+	}
 }
 
 /** The peer this device is to the rest of the network, filled in on the first request: the identity
@@ -587,6 +633,32 @@ export function refreshReceive() {
 	// #ifdef WEB
 	s.pcIn = demoPcConnected()
 	// #endif
+	// #ifdef APP-HARMONY
+	// Every action and every tick ends here, so this is where a peer that just paired and an offer
+	// that just landed get written down.
+	saveReceiveMemory()
+	// #endif
+}
+
+/** 列表行的右列只放一个词（已收到 / 传输中 / 没通过），整句留给传输详情页。
+ *  这不是审美问题：右列写整句会把 .rowmain 挤到零宽，文件名和大小直接消失（模拟器实测）。 */
+export function shortState(text: string): string {
+	if (text.indexOf('已校验') == 0) {
+		return '已收到'
+	}
+	if (text.indexOf('收到 ') == 0 || text.indexOf('收齐了') == 0) {
+		return '传输中'
+	}
+	if (text.indexOf('对方已收下') == 0) {
+		return '已完成'
+	}
+	if (text.indexOf('等你决定') == 0) {
+		return '等你决定'
+	}
+	if (text.indexOf('失败') == 0 || text.indexOf('没过') > 0) {
+		return '没通过'
+	}
+	return text == '' ? '等待中' : text
 }
 
 /** The offer parks inside a call that returns before anyone has read the screen, so the state is
@@ -1247,6 +1319,7 @@ function initReceivePanel() {
 	// pair the moment the port is up - so the handler and the code both come first.
 	serveBind(harmonyReceive)
 	syncPairing()
+	syncReceiveMemory()
 	// #endif
 	onRecvListen()
 	recvTimerTick()

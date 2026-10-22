@@ -4,47 +4,44 @@
 		     是设备名和它的身份指纹，而不是一个假的账号。 -->
 		<view class="avatarcard">
 			<view class="avatar">
-				<text class="avatartext">传</text>
+				<image class="icoAvatar" src="/static/icons/user-94a3b8.png"></image>
 			</view>
 			<view class="col1">
 				<text class="avatarname">{{ s.selfName }}</text>
 				<text class="avatarsub">指纹 {{ s.selfFpShort }}</text>
-				<text class="avatarsub">peer_id {{ s.selfId }}</text>
 			</view>
 			<text class="badge" v-if="s.mocked">对端是模拟的</text>
 		</view>
 
+		<!-- 设计图这一页是三张卡（1 行 / 2 行 / 2 行），每行都是「灰线性图标 + 名字 + 右端值 + ›」。
+		     行内容按这一端真实有的功能排：账号、主题、通知这些这一端没有的东西不占行，免得做成点了没反应的开关。 -->
 		<view class="card16 card">
 			<view class="setrow" @click="copyPair">
-				<view class="tile iconBlue"></view>
+				<image class="icoMe" src="/static/icons/key-6b7280.png"></image>
 				<text class="setlabel">配对码</text>
 				<text class="setval">{{ s.recvCodeText }}</text>
 				<text class="chevron">›</text>
 			</view>
 			<view class="divider"></view>
 			<view class="setrow" @click="copyPair">
-				<view class="tile iconViolet"></view>
+				<image class="icoMe" src="/static/icons/lock-6b7280.png"></image>
 				<text class="setlabel">密码</text>
 				<text class="setval">{{ s.recvPassText }}</text>
 				<text class="chevron">›</text>
 			</view>
-			<view class="divider"></view>
-			<view class="setrow">
-				<view class="tile iconOk"></view>
-				<text class="setlabel">有效期</text>
-				<text class="setval">{{ s.recvCodeLeft }}</text>
-			</view>
-			<view class="divider"></view>
+			<text class="note">配对码固定不变，只有点「更换配对码和密码」才会换一组；已经固定过的对端不受影响。</text>
+		</view>
+
+		<view class="card16 card">
 			<view class="setrow" @click="rotatePair">
-				<view class="tile iconRun"></view>
+				<image class="icoMe" src="/static/icons/swap-6b7280.png"></image>
 				<text class="setlabel">更换配对码和密码</text>
 				<text class="chevron">›</text>
 			</view>
 			<!-- #ifdef APP-ANDROID || APP-HARMONY -->
 			<view class="divider"></view>
-			<!-- 设计图里这种「一行的开关」右边是 switch 而不是「值 + chevron」，同一张卡两种右端控件混排。 -->
 			<view class="setrow" @click="toggleListen">
-				<view class="tile iconWait"></view>
+				<image class="icoMe" src="/static/icons/listen-6b7280.png"></image>
 				<text class="setlabel">监听对端发来</text>
 				<view class="switch" :class="s.recvListening ? 'switchon' : ''">
 					<view class="knob" :class="s.recvListening ? 'knobon' : ''"></view>
@@ -54,12 +51,11 @@
 			<text class="sub" v-for="(a, i) in s.recvAddrs" :key="i">本机地址 {{ a }}</text>
 			<!-- #endif -->
 			<text class="note" v-if="s.recvNote != ''">{{ s.recvNote }}</text>
-			<text class="note">配对码固定不变，只有点「更换配对码和密码」才会换一组；已经固定过的对端不受影响。</text>
 		</view>
 
 		<view class="card16 card">
 			<view class="setrow" @click="goConnect">
-				<view class="tile iconBlue"></view>
+				<image class="icoMe" src="/static/icons/pc-6b7280.png"></image>
 				<text class="setlabel">当前对端</text>
 				<text class="setval">{{ s.connected ? '已连接' : '未连接' }}</text>
 				<text class="chevron">›</text>
@@ -70,23 +66,21 @@
 			<view class="row mt8 wrap">
 				<button class="mini" @click="disconnect" v-if="s.connected">断开</button>
 			</view>
-		</view>
-
-		<view class="card16 card">
+			<view class="divider"></view>
 			<view class="setrow" @click="goDetail">
-				<view class="tile iconRun"></view>
+				<image class="icoMe" src="/static/icons/doc-6b7280.png"></image>
 				<text class="setlabel">传输详情与日志</text>
 				<text class="chevron">›</text>
 			</view>
 			<view class="divider"></view>
 			<view class="setrow" @click="openProbe">
-				<view class="tile iconViolet"></view>
+				<image class="icoMe" src="/static/icons/hexagon-6b7280.png"></image>
 				<text class="setlabel">平台能力探针</text>
 				<text class="chevron">›</text>
 			</view>
 			<view class="divider"></view>
 			<view class="setrow">
-				<view class="tile iconWait"></view>
+				<image class="icoMe" src="/static/icons/about-6b7280.png"></image>
 				<text class="setlabel">关于传书</text>
 				<text class="setval">v1.0.0</text>
 			</view>

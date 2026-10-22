@@ -4,7 +4,7 @@
 		     左边是条。速度这一端算不出来（内核只报块数），所以那一行放的是块数和已传字节。 -->
 		<view class="card">
 			<view class="row">
-				<view class="tile tilegap" :class="s.running ? 'iconRun' : 'iconWait'"></view>
+				<image class="icoBig" :src="bigIcon()"></image>
 				<view class="rowmain">
 					<text class="fname">{{ currentName }}</text>
 					<text class="fsize">{{ currentMeta }}</text>
@@ -35,7 +35,7 @@
 		<view class="card mt8">
 			<text class="sub" v-if="s.names.length == 0">这一轮还没有发过文件。</text>
 			<view class="filerow" v-for="(n, i) in s.names" :key="i">
-				<view class="tile tilegap" :class="iconOf(s.stateClass[i])"></view>
+				<image class="icoRow tilegap" :src="iconSrc(s.stateClass[i])"></image>
 				<view class="rowmain">
 					<text class="fname">{{ n }}</text>
 					<text class="fsize">{{ s.meta[i] }}</text>
@@ -59,8 +59,7 @@
 			</view>
 			<text class="sub mt8" v-if="s.recvNames.length == 0">还没有收到文件。</text>
 			<view class="filerow" v-for="(n, i) in s.recvNames" :key="i">
-				<text class="check" v-if="s.recvStateClass[i] == 'stateOk'">✓</text>
-				<view class="tile tilegap" v-else :class="iconOf(s.recvStateClass[i])"></view>
+				<image class="icoRow tilegap" :src="recvIcon(s.recvStateClass[i])"></image>
 				<view class="rowmain">
 					<text class="fname">{{ n }}</text>
 					<text class="fsize">{{ s.recvMeta[i] }}</text>
@@ -122,17 +121,34 @@
 		refreshReceive()
 	})
 
-	function iconOf(cls: string): string {
+	/** 顶部特写的大图标按文件类型给形状（设计图是一枚蓝色文档，视频那枚带播放三角）。 */
+	function bigIcon(): string {
+		const n = currentName.value.toLowerCase()
+		if (n.indexOf('.mp4') > 0 || n.indexOf('.mov') > 0 || n.indexOf('.mkv') > 0 || n.indexOf('.avi') > 0 || n.indexOf('.webm') > 0) {
+			return '/static/icons/video-2f7cf6.png'
+		}
+		return '/static/icons/doc-2f7cf6.png'
+	}
+
+	/** 收下来的任务，成功标记是绿色实心圆里的白勾（设计图历史行），其余状态还是按状态着色的文件夹。 */
+	function recvIcon(cls: string): string {
 		if (cls == 'stateOk') {
-			return 'iconOk'
+			return '/static/icons/check-circle-34c77b.png'
+		}
+		return iconSrc(cls)
+	}
+
+	function iconSrc(cls: string): string {
+		if (cls == 'stateOk') {
+			return '/static/icons/folder-34c77b.png'
 		}
 		if (cls == 'stateRun') {
-			return 'iconRun'
+			return '/static/icons/folder-f59e0b.png'
 		}
 		if (cls == 'stateBad') {
-			return 'iconBad'
+			return '/static/icons/folder-ef4444.png'
 		}
-		return 'iconWait'
+		return '/static/icons/folder-d1d5db.png'
 	}
 
 	/* 模板只点本页的函数：只被模板引用的 store 动作会被摇树丢掉，编译报“找不到名称 invoke”。 */
