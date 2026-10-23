@@ -538,6 +538,42 @@ def phase_reverse_pin(proto: protocol_spec.Protocol, workspace: Path) -> None:
         phone_service.stop()
 
 
+def phase_shared_identity(proto: protocol_spec.Protocol, workspace: Path) -> None:
+    """The window and the terminal open one identity directory, so each is the other's second process.
+
+    Two of them hold two dicts, and both used to write the whole dict over the file: whichever saved
+    last dropped the peer the other had just pinned, and a revocation came back to life on the next
+    unrelated write. The pair code had the same split - one screen could show a secret the file no
+    longer contains. These run on two load_or_create() calls against one directory, which is what the
+    shipped layout actually gives you.
+    """
+    window = load_or_create(workspace / "shared-id")
+    terminal = load_or_create(workspace / "shared-id")
+    window.ensure_pairing(proto.pair_code_digits, proto.passphrase_chars)
+    check("both processes mint the same pairing code",
+          window.pair_code == terminal.pair_code and len(window.pair_code) == proto.pair_code_digits, window.pair_code)
+
+    window.trust("w" * 64, "peer-w", "Window pin", "pk-w")
+    terminal.trust("t" * 64, "peer-t", "Terminal pin")
+    pins = json.loads((workspace / "shared-id" / "trusted.json").read_text(encoding="utf-8"))
+    check("a second process's write keeps the first's pin", set(pins) >= {"w" * 64, "t" * 64}, sorted(pins))
+    check("and the writer sees both too", set(window.pinned_fingerprints()) >= {"w" * 64, "t" * 64}, window.pinned_fingerprints())
+
+    window.untrust("t" * 64)
+    terminal.trust("n" * 64, "peer-n", "Later pin")
+    pins = json.loads((workspace / "shared-id" / "trusted.json").read_text(encoding="utf-8"))
+    check("an unpinned peer does not come back", "t" * 64 not in pins, sorted(pins))
+    check("the revoking side agrees", not terminal.is_trusted("t" * 64))
+
+    terminal.rotate_pairing(proto.pair_code_digits, proto.passphrase_chars)
+    check("a rotation lands on the other screen", window.pair_code == terminal.pair_code, window.pair_code)
+
+    (workspace / "shared-id" / "trusted.json").write_text(
+        json.dumps({"junk": "not a pin", "r" * 64: {"name": "Readable"}}), encoding="utf-8")
+    check("a foreign value in the file is skipped, not fatal", window.pinned_fingerprints() == ["r" * 64],
+          window.pinned_fingerprints())
+
+
 def phase_catalogue(proto: protocol_spec.Protocol) -> None:
     en = gettext.translation("app", str(ROOT / "locale"), languages=["en"])
     zh = gettext.translation("app", str(ROOT / "locale"), languages=["zh_CN"])
@@ -567,6 +603,7 @@ def main() -> int:
         phase_offer_poll(proto, workspace)
         phase_discovery(proto, workspace)
         phase_reverse_pin(proto, workspace)
+        phase_shared_identity(proto, workspace)
     phase_catalogue(proto)
     check("chunks per file match the contract", proto.chunk_size == 4194304, proto.chunk_size)
     print("\n".join(REPORT.read_text(encoding="utf-8").splitlines()))

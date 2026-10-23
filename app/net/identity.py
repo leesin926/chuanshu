@@ -19,6 +19,7 @@ import logging
 import os
 import secrets
 import ssl
+import threading
 from pathlib import Path
 
 from cryptography import x509
@@ -65,6 +66,34 @@ def fingerprint_of_public_key(key) -> str:
     return hashlib.sha256(_spki_der(key)).hexdigest()
 
 
+def _copy_pins(pins: dict[str, dict]) -> dict[str, dict]:
+    return {k: dict(v) for k, v in pins.items()}
+
+
+def _merge_pins(base: dict[str, dict], ours: dict[str, dict], theirs: dict[str, dict]) -> dict[str, dict]:
+    """Three-way merge of two pin lists that both started from ``base``.
+
+    A side that left an entry as it found it defers to the side that touched it, which is what
+    keeps a peer pinned by the other process from being dropped and a peer revoked there from
+    coming back. When both sides touched the same key ours wins, and it wins for a removal too:
+    forgetting a device is the one change that must not be undone by a stale write.
+    """
+    merged: dict[str, dict] = {}
+    for fingerprint in [*base, *ours, *theirs]:
+        if fingerprint in merged:
+            continue
+        before, here, there = base.get(fingerprint), ours.get(fingerprint), theirs.get(fingerprint)
+        if here == before:
+            winner = there
+        elif there == before:
+            winner = here
+        else:
+            winner = here
+        if winner is not None:
+            merged[fingerprint] = dict(winner)
+    return merged
+
+
 class Identity:
     def __init__(self, directory: Path, peer_id: str, key: ed25519.Ed25519PrivateKey, cert: x509.Certificate):
         self.directory = directory
@@ -72,6 +101,10 @@ class Identity:
         self.key = key
         self.cert = cert
         self._trusted: dict[str, dict] = {}
+        #: The file as this process last saw it - the side both merges are taken against.
+        self._trusted_on_disk: dict[str, dict] = {}
+        #: One lock for both files, because both are read-modify-written against the disk copy.
+        self._lock = threading.RLock()
         self._trusted_path = directory / _TRUSTED
         self._pairing: dict[str, str] = {}
         self._pairing_path = directory / _PAIRING
@@ -86,22 +119,41 @@ class Identity:
 
     @property
     def pair_code(self) -> str:
+        self.sync_pairing()
         return self._pairing.get("code", "")
 
     @property
     def passphrase(self) -> str:
+        self.sync_pairing()
         return self._pairing.get("passphrase", "")
 
-    def load_pairing(self) -> None:
+    def _read_pairing(self) -> dict[str, str]:
         try:
             stored = json.loads(self._pairing_path.read_text(encoding="utf-8-sig"))
         except FileNotFoundError:
-            return
+            return {}
         except (OSError, ValueError):
             log.exception("pairing.json unreadable, reminting: %s", self._pairing_path)
-            return
+            return {}
         if isinstance(stored, dict) and stored.get("code") and stored.get("passphrase"):
-            self._pairing = {k: str(v) for k, v in stored.items() if k in ("code", "passphrase", "rotated")}
+            return {k: str(v) for k, v in stored.items() if k in ("code", "passphrase", "rotated")}
+        return {}
+
+    def load_pairing(self) -> None:
+        with self._lock:
+            self._pairing = self._read_pairing()
+
+    def sync_pairing(self) -> None:
+        """Pick up material the other process minted, as long as the file has some.
+
+        The window shows the code in a QR and the terminal prints it, and only one of them can
+        be right: whichever rotated last wrote the file, so the file wins over a cache that would
+        otherwise keep offering a code the peer can no longer pair with.
+        """
+        with self._lock:
+            stored = self._read_pairing()
+            if stored:
+                self._pairing = stored
 
     def ensure_pairing(self, code_digits: int, passphrase_chars: int) -> None:
         """Give this device its fixed code and passphrase, minting them on first run.
@@ -111,9 +163,11 @@ class Identity:
         Material of a different length is reminted rather than kept: a code shorter or longer
         than the contract says is one the peer's input box will refuse to accept.
         """
-        if len(self._pairing.get("code") or "") == code_digits and len(self._pairing.get("passphrase") or "") == passphrase_chars:
-            return
-        self.rotate_pairing(code_digits, passphrase_chars)
+        with self._lock:
+            self.sync_pairing()
+            if len(self._pairing.get("code") or "") == code_digits and len(self._pairing.get("passphrase") or "") == passphrase_chars:
+                return
+            self.rotate_pairing(code_digits, passphrase_chars)
 
     def rotate_pairing(self, code_digits: int, passphrase_chars: int) -> tuple[str, str]:
         """Replace both secrets with fresh ones. Pins and sessions are untouched: this
@@ -135,29 +189,58 @@ class Identity:
 
     # --------------------------------------------------------------- trust
 
-    def load_trusted(self) -> None:
+    def _read_pins(self) -> dict[str, dict]:
         try:
             stored = json.loads(self._trusted_path.read_text(encoding="utf-8"))
         except FileNotFoundError:
-            return
+            return {}
         except (OSError, ValueError):
-            log.exception("trusted.json unreadable, starting with an empty pin list: %s", self._trusted_path)
-            return
-        if isinstance(stored, dict):
-            self._trusted = stored
+            log.exception("trusted.json unreadable, treating it as empty: %s", self._trusted_path)
+            return {}
+        if not isinstance(stored, dict):
+            return {}
+        # Only name/peer_id records can be used at all - every read path does entry.get() -
+        # so a hand-edited or half-written value of another shape is dropped rather than kept.
+        return {k: v for k, v in stored.items() if isinstance(v, dict)}
+
+    def load_trusted(self) -> None:
+        """Take the pin list from the file, forgetting whatever was in memory."""
+        with self._lock:
+            self._trusted = _copy_pins(self._read_pins())
+            self._trusted_on_disk = _copy_pins(self._trusted)
+
+    def sync_trusted(self) -> None:
+        """Reconcile with the file before believing an in-memory answer.
+
+        The terminal ships next to the window now, and both open the same identity directory
+        with a dict of their own. Without this, a long-running window neither notices the peer
+        the CLI pinned a minute ago nor the one the CLI revoked.
+        """
+        with self._lock:
+            self._trusted = _merge_pins(self._trusted_on_disk, self._trusted, self._read_pins())
+            self._trusted_on_disk = _copy_pins(self._trusted)
 
     def save_trusted(self) -> None:
-        _atomic(self._trusted_path, json.dumps(self._trusted, ensure_ascii=False, indent=2))
+        """Merge with the file, then write the whole list.
+
+        Writing memory over the file is what lost a peer the other process had just pinned;
+        the merge also means this side's unsynced additions cannot resurrect a revocation.
+        """
+        with self._lock:
+            self.sync_trusted()
+            _atomic(self._trusted_path, json.dumps(self._trusted, ensure_ascii=False, indent=2))
 
     def is_trusted(self, fingerprint: str) -> bool:
         """Whether this number belongs to a pinned device - as its identity key, or as the
         certificate that device serves. A peer dialled by its TLS leaf is still the machine
         this end paired with (spec §3), so both numbers open the same door."""
+        self.sync_trusted()
         if fingerprint in self._trusted:
             return True
         return any(str(entry.get("tls_fingerprint") or "") == fingerprint for entry in self._trusted.values())
 
     def trusted_entry(self, fingerprint: str) -> dict | None:
+        self.sync_trusted()
         return self._trusted.get(fingerprint)
 
     def trust(self, fingerprint: str, peer_id: str, name: str, public_key: str = "", tls_fingerprint: str = "") -> None:
@@ -170,21 +253,24 @@ class Identity:
         entry: dict = {"peer_id": peer_id, "name": name, "public_key": public_key}
         if tls_fingerprint:
             entry["tls_fingerprint"] = tls_fingerprint
-        self._trusted[fingerprint] = entry
-        self.save_trusted()
+        with self._lock:
+            self._trusted[fingerprint] = entry
+            self.save_trusted()
         log.info("pinned peer %s (%s)", name, fingerprint[:12])
 
     def remember_peer(self, fingerprint: str, peer_id: str, name: str, tls_fingerprint: str = "") -> None:
         """Refresh metadata for an already pinned key after its peer_id changed."""
-        entry = self._trusted.get(fingerprint)
-        if entry is None:
-            return
-        before = dict(entry)
-        if tls_fingerprint:
-            entry["tls_fingerprint"] = tls_fingerprint
-        entry.update({"peer_id": peer_id, "name": name})
-        if entry != before:
-            self.save_trusted()
+        with self._lock:
+            self.sync_trusted()
+            entry = self._trusted.get(fingerprint)
+            if entry is None:
+                return
+            before = dict(entry)
+            if tls_fingerprint:
+                entry["tls_fingerprint"] = tls_fingerprint
+            entry.update({"peer_id": peer_id, "name": name})
+            if entry != before:
+                self.save_trusted()
 
     def same_peer(self, a: str, b: str) -> bool:
         """Two fingerprints, one device: a peer is pinned by its identity key but dialled by the
@@ -194,6 +280,7 @@ class Identity:
             return False
         if a == b:
             return True
+        self.sync_trusted()
         for key, entry in self._trusted.items():
             leaf = str(entry.get("tls_fingerprint") or "")
             if leaf and ((key == a and leaf == b) or (key == b and leaf == a)):
@@ -201,14 +288,17 @@ class Identity:
         return False
 
     def pinned_fingerprints(self) -> list[str]:
+        self.sync_trusted()
         return sorted(self._trusted)
 
     def untrust(self, fingerprint: str) -> bool:
         """Forget one pinned key. That device has to be paired again from scratch."""
-        gone = self._trusted.pop(fingerprint, None)
-        if gone is None:
-            return False
-        self.save_trusted()
+        with self._lock:
+            self.sync_trusted()
+            gone = self._trusted.pop(fingerprint, None)
+            if gone is None:
+                return False
+            self.save_trusted()
         log.info("unpinned peer %s (%s)", gone.get("name", "?"), fingerprint[:12])
         return True
 

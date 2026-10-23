@@ -45,7 +45,8 @@ app/
   ui/tray.py         系统托盘菜单（打开主界面 / 开机自启 / 退出）；`available()` 说这台桌面有没有托盘
 app/net/
   spec.py            读取 protocol/protocol.json：端点、错误码→HTTP、二维码字段顺序
-  identity.py        Ed25519 自签证书、SPKI 指纹固定、已配对设备表（identity/ 目录，POSIX 上这几个文件 0600）
+  identity.py        Ed25519 自签证书、SPKI 指纹固定、已配对设备表（identity/ 目录，POSIX 上这几个文件 0600）；
+                     写盘前与文件做三方合并，窗口和命令行共用一个目录时不会互相抹掉固定
   receive.py         接收端 HTTPS 服务：配对、offer、分块落盘、路径清洗、崩溃后认领未完成 offer
   send.py            发送端：plan→offer→分块→finalize，token 失效时用已信任的 key 静默重配对
   discovery.py       局域网发现：mDNS 注册/浏览 + UDP 广播 43721；广播只带指纹前缀，
@@ -234,6 +235,12 @@ PowerShell 5.1 反而是对的（它按同一套代码页解码），要给 UTF-
 
 另外 `_identity()` 现在替 `self`/`pair-code` 先把配对码铸出来：一台全新机器上只跑命令行、从没开过窗口，
 之前会印出两行空的"配对码："，而窗口里有码——同一份承诺不能一个 face 兑现、另一个 face 落空。
+
+两个 face 共用同一个身份目录，所以 `trusted.json` 会被两个进程各读一次各写一遍：以前谁后写就把对方刚
+固定的对端从文件里抹掉（自己内存里还留着，下次再写又抹回来），撤销的那台也会被对方下一次无关的写入救活。
+现在 `save_trusted()` 先重读文件、跟"上次看到的磁盘快照"做三方合并再写，读路径（`is_trusted`、
+`pinned_fingerprints`、`same_peer`…）也先 `sync_trusted()`，所以窗口开着时命令行固定/撤销的设备能立刻看到。
+`pairing.json` 同理：谁轮换谁写文件，另一边显示时重读，否则屏幕上会留一个已经配不上的码。
 
 ## 窗口外观（无边框 + 托盘）
 
