@@ -57,6 +57,11 @@ def check_uts_mirror(body: dict) -> None:
         # would delete files the sender still believes are resumable.
         "SESSION_IDLE_S": body["transport"]["session_idle_timeout_s"],
         "OFFER_IDLE_S": body["transport"]["offer_idle_timeout_s"],
+        # The discovery windows are the same story: a phone that expired a candidate on a different
+        # clock, or broadcast on a different port, is a phone the PC cannot be found by.
+        "DISCOVERY_PORT": body["ports"]["discovery_udp"],
+        "ANNOUNCE_INTERVAL_S": body["discovery"]["announce_interval_s"],
+        "PEER_EXPIRY_S": body["discovery"]["peer_expiry_s"],
     }
     for name, expected in mirrored.items():
         found = re.search(rf"export const {name}: number = (\d+)", src)
@@ -80,6 +85,33 @@ def check_uts_mirror(body: dict) -> None:
     for key in ("['secret']", "['tls_fingerprint']"):
         if key not in src:
             fail(f"cs-protocol.uts no longer sends the optional pair body key {key}")
+
+    check_discovery_mirror(body)
+
+
+def check_discovery_mirror(body: dict) -> None:
+    """The roster is written once, so the announcement's own field names are checkable here too.
+
+    A discovery packet that the other end cannot read is invisible rather than wrong: no dialog, no
+    error, just an empty device list. That is the most expensive kind of protocol fork to find, so
+    the mirror is guarded like every other number."""
+    utssdk = HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk"
+    constants = (utssdk / "cs-protocol.uts").read_text(encoding="utf-8")
+    service_type = body["brand"]["mdns_service_type"]
+    if f"MDNS_SERVICE_TYPE: string = '{service_type}'" not in constants:
+        fail(f"cs-protocol.uts does not declare the mDNS service type {service_type!r}")
+    short = service_type.removesuffix(".local.")
+    if f"MDNS_SERVICE_SHORT: string = '{short}'" not in constants:
+        fail(f"cs-protocol.uts must carry the Info.plist form {short!r} (spec §2)")
+
+    src = (utssdk / "cs-discovery.uts").read_text(encoding="utf-8")
+    discovery = body["discovery"]
+    for field in discovery["udp_payload_fields"]:
+        if f'"{field}"' not in src and f"'{field}'" not in src:
+            fail(f"cs-discovery.uts no longer reads or writes the announce field {field!r}")
+    for field in discovery["mdns_txt_fields"]:
+        if f"{field}=" not in src and f"'{field}'" not in src:
+            fail(f"cs-discovery.uts no longer reads or writes the TXT field {field!r}")
 
 
 def main() -> int:

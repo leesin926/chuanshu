@@ -61,6 +61,7 @@ import {
 	snapshot,
 	stateAll
 } from '../cs-receive.uts'
+import { selfReport } from '../cs-discovery.uts'
 
 /** Web half of the transport. A browser has no TLS socket to a LAN peer, so this file stands in
  *  for the PC: it really checks the pair code, really digests every chunk and really reassembles and
@@ -1510,4 +1511,13 @@ export function receiveSelfReport(): string {
 
 	out.push(fail == 0 ? '接收自检 ' + pass.toString() + ' 项全部通过' : '接收自检失败 ' + fail.toString() + ' 项，通过 ' + pass.toString() + ' 项')
 	return out.join('\n')
+}
+
+/* ================================================== discovery self-check */
+
+/** The roster's rules are pure, so the assertions live in cs-discovery.uts and every host runs the
+ *  same 22 of them - this page today, and a phone once #90/#91 land. What stays here is only the
+ *  name the page calls. */
+export function discoverySelfReport(): string {
+	return selfReport()
 }

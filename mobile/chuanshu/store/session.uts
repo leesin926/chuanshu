@@ -30,7 +30,7 @@ import { pinnedFor, unpinPeer, receiveStart, receiveStop, receiveStatus } from '
 // #endif
 // #ifdef WEB
 import { demoPeer, demoQrUrl, demoExpireToken, setDemoFault, demoRestart, demoUnpin, pinnedFingerprint } from '@/uni_modules/cs-transport'
-import { receiveWrongCode, demoPcConnect, demoPcSend, demoPcDisconnect, demoPcConnected, setSenderFault, setReceiveFault, receiveSelfReport } from '@/uni_modules/cs-transport'
+import { receiveWrongCode, demoPcConnect, demoPcSend, demoPcDisconnect, demoPcConnected, setSenderFault, setReceiveFault, receiveSelfReport, discoverySelfReport } from '@/uni_modules/cs-transport'
 // #endif
 // #ifdef APP-ANDROID || APP-IOS || WEB
 /** The receiving half, in the shape this platform can offer it: the browser keeps the inbox in
@@ -1337,6 +1337,15 @@ export function pickRecvFault(fault: string) {
 
 export function runRecvSelf() {
 	const parts = receiveSelfReport().split('\n')
+	for (let i = 0; i < parts.length; i++) {
+		log(parts[i])
+	}
+}
+
+/** 发现模型的自检：浏览器发不出广播，所以这里喂的是合成报文，验证的是名单的合并、过期、
+ *  自过滤这些规则本身，不是某台机器的网卡。真机上那半边要证的只有 socket。 */
+export function runDiscSelf() {
+	const parts = discoverySelfReport().split('\n')
 	for (let i = 0; i < parts.length; i++) {
 		log(parts[i])
 	}

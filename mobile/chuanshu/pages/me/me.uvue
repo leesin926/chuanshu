@@ -127,6 +127,7 @@
 				<button class="mini" @click="recvFault('WRITE_FAIL')">写入失败</button>
 			</view>
 			<button class="mini mt8" @click="recvSelfCheck">接收内核自检</button>
+			<button class="mini mt8" @click="discSelfCheck">发现内核自检</button>
 		</view>
 		<!-- #endif -->
 	</scroll-view>
@@ -138,7 +139,7 @@
 	import { onRecvListen, onRecvListenStop } from '@/store/session.uts'
 	// #endif
 	// #ifdef WEB
-	import { loadDemo, pasteDemoQr, expireDemoToken, restartDemo, unpin, setFault, pcPairGood, pcPairWrong, pcPairResume, pcSend, pcBreak, pickSendFault, pickRecvFault, runRecvSelf } from '@/store/session.uts'
+	import { loadDemo, pasteDemoQr, expireDemoToken, restartDemo, unpin, setFault, pcPairGood, pcPairWrong, pcPairResume, pcSend, pcBreak, pickSendFault, pickRecvFault, runRecvSelf, runDiscSelf } from '@/store/session.uts'
 	// #endif
 
 	initSession()
@@ -225,6 +226,10 @@
 
 	function recvSelfCheck() {
 		runRecvSelf()
+	}
+
+	function discSelfCheck() {
+		runDiscSelf()
 	}
 	// #endif
 

@@ -23,6 +23,19 @@ export const PASSPHRASE_CHARS: number = 8
 export const SESSION_IDLE_S: number = 900
 export const OFFER_IDLE_S: number = 3600
 export const QR_SCHEME: string = 'chuanshu://p'
+/** Broadcast has no other way to be found, so this one port may not fall back the way
+ *  TRANSPORT_PORT does (contract ports.note). A device that had to rebind its TLS port still
+ *  announces the real one through this datagram. */
+export const DISCOVERY_PORT: number = 43721
+export const ANNOUNCE_INTERVAL_S: number = 3
+/** How long a candidate may stay silent before it is no longer shown. Kept in step with the PC so
+ *  the same machine disappears from both screens at the same moment. */
+export const PEER_EXPIRY_S: number = 15
+/** spec §2: the DNS-SD service type, and the short form iOS's Info.plist demands for
+ *  NSBonjourServices. Registering under one while browsing the other is a discovery layer that
+ *  finds nothing and says nothing. */
+export const MDNS_SERVICE_TYPE: string = '_chuanshu._tcp.local.'
+export const MDNS_SERVICE_SHORT: string = '_chuanshu._tcp'
 
 const HEX_DIGITS = '0123456789abcdef'
 /** No I/O/0/1: this is read out loud to another person and typed on a phone keypad. */

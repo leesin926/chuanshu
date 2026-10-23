@@ -1,0 +1,532 @@
+/** The discovery half of the protocol, written once with no platform in it - the phone mirror of
+ *  app/net/discovery.py, field for field, because the peer on the other end of a broadcast is a PC
+ *  that will not accept a differently-shaped announcement.
+ *
+ *  Nothing here touches a socket. A browser cannot broadcast, Android has NsdManager, Harmony has
+ *  @ohos.net.mdns, and iOS has NetService - so the hosts feed parsed bytes into these functions and
+ *  read candidates back out. That is also what makes the roster testable at all: no second device
+ *  is needed to prove that a merge, an expiry or a self-announcement behaves like the PC's.
+ *
+ *  Presence is not trust (spec §2). A broadcast carries a fingerprint PREFIX, and the full digest
+ *  only ever arrives from GET /v1/hello; `fingerprint` therefore stays empty in a candidate until
+ *  someone verifies it over TLS. Nothing in this file may fill it, and nothing that reads a
+ *  candidate may treat `prefix` as if it did. */
+import {
+	PROTOCOL_VERSION,
+	PREFIX_CHARS,
+	PEER_EXPIRY_S,
+	isDigits
+} from './cs-protocol.uts'
+
+/** protocol.json's compatible_versions, restated so this file stays pure. The PC reads it off the
+ *  contract; a phone build ships the same list, and a candidate announcing anything else is dropped
+ *  rather than shown, because pairing against it would fail later with a worse message. */
+const COMPATIBLE_VERSIONS: number[] = [1]
+
+/** How many candidates one screenful of discovery can hold. Not a protocol value - a guard so a
+ *  misbehaving announcer on the LAN cannot grow this array forever on a phone. */
+const MAX_CANDIDATES: number = 64
+
+/** Which channel told us about a peer. Exactly the two broadcast paths of spec §2; the QR and the
+ *  typed address bypass discovery entirely and never land in a roster. */
+export const VIA_MDNS: string = 'mdns'
+export const VIA_UDP: string = 'udp'
+
+/** One machine that announced itself. Keyed by `prefix`, not by host: a laptop that roams from
+ *  192.168.1.5 to 192.168.1.9 is the same candidate with a new address, and two phones behind one
+ *  NAT are two candidates that happen to share an IP. */
+export class Candidate {
+	prefix: string = ''
+	host: string = ''
+	port: number = 0
+	peerId: string = ''
+	name: string = ''
+	version: number = 0
+	/** Filled only by verification over TLS, never by an announcement. '' means "seen, not trusted". */
+	fingerprint: string = ''
+	/** 'mdns' and/or 'udp'. The paths are independent, so losing one is not losing the peer. */
+	via: string[] = []
+	seen: number = 0
+}
+
+/** Why a broadcast path is or is not usable. The UI shows `detail` verbatim - spec §2 requires an
+ *  escape route to be *named* when discovery fails, not merely logged, and "mDNS 不可用：…" is the
+ *  sentence that tells a person to use the QR instead. */
+export class Channel {
+	state: string = 'stopped'
+	detail: string = ''
+}
+
+export class Roster {
+	selfPrefix: string = ''
+	peers: Candidate[] = []
+	mdns: Channel = new Channel()
+	udp: Channel = new Channel()
+}
+
+export function newRoster(selfPrefix: string): Roster {
+	const out = new Roster()
+	out.selfPrefix = selfPrefix
+	return out
+}
+
+/** The prefix a fingerprint advertises. Both ends must slice the same 16 characters or a candidate
+ *  announces itself under one key and gets verified under another. */
+export function prefixOf(fingerprint: string): string {
+	if (fingerprint.length <= PREFIX_CHARS) {
+		return fingerprint
+	}
+	return fingerprint.substring(0, PREFIX_CHARS)
+}
+
+export function supportsVersion(version: number): boolean {
+	for (let i = 0; i < COMPATIBLE_VERSIONS.length; i++) {
+		if (COMPATIBLE_VERSIONS[i] == version) {
+			return true
+		}
+	}
+	return false
+}
+
+function peerAt(roster: Roster, prefix: string): Candidate | null {
+	for (let i = 0; i < roster.peers.length; i++) {
+		if (roster.peers[i].prefix == prefix) {
+			return roster.peers[i]
+		}
+	}
+	return null
+}
+
+function addVia(peer: Candidate, via: string): void {
+	if (peer.via.indexOf(via) < 0) {
+		peer.via.push(via)
+	}
+}
+
+/** The one merge rule, copied from the PC's `_learn` argument for argument: this device is not a
+ *  peer, an incompatible version is dropped rather than displayed, the address is always the newest
+ *  answer, `peer_id` only ever moves when the announcement actually carried one, and `name` is
+ *  first-wins because a machine that announced itself as 书房-PC should not be renamed by a later
+ *  packet that said nothing. Returns true when the roster changed, which is when the host may
+ *  redraw. */
+export function learn(
+	roster: Roster,
+	prefix: string,
+	host: string,
+	port: number,
+	peerId: string,
+	name: string,
+	version: number,
+	via: string,
+	now: number
+): boolean {
+	if (prefix == '' || prefix == roster.selfPrefix) {
+		// Our own broadcast comes back to us: loopback delivers it on this host, and an mDNS
+		// browser resolves the service this same process registered.
+		return false
+	}
+	if (!supportsVersion(version)) {
+		return false
+	}
+	let peer = peerAt(roster, prefix)
+	if (peer == null) {
+		if (roster.peers.length >= MAX_CANDIDATES) {
+			return false
+		}
+		const made = new Candidate()
+		made.prefix = prefix
+		made.host = host
+		made.port = port
+		made.peerId = peerId
+		made.name = name
+		made.version = version
+		made.via = [via]
+		made.seen = now
+		roster.peers.push(made)
+		return true
+	}
+	const kept = peer!
+	kept.host = host
+	kept.port = port
+	addVia(kept, via)
+	kept.seen = now
+	if (peerId != '') {
+		kept.peerId = peerId
+	}
+	if (name != '' && kept.name == '') {
+		kept.name = name
+	}
+	kept.version = version
+	return false
+}
+
+/** mDNS says the service went away. UDP may still be announcing the same machine, so this only
+ *  removes that one path from `via`; the candidate itself leaves by expiring. */
+export function forgetMdns(roster: Roster, prefix: string): void {
+	const peer = peerAt(roster, prefix)
+	if (peer == null) {
+		return
+	}
+	const kept: string[] = []
+	for (let i = 0; i < peer!.via.length; i++) {
+		if (peer!.via[i] != VIA_MDNS) {
+			kept.push(peer!.via[i])
+		}
+	}
+	peer!.via = kept
+}
+
+/** Drop everything silent for longer than peer_expiry_s. Returns the prefixes that went, so a host
+ *  can log or redraw exactly what it lost instead of diffing two snapshots. */
+export function sweepPeers(roster: Roster, now: number): string[] {
+	const out: string[] = []
+	const kept: Candidate[] = []
+	const cutoff = now - PEER_EXPIRY_S
+	for (let i = 0; i < roster.peers.length; i++) {
+		const peer = roster.peers[i]
+		if (peer.seen < cutoff) {
+			out.push(peer.prefix)
+		} else {
+			kept.push(peer)
+		}
+	}
+	if (out.length > 0) {
+		roster.peers = kept
+	}
+	return out
+}
+
+function before(a: Candidate, b: Candidate): boolean {
+	const an = a.name == '' ? a.prefix : a.name
+	const bn = b.name == '' ? b.prefix : b.name
+	if (an != bn) {
+		return an < bn
+	}
+	return a.host < b.host
+}
+
+/** The list the UI paints, in the same order the PC sorts by: name (or the prefix when a peer never
+ *  said one), then address. Stable ordering matters here because the panel re-reads this every
+ *  second while a transfer is running. */
+export function candidatesOf(roster: Roster): Candidate[] {
+	const out: Candidate[] = []
+	for (let i = 0; i < roster.peers.length; i++) {
+		out.push(roster.peers[i])
+	}
+	for (let i = 1; i < out.length; i++) {
+		for (let k = i; k > 0 && before(out[k], out[k - 1]); k--) {
+			const swap = out[k]
+			out[k] = out[k - 1]
+			out[k - 1] = swap
+		}
+	}
+	return out
+}
+
+/** What GET /v1/hello answered about a candidate. Only a digest that starts with the advertised
+ *  prefix is the same machine, and the caller pairs on top of that - the check lives with the
+ *  transport that can do the handshake, and this function is the shared half of the decision. */
+export function markVerified(roster: Roster, prefix: string, fingerprint: string): boolean {
+	if (fingerprint.length < prefix.length || fingerprint.substring(0, prefix.length) != prefix) {
+		return false
+	}
+	const peer = peerAt(roster, prefix)
+	if (peer == null) {
+		return false
+	}
+	peer!.fingerprint = fingerprint
+	return true
+}
+
+/* ------------------------------------------------------------------ UDP announce */
+
+/** One announcement, as protocol.json's udp_payload_fields lists it: peer_id, port, v, name, fp, ts.
+ *  No address - a UDP packet already carries its source, and the receiver reads *that*, so a field
+ *  here would be a second, deniable answer to the same question. */
+export function buildAnnounce(peerId: string, port: number, name: string, prefix: string, ts: number): string {
+	const body: UTSJSONObject = {
+		peer_id: peerId,
+		port: port,
+		v: PROTOCOL_VERSION,
+		name: name,
+		fp: prefix,
+		ts: ts
+	}
+	return JSON.stringify(body)
+}
+
+export class Announce {
+	prefix: string = ''
+	port: number = 0
+	peerId: string = ''
+	name: string = ''
+	version: number = 0
+	ts: number = 0
+	/** '' when the packet is usable, otherwise why it is being ignored. */
+	reject: string = ''
+}
+
+/** Read an announcement without ever trusting it to be well-formed: anything unreadable is ignored,
+ *  exactly like the PC's `except (ValueError, KeyError, TypeError)` around the same fields. A LAN
+ *  has other talkers on 43721, and a discovery loop that throws on one of them stops listening.
+ *  The catch is not decoration: on the web host `JSON.parse` raises rather than answering null, and
+ *  on a phone this runs on the listener's own thread. */
+export function parseAnnounce(text: string): Announce {
+	const out = new Announce()
+	let made: UTSJSONObject | null = null
+	try {
+		made = JSON.parse(text) as UTSJSONObject | null
+	} catch (e) {
+		out.reject = '广播内容不是 JSON'
+		return out
+	}
+	if (made == null) {
+		out.reject = '广播内容不是 JSON'
+		return out
+	}
+	const obj = made!
+	try {
+		out.prefix = obj.getString('fp', '')
+		out.peerId = obj.getString('peer_id', '')
+		out.name = obj.getString('name', '')
+		out.version = Math.floor(obj.getNumber('v', 0))
+		out.ts = Math.floor(obj.getNumber('ts', 0))
+	} catch (e) {
+		// A field of the wrong type is the same class of stranger as a field that is missing: this
+		// packet is not an announcement, whatever else it is.
+		out.reject = '广播里的字段读不懂'
+		return out
+	}
+	const portValue = obj.get('port')
+	if (portValue == null) {
+		out.reject = '广播里没有端口'
+		return out
+	}
+	// Checked as digits rather than with parseFloat, because parseFloat('abc') is NaN and NaN
+	// answers false to every range comparison - a garbage port would otherwise be accepted and the
+	// candidate would be unreachable, shown on screen as a machine that cannot be dialled.
+	const portText = portValue.toString()
+	if (!isDigits(portText)) {
+		out.reject = '广播里的端口不是数字：' + portText
+		return out
+	}
+	const parsed = Math.floor(parseFloat(portText))
+	if (parsed <= 0 || parsed > 65535) {
+		out.reject = '广播里的端口不合法：' + portText
+		return out
+	}
+	out.port = parsed
+	if (out.prefix == '') {
+		out.reject = '广播里没有指纹前缀'
+	}
+	return out
+}
+
+/** One datagram, as it arrived. `sourceHost` is the packet's sender address - never anything the
+ *  payload claims - because the whole point of knocking back is to reach the machine that spoke. */
+export function applyAnnounce(roster: Roster, text: string, sourceHost: string, now: number): boolean {
+	const made = parseAnnounce(text)
+	if (made.reject != '') {
+		return false
+	}
+	return learn(roster, made.prefix, sourceHost, made.port, made.peerId, made.name, made.version, VIA_UDP, now)
+}
+
+/* --------------------------------------------------------------------- mDNS TXT */
+
+/** The four TXT entries of spec §2, as `key=value` strings in contract order. Every host can carry
+ *  these: Android's NsdManager wants a Map, Harmony wants a TxtRecord array, and iOS wants a
+ *  dictionary to pack into one NetService TXT blob - all three are built from this list, so no
+ *  platform invents its own spelling of `fp`. */
+export function buildTxt(name: string, prefix: string, ts: number): string[] {
+	return [
+		'ver=' + PROTOCOL_VERSION.toString(),
+		'name=' + name,
+		'fp=' + prefix,
+		'ts=' + ts.toString()
+	]
+}
+
+export class TxtRecord {
+	prefix: string = ''
+	name: string = ''
+	version: number = 0
+	ts: number = 0
+	reject: string = ''
+}
+
+export function parseTxt(entries: string[]): TxtRecord {
+	const out = new TxtRecord()
+	for (let i = 0; i < entries.length; i++) {
+		const entry = entries[i]
+		const eq = entry.indexOf('=')
+		if (eq <= 0) {
+			continue
+		}
+		const key = entry.substring(0, eq)
+		const value = entry.substring(eq + 1)
+		if (key == 'fp') {
+			out.prefix = value
+		} else if (key == 'name') {
+			out.name = value
+		} else if (key == 'ver') {
+			out.version = Math.floor(parseFloat(value))
+		} else if (key == 'ts') {
+			out.ts = Math.floor(parseFloat(value))
+		}
+	}
+	if (out.prefix == '') {
+		out.reject = 'mDNS 记录没有指纹前缀'
+	}
+	return out
+}
+
+/** One resolved service. `host` and `port` come from the DNS-SD answer, not the TXT, because the
+ *  text block only ever says who this is, not where to reach it. */
+export function applyTxt(roster: Roster, entries: string[], host: string, port: number, now: number): boolean {
+	const made = parseTxt(entries)
+	if (made.reject != '') {
+		return false
+	}
+	return learn(roster, made.prefix, host, port, '', made.name, made.version, VIA_MDNS, now)
+}
+
+/** What the panel says when a candidate list is empty: which path died and why, so a person is told
+ *  to use the code instead of staring at a blank card (spec §2). */
+export function channelNote(roster: Roster): string {
+	if (roster.mdns.state == 'ok' && roster.udp.state == 'ok') {
+		return '两条发现通道都开着'
+	}
+	const parts: string[] = []
+	if (roster.mdns.state != 'ok') {
+		parts.push('mDNS：' + channelText(roster.mdns))
+	}
+	if (roster.udp.state != 'ok') {
+		parts.push('UDP 广播：' + channelText(roster.udp))
+	}
+	if (parts.length == 0) {
+		return '还没有开始发现'
+	}
+	return parts.join('　') + '　可以用配对二维码或手输地址'
+}
+
+function channelText(ch: Channel): string {
+	if (ch.state == 'stopped') {
+		return '未启动'
+	}
+	if (ch.state == 'ok') {
+		return '正常'
+	}
+	return '不可用' + (ch.detail == '' ? '' : '：' + ch.detail)
+}
+
+/* ================================================== self-check */
+
+/** A hand-written announce, for the cases buildAnnounce cannot produce: an incompatible version, a
+ *  missing field, garbage from another talker on the same port. The LAN is not a unit test, and the
+ *  listener has to survive all three without dropping the roster. */
+function rawAnnounce(prefix: string, port: string, peerId: string, name: string, version: string): string {
+	return '{"peer_id":"' + peerId + '","port":' + port + ',"v":' + version + ',"name":"' + name + '","fp":"' + prefix + '","ts":1}'
+}
+
+/** The discovery model's own semantics, run against synthetic announces. A browser cannot broadcast,
+ *  so this is the half of task #36 that is provable without a second device - and it is the half the
+ *  per-platform hosts (#90/#91/#92) will be checked against when they only add sockets. */
+export function selfReport(): string {
+	const out: string[] = []
+	let pass = 0
+	let fail = 0
+	const check = (label: string, ok: boolean) => {
+		if (ok) {
+			pass = pass + 1
+			out.push('通过 · ' + label)
+		} else {
+			fail = fail + 1
+			out.push('不符 · ' + label)
+		}
+	}
+
+	const SELF = 'aabbccddeeff0011'
+	const PC = '1111222233334444'
+	const PHONE = '5555666677778888'
+
+	// 1. the announce a device sends is the announce a device reads back.
+	const text = buildAnnounce('pc-demo-01', 43720, '书房-PC', PC, 1700000000)
+	const parsed = parseAnnounce(text)
+	check('广播发出后原样读回', parsed.reject == '' && parsed.prefix == PC && parsed.port == 43720 && parsed.peerId == 'pc-demo-01' && parsed.name == '书房-PC' && parsed.version == 1)
+	check('广播里没有地址字段', text.indexOf('host') < 0 && text.indexOf('"ip"') < 0)
+
+	// 2. one candidate per machine: the second packet renews it instead of adding a row.
+	const r = newRoster(SELF)
+	const first = applyAnnounce(r, rawAnnounce(PC, '43720', 'pc-1', '书房-PC', '1'), '192.168.1.5', 1000)
+	const second = learn(r, PC, '192.168.1.9', 44100, '', '', 1, VIA_UDP, 1003)
+	const merged = peerAt(r, PC)
+	check('新机器算一次变化', first && !second)
+	check('同前缀合并成一台', r.peers.length == 1)
+	check('地址端口取最新的那次', merged != null && merged!.host == '192.168.1.9' && merged!.port == 44100)
+	check('后来的空名字不覆盖先说的', merged != null && merged!.name == '书房-PC')
+	check('后来的空 peer_id 不清掉已有的', merged != null && merged!.peerId == 'pc-1')
+
+	// 3. presence is not trust: the advertised prefix never fills the digest.
+	check('广播阶段没有完整指纹', merged != null && merged!.fingerprint == '')
+	check('前缀只是摘要的前 16 位', prefixOf(PC + '2222333344445555') == PC)
+	check('对不上前缀的摘要不算核实', !markVerified(r, PC, 'ffffffffffffffff' + '000000000000000000000000000000000000000000000000'))
+	check('对得上前缀的摘要才落进候选', markVerified(r, PC, PC + '222233334444555566667777888899990000111122223333') && merged!.fingerprint.length == 64)
+
+	// 4. self-filter: our own broadcast comes back to us and must not become a device.
+	const selfBox = newRoster(SELF)
+	applyAnnounce(selfBox, rawAnnounce(SELF, '43720', 'me', '本机', '1'), '127.0.0.1', 1000)
+	check('自己不是可配对的设备', selfBox.peers.length == 0)
+
+	// 5. everything a real LAN can put on 43721 is ignored, not fatal.
+	const junk = newRoster(SELF)
+	applyAnnounce(junk, 'not json at all', '192.168.1.20', 1000)
+	applyAnnounce(junk, rawAnnounce('', '43720', 'x', '没有前缀', '1'), '192.168.1.20', 1000)
+	applyAnnounce(junk, rawAnnounce(PC, '0', 'x', '端口为 0', '1'), '192.168.1.20', 1000)
+	applyAnnounce(junk, rawAnnounce(PC, '"abc"', 'x', '端口不是数', '1'), '192.168.1.20', 1000)
+	applyAnnounce(junk, rawAnnounce(PHONE, '43720', 'p', '旧版本', '2'), '192.168.1.21', 1000)
+	check('读不懂的广播全部忽略且不掉线', junk.peers.length == 0)
+
+	// 6. expiry, on the same 15 s window the PC enforces.
+	const box = newRoster(SELF)
+	learn(box, PC, '192.168.1.5', 43720, 'pc-1', '书房-PC', 1, VIA_UDP, 1000)
+	check('沉默 14 秒还在', sweepPeers(box, 1014).length == 0 && box.peers.length == 1)
+	check('沉默超过 15 秒自己消失', sweepPeers(box, 1016).length == 1 && box.peers.length == 0)
+
+	// 7. the two paths are independent: an mDNS goodbye does not evict a still-announcing machine.
+	const both = newRoster(SELF)
+	learn(both, PC, '192.168.1.5', 43720, '', '书房-PC', 1, VIA_MDNS, 1000)
+	learn(both, PC, '192.168.1.5', 43720, 'pc-1', '', 1, VIA_UDP, 1001)
+	const viaBoth = peerAt(both, PC)
+	check('两条通道说的是同一台', viaBoth != null && viaBoth!.via.length == 2)
+	forgetMdns(both, PC)
+	check('mDNS 下线只剩广播也还认它', both.peers.length == 1 && viaBoth!.via.length == 1 && viaBoth!.via[0] == VIA_UDP)
+
+	// 8. mDNS resolves to a candidate through its TXT block, with the port from the service record.
+	const dns = newRoster(SELF)
+	const txt = buildTxt('客厅-电脑', PC, 1700000000)
+	const txtBack = parseTxt(txt)
+	check('TXT 四键原样读回', txtBack.reject == '' && txtBack.prefix == PC && txtBack.name == '客厅-电脑' && txtBack.version == 1 && txtBack.ts == 1700000000)
+	check('没有 fp 的 mDNS 记录不进名单', parseTxt(['ver=1', 'name=陌生人', 'ts=1']).reject != '')
+	applyTxt(dns, txt, '192.168.1.30', 43720, 1000)
+	const fromDns = peerAt(dns, PC)
+	check('解析到的服务进了名单', fromDns != null && fromDns!.host == '192.168.1.30' && fromDns!.via[0] == VIA_MDNS)
+
+	// 9. the list is ordered the way the panel needs it: named peers first by name, then by address.
+	const order = newRoster(SELF)
+	learn(order, 'zzzz', '192.168.1.2', 43720, '', '乙号机', 1, VIA_UDP, 1000)
+	learn(order, 'aaaa', '192.168.1.3', 43720, '', '甲号机', 1, VIA_UDP, 1000)
+	const listed = candidatesOf(order)
+	check('候选按名字稳定排序', listed.length == 2 && listed[0].name == '乙号机')
+
+	// 10. a dead channel is announced, not hidden: the panel must still offer the QR.
+	const down = newRoster(SELF)
+	down.udp.state = 'ok'
+	down.mdns.state = 'unavailable'
+	down.mdns.detail = 'multicast blocked'
+	const note = channelNote(down)
+	check('通道挂了时说得出原因并给出兜底', note.indexOf('multicast blocked') >= 0 && note.indexOf('二维码') >= 0)
+
+	out.push(fail == 0 ? '发现自检 ' + pass.toString() + ' 项全部通过' : '发现自检失败 ' + fail.toString() + ' 项，通过 ' + pass.toString() + ' 项')
+	return out.join('\n')
+}
