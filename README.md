@@ -63,8 +63,9 @@ scripts/
                         3MB 并逐字节对 sha256，顺带断言 import app.cli 不带进 Qt，12 处
   linux_selftest.py     命令行验收（Linux 那台，WSL 里跑）：XDG 路径、身份文件 0600 与旧私钥回收、
                         XDG 自启写读删、端口被占改用临时端口、双向传、没装 zeroconf 时 mDNS 通道
-                        自己报 unavailable、--lang，25 处。见"Linux 侧"。见"Linux 侧"
-  freeze_smoke.py       起打包好的 exe：等窗口、截图、查日志有无 ERROR，然后只结束自己起的进程
+                        自己报 unavailable、--lang，25 处。见"Linux 侧"
+  freeze_smoke.py       起打包好的产物：先跑 `*-cli.exe` 那四条（读契约、首跑铸码、--lang、真绑一个
+                        端口），再起窗口 exe、等窗口、截图、查日志有无 ERROR，然后只结束自己起的进程
   i18n_sync.py          翻译守卫：按 locale/ 目录扫描，zh_CN 空条目自动镜像 msgid；其余任何
                         语言只要还有空条目或 fuzzy 就直接构建失败（LANGUAGE_NAMES 承诺了却没
                         建目录的语言同样报错）
@@ -79,8 +80,9 @@ locale/
 installer/setup.iss  Inno Setup 脚本（分区注释说明每个指令为什么这么写）
 installer/licenses/  免责声明文本（zh_CN / en，UTF-8 BOM）
 installer/languages/ 可选：项目自带的 ChineseSimplified.isl，优先于编译器版本
-app.spec             PyInstaller 配置（one-folder，捆绑 locale + assets/icons + protocol）
-build.ps1            i18n / exe / installer 流水线
+app.spec             PyInstaller 配置（one-folder，一个 COLLECT 两个入口，捆绑 locale + assets/icons + protocol）
+build.ps1            i18n / exe / installer 流水线（Windows）
+build-linux.sh       同样三步的 Linux 版：i18n → PyInstaller → tar.gz
 babel.cfg            pybabel 抽取映射
 ```
 
@@ -219,6 +221,20 @@ pins        列已固定的指纹      unpair 忘掉一台（前缀唯一即可�
 Linux 那半边是 `scripts/linux_selftest.py`，在 WSL Ubuntu-24.04（Python 3.12，没装 PySide6）里跑，
 scratch `HOME`/`XDG_*` 指到 `/tmp`，25 条全绿。
 
+冻结产物里命令行是**第二个 exe**（`ChuanShu-cli.exe` / `ChuanShu-cli`），不是给窗口那条加开关：
+`console=False` 的窗口进程根本没有 stdout 可写，`ChuanShu.exe self` 打不出任何东西。两条命令台共用
+`app.spec` 里那一个 `COLLECT`，两份 `Analysis` 的 `binaries`/`datas` 按文件名合并（`_merge()`，先到先留），
+所以 CLI 那份 Qt-free 的分析不会往包里再塞一套 Qt；`a_cli` 显式 `excludes=["PySide6"]`，将来谁在
+`app/cli.py` 里不小心 import 了 Qt，出包当场就断，而不是悄悄带回 60MB。
+
+冻结版有个源码没有的行为：Windows 上它**按控制台代码页输出**（本机 cp936），`PYTHONIOENCODING` 和
+`PYTHONUTF8` 都不起作用——bootloader 自己配置解释器，PEP 587 那条读环境变量的路没走。管道进
+PowerShell 5.1 反而是对的（它按同一套代码页解码），要给 UTF-8 的消费者就读 `chcp 65001` 之后的输出，
+或者跑源码版加 `-X utf8`。自测脚本里那个 `decode()` 先 utf-8 再 gbk 就是这个原因。
+
+另外 `_identity()` 现在替 `self`/`pair-code` 先把配对码铸出来：一台全新机器上只跑命令行、从没开过窗口，
+之前会印出两行空的"配对码："，而窗口里有码——同一份承诺不能一个 face 兑现、另一个 face 落空。
+
 ## 窗口外观（无边框 + 托盘）
 
 `settings.json` 里与外观相关的键（全部持久化，`theme` 取 `auto|light|dark`）：
@@ -327,10 +343,12 @@ cryptography 41.0.7、**没有 PySide6、没有 zeroconf**）跑，scratch `HOME
 offscreen 路径——offscreen 在 Windows 上就是"没有托盘"，所以降级逻辑被真跑了一遍，但字体度量
 与合成器行为在这里证明不了（见"界面这层的验证"第一条）。
 
-**还没做的**（#105）：出包路线没定（AppImage / deb / tar.gz 三选一），`app.spec` 还是 Windows
-写法、也没有把 CLI 放进冻结产物的入口；WSL 里跑 GUI 要先 `pip install PySide6`，那是往这台机器上
-装东西，等点头再做；Wayland 下 `startSystemMove()` 能不能拖动无边框窗口、X11 下的边缘缩放、
-以及入站端口的防火墙等价物（`firewalld`/`ufw`，对应 #87）都还没在真桌面验证过。
+**还没做的**（#105）：`./build-linux.sh`（PyInstaller → `dist/ChuanShu/` 两个产物 → tar.gz）这条路线
+在这台机器上**只做过语法检查**（`bash -n` 过了），没真跑过——WSL 里没有 PyInstaller，装它要往这台机器
+上装东西，等点头再做；AppImage / deb 仍然没定，脚本先只承诺 tar.gz。真桌面的 GUI 也卡在同一条：
+主题自动、Wayland 下 `startSystemMove()` 能不能拖动无边框窗口、X11 的边缘缩放、托盘在桌面环境里到底
+有没有（AppIndicator），都得有 PySide6 才谈得上。入站端口的防火墙等价物（`firewalld`/`ufw`，对应 #87）
+同理没碰过。
 
 ## 打包
 
@@ -339,8 +357,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Task all
 ```
 
 1. `pybabel extract/update/compile` → `locale/**.mo`
-2. `pyinstaller app.spec` → `dist\ChuanShu\ChuanShu.exe`（one-folder，启动快、好排查）
+2. `pyinstaller app.spec` → `dist\ChuanShu\ChuanShu.exe` **加** `ChuanShu-cli.exe`（one-folder，启动快、
+   好排查；一个 `COLLECT` 里两个入口，Inno 的 `recursesubdirs` 自动把第二个一起收）
 3. `ISCC installer\setup.iss` → `dist\installer\ChuanShu-Setup-0.1.0-x64.exe`
+
+Linux 那一侧重复同样的三步，只是产物是 tar.gz：`./build-linux.sh`（`--exe-only` 只出可执行文件不打包，
+`PY=python3.12` 换解释器）。它需要 `requirements.txt` + `requirements-dev.txt` 都装上，本机还没真跑过
+（见"Linux 侧"最后一段）。
 
 Inno Setup 的定位顺序：`$env:ISCC` → 卸载注册表里的 `InstallLocation`（本机 7.1.0 装在 D 盘且不在
 PATH）→ 常见安装目录 → PATH。
@@ -396,7 +419,7 @@ owns 三个监听口（`netstat`：TCP 43720、UDP 43721、每个网卡各一个
 界面这层的验证分三条路，各自能证明的东西不同：
 
 - **`scripts/ui_selftest.py`：进程内跑完整传输 + 设置窗口**（`QT_QPA_PLATFORM=offscreen`，
-  132 条断言，`windows` 平台同样 132 条全过）。
+  190 处 `check(`，一轮跑完打印 389 行 PASS；`windows` 平台同样全过）。
   它把 `APPDATA`/`XDG_DATA_HOME` 指到临时目录**再** import `app.*`，所以自测用的是自己的
   身份、自己的已配对表和自己的接收目录，碰不到真实那套。覆盖：打开时不监听（没端口、没二维码、
   按钮写着"开始接收"）→ 点一下才有端口/二维码/配对码且按钮翻成"停止接收"→ 再点回去三样都收走、
@@ -438,6 +461,12 @@ owns 三个监听口（`netstat`：TCP 43720、UDP 43721、每个网卡各一个
   import SvgPathImage` 是显式导入，`warn-app.txt` 里 `missing module PIL/png/lxml` 那几条来自
   qrcode 自己的可选后端，我们这条路径不会 import），`_rust.pyd`、`protocol/protocol.json`、
   两个 `.mo`、`assets/icons/` 都在 `_internal` 里，冻结版能画二维码、能绑 43720、两条发现通道都 ok。
+  现在它还先跑 CLI 那四条，因为第二个入口是同一个 COLLECT 多带出来的，窗口那条腿证明不了它：
+  冻结的 `ChuanShu-cli.exe self` 读得到 `_MEIPASS` 里的契约、首跑就印 6 位码、`--lang en` 拿到目录里的
+  句子、`receive --no-discover` 真绑上 43915。另外单独跑过一轮更狠的：三个 scratch 身份目录、1 MiB
+  双向落到磁盘逐字节对 sha256、陌生端拿错码与熟人不再要码两条分支都对（`.probe` 里的一次性脚本，
+  没进仓库；四条腿本身已经在上面那条里成了一遍门）。默认路径就指 `dist/ChuanShu/`——指回某个 scratch
+  副本会拿着旧结构出新结论，第一次跑就是这么暴露出"CLI 不在旁边"的。
 
 ## 需要改的地方
 
@@ -455,5 +484,11 @@ owns 三个监听口（`netstat`：TCP 43720、UDP 43721、每个网卡各一个
   `autostart.is_supported()`，有没有托盘问 `tray.available()`，深色跟随问 `theme.system_prefers_dark()`。
   别在 UI 里再写 `sys.platform`——加第三个系统时只该动这四处，`ui_selftest.py` 里那条
   "没有托盘就不承诺托盘"的断言也只在 `tray.available()` 上挂钩子
+- `app.spec` 里是**两份 Analysis、两个 EXE、一个 COLLECT**：命令行必须是第二个 console 入口
+  （`console=False` 的窗口进程没有 stdout），而两份的 `binaries`/`datas` 要经 `_merge()` 按文件名去重再
+  交给 COLLECT，直接拼两份 TOC 会在同一个包里撞出同名条目。加第三个入口照这个形状加，别改成 onefile
 - 若要便携单文件 exe：把 `app.spec` 的 `EXE(...)` 改成 onefile（去掉 `COLLECT`，
-  把 `a.binaries, a.datas` 直接传给 `EXE`）
+  把 `_merge(a.binaries, a_cli.binaries)`、`_merge(a.datas, a_cli.datas)` 传给每个 `EXE`），
+  代价是每次启动先解包、而且两个入口会各自解一份
+- 冻结版在 Windows 按控制台代码页写 stdout，`PYTHONIOENCODING` 不生效（见"命令行（headless）"）；
+  要写解析它输出的脚本，先 `chcp 65001` 或者照 `freeze_smoke.decode()` 那样两种编码都试

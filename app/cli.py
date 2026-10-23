@@ -181,8 +181,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _identity():
-    """This machine's key, peer id and pin list - the same directory the window uses."""
-    return load_or_create(identity_dir())
+    """This machine's key, peer id and pin list - the same directory the window uses.
+
+    Pairing material is minted here because `self` and `pair-code` display it: without this,
+    a first run straight from a terminal shows two empty lines where the window would show
+    the code a peer has to type. Idempotent, so a receiver that mints it again is a no-op.
+    """
+    identity = load_or_create(identity_dir())
+    proto = protocol_spec.load()
+    identity.ensure_pairing(proto.pair_code_digits, proto.passphrase_chars)
+    return identity
 
 
 # ---------------------------------------------------------------- commands

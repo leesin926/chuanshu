@@ -1,6 +1,11 @@
 # Build residue
 /build/
 /dist/
+# Scratch distpath/workpath: rebuilding dist\ needs the shipped app closed, so a verification
+# build goes somewhere else instead of touching the artifact under review.
+/distcli/
+/buildcli/
+/*.log
 /__pycache__/
 /**/__pycache__/
 *.pyc

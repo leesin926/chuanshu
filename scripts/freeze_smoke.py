@@ -1,5 +1,5 @@
 """Launch the packaged build and prove it really runs: window on screen, QR painted,
-log clean.
+log clean, and the terminal face beside it answering.
 
 The in-process UI selftest cannot cover what only a frozen build breaks (bundled data
 files, native extensions, resource lookup under ``sys._MEIPASS``), so this drives the
@@ -7,25 +7,41 @@ actual exe. It writes into a scratch APPDATA and closes only the process it star
 
 Expect one Windows Firewall prompt per new exe path: the build is unsigned, so Windows
 asks before it accepts inbound mDNS. Answering cancel leaves permanent *block* rules for
-that path - which is exactly what the installer's "firewall" task exists to avoid.
+that path - which is exactly what the installer's "firewall" task exists to avoid. The CLI
+half below runs with --no-discover, so it does not open a second prompt.
 
-    py -X utf8 scripts/freeze_smoke.py [.probe/dist-freeze/ChuanShu/ChuanShu.exe]
+    py -X utf8 scripts/freeze_smoke.py [dist/ChuanShu/ChuanShu.exe]
 """
 
 from __future__ import annotations
 
 import ctypes
 import os
+import re
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-EXE = ROOT / ".probe/dist-freeze/ChuanShu/ChuanShu.exe"
+# The shipped folder, not a scratch copy: an older scratch build passes every check it was
+# built for, which is how a two-executable spec can be smoke-tested while still shipping one.
+EXE = ROOT / "dist/ChuanShu/ChuanShu.exe"
 SHOTS = ROOT / ".probe/freeze"
+CLI_PORT = 43915
 
 user32 = ctypes.windll.user32
+
+
+def decode(raw: bytes) -> str:
+    """A frozen build writes the console codepage and ignores PYTHONIOENCODING - the
+    bootloader configures the interpreter itself, so PEP 587 never reads the env."""
+    for enc in ("utf-8", "gbk"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
 
 
 class RECT(ctypes.Structure):
@@ -49,6 +65,41 @@ def window_of(pid: int) -> int | None:
     return found[0] if found else None
 
 
+def cli_legs(exe: Path, env: dict[str, str]) -> list[str]:
+    """Run the terminal face of the same build; returns the checks that did not hold.
+
+    Three things only a frozen CLI can prove: app/cli.py reached the bundle at all,
+    protocol.json and the catalogues resolve under ``sys._MEIPASS`` from a Qt-free
+    process, and a console exe has a stdout that carries the answer.
+    """
+    cli = exe.parent / (exe.stem + "-cli.exe")
+    if not cli.is_file():
+        return [f"{cli.name} is not next to {exe.name}"]
+    problems: list[str] = []
+
+    def ask(*args: str) -> tuple[int, str]:
+        got = subprocess.run([str(cli), *args], env=env, capture_output=True, timeout=90)
+        return got.returncode, decode(got.stdout + got.stderr)
+
+    rc, me = ask("self")
+    if rc != 0:
+        problems.append(f"`self` exited {rc}: {me[:300]}")
+    if "协议版本" not in me:
+        problems.append(f"`self` never read the bundled contract: {me[:300]}")
+    if not re.search(r"配对码：\d{6}", me):
+        problems.append(f"a first run showed no 6-digit pairing code: {me[:300]}")
+
+    rc, en = ask("self", "--lang", "en")
+    if rc != 0:
+        problems.append(f"`self --lang en` exited {rc}: {en[:300]}")
+
+    root = SHOTS / "cli-in"
+    rc, listen = ask("receive", "--root", str(root), "--port", str(CLI_PORT), "--yes", "--seconds", "3", "--no-discover")
+    if rc != 0 or f"监听：{CLI_PORT}" not in listen:
+        problems.append(f"the frozen receiver did not serve {CLI_PORT}: rc={rc} {listen[:300]}")
+    return problems
+
+
 def main() -> int:
     exe = Path(sys.argv[1] if len(sys.argv) > 1 else EXE).resolve()
     if not exe.is_file():
@@ -61,6 +112,10 @@ def main() -> int:
 
         shutil.rmtree(appdata)
     env = {**os.environ, "APPDATA": str(appdata), "USERPROFILE": str(appdata)}
+
+    problems = cli_legs(exe, env)
+    for line in problems:
+        print("  CLI " + line, file=sys.stderr)
 
     started = time.time()
     child = subprocess.Popen([str(exe)], env=env)
@@ -105,7 +160,8 @@ def main() -> int:
             hits = [line for line in text.splitlines() if marker.lower() in line.lower()]
             if hits:
                 print(f"  [{marker}] {hits[-1]}")
-        return 0 if not bad else 1
+        print("cli legs: " + ("4 checked, all held" if not problems else f"{len(problems)} problem(s), listed above"))
+        return 0 if not bad and not problems else 1
     finally:
         if child.poll() is None:
             child.terminate()

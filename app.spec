@@ -55,10 +55,60 @@ exe = EXE(
     disable_windowed_traceback=False,
 )
 
+# The terminal face is a second executable rather than a flag on the first: a windowed
+# (console=False) build has no stdout to write to, so `ChuanShu-cli self` could never show
+# anything. Separate entry, separate bundle slot, one folder next to the window.
+a_cli = Analysis(
+    ["app/cli.py"],
+    pathex=[SPECPATH],
+    binaries=[],
+    datas=datas,
+    hiddenimports=[],
+    hookspath=[],
+    runtime_hooks=[],
+    # The CLI must stay importable without Qt - that is what makes it usable on a headless
+    # box. Excluding PySide6 turns an accidental `import PySide6` into a build failure
+    # instead of a bundle that quietly carries 60 MB of GUI along.
+    excludes=["PySide6"],
+    noarchive=False,
+)
+
+pyz_cli = PYZ(a_cli.pure)
+
+exe_cli = EXE(
+    pyz_cli,
+    a_cli.scripts,
+    [],
+    exclude_binaries=True,
+    name=APP_NAME + "-cli",
+    debug=False,
+    optimize=False,
+    strip=False,
+    upx=False,
+    console=True,
+    disable_windowed_traceback=False,
+)
+
+
+def _merge(*tocs):
+    """One TOC per name, first build wins.
+
+    Both Analyses collect the same .mo/.svg/protocol.json and, on Windows, mostly the same
+    DLLs. A duplicate basename in one COLLECT is a collision PyInstaller has to resolve by
+    guesswork, so the first entry keeps its bytes and the rest are dropped.
+    """
+    seen = {}
+    for toc in tocs:
+        for item in toc:
+            seen.setdefault(item[0], item)
+    return list(seen.values())
+
+
 coll = COLLECT(
     exe,
-    a.binaries,
-    a.datas,
+    exe_cli,
+    _merge(a.binaries, a_cli.binaries),
+    _merge(a.datas, a_cli.datas),
     strip=False,
     upx=False,
     name=APP_NAME,
