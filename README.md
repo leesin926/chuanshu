@@ -385,8 +385,12 @@ offscreen 路径——offscreen 在 Windows 上就是"没有托盘"，所以降�
 与合成器行为在这里证明不了（见"界面这层的验证"第一条）。
 
 **还没做的**（#105）：`./build-linux.sh`（PyInstaller → `dist/ChuanShu/` 两个产物 → tar.gz）这条路线
-在这台机器上**只做过语法检查**（`bash -n` 过了），没真跑过——WSL 里没有 PyInstaller，装它要往这台机器
-上装东西，等点头再做；AppImage / deb 仍然没定，脚本先只承诺 tar.gz。真桌面的 GUI 也卡在同一条：
+在这台机器上**没真跑过 PyInstaller**——WSL 里没有它，装它要往这台机器上装东西，等点头再做；AppImage /
+deb 仍然没定，脚本先只承诺 tar.gz。已经跑过的是脚本自己那半边（`.probe/linux_build_probe.sh`，一次性
+探针，不进仓库）：它照脚本认的 `PY=` 塞一个桩，只把 `-m PyInstaller` 与翻译那三步换掉，其余照原样跑，
+于是 `--exe-only` 与完整打包两条分支、`dist/ChuanShu-0.1.0-linux-x64.tar.gz` 这个文件名、"一个目录两个
+可执行"的包内布局，以及**解压回来还在 +x**（两个桩脚本真被 `./ChuanShu` 起来了）都是实跑的结论；产物是
+桩，所以这条只算"脚本写得对"，不算"Linux 包出来了"。真桌面的 GUI 也卡在同一条：
 主题自动、Wayland 下 `startSystemMove()` 能不能拖动无边框窗口、X11 的边缘缩放、托盘在桌面环境里到底
 有没有（AppIndicator），都得有 PySide6 才谈得上。入站防火墙那半边同理：这台机器给的是真 `unknown`
 （上一条），而**装着火墙的那台**答出来什么还只对着备好的 `firewall-cmd`/`ufw` 文本验过，在
@@ -404,8 +408,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Task all
 3. `ISCC installer\setup.iss` → `dist\installer\ChuanShu-Setup-0.1.0-x64.exe`
 
 Linux 那一侧重复同样的三步，只是产物是 tar.gz：`./build-linux.sh`（`--exe-only` 只出可执行文件不打包，
-`PY=python3.12` 换解释器）。它需要 `requirements.txt` + `requirements-dev.txt` 都装上，本机还没真跑过
-（见"Linux 侧"最后一段）。
+`PY=python3.12` 换解释器）。它需要 `requirements.txt` + `requirements-dev.txt` 都装上；脚本自己那两条
+分支在 WSL 里真跑过（PyInstaller 与翻译三步换成桩），**没跑过的就是 PyInstaller 那一步本身**（见"Linux
+侧"最后一段）。
 
 Inno Setup 的定位顺序：`$env:ISCC` → 卸载注册表里的 `InstallLocation`（本机 7.1.0 装在 D 盘且不在
 PATH）→ 常见安装目录 → PATH。
