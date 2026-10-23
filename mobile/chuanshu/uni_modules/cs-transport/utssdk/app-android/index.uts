@@ -4,7 +4,11 @@
  *  Every call leaves the main thread. The protocol itself lives in ../cs-client.uts and is the
  *  same code the browser runs; this file only moves bytes, which is why the two halves are able to
  *  disagree about what has been proven and agree about what is on the wire. */
-import { TRANSPORT_PORT } from '../cs-protocol.uts'
+import { TRANSPORT_PORT, DISCOVERY_PORT, ANNOUNCE_INTERVAL_S, MDNS_SERVICE_SHORT } from '../cs-protocol.uts'
+import {
+	Roster, newRoster, candidatesOf, applyAnnounce, applyTxt, forgetMdns, sweepPeers,
+	channelNote, buildAnnounce, buildTxt, prefixOf, markVerified, VIA_UDP, selfReport
+} from '../cs-discovery.uts'
 import {
 	HexFn, KeyFpFn, VerifyFn, PrepareFn, WriteFn, DigestFileFn, DropFn,
 	LocalPeer, Req, Inbox, ReceiveSnapshot,
@@ -684,4 +688,242 @@ export function receiveStatus(): string {
 	out['addrs'] = addrs
 	out['notes'] = JSON.parse(CsServe.noteLog())
 	return JSON.stringify(out)
+}
+
+/* ------------------------------------------------------------------ discovery */
+/** The two LAN paths of spec §2 on this phone: a datagram on 43721 and a DNS-SD service. The rules
+ *  those packets are judged by are not here - they live in cs-discovery.uts, the same file the browser
+ *  runs, so a candidate that merges or expires one way on a phone cannot merge another way on a laptop.
+ *  This half hands bytes over and reports what the sockets did about them. */
+
+let discRoster: Roster = newRoster('')
+let discId = ''
+let discName = ''
+let discPrefix = ''
+let discSince: number = 0
+let discOpen = false
+
+/** Asked for on the discovery thread every interval rather than pushed by a page timer: a timer stops
+ *  with the screen that made it, and a phone lying face-down still has to be findable. `port` is read
+ *  live because the TLS listener may have had to take another one - the announcement carries the port
+ *  that is actually open. `ts` stays at the moment discovery started, which is the PC's `started_at`. */
+const discProvider: () => string = (): string => {
+	if (discPrefix == '') {
+		return ''
+	}
+	const port = CsServe.isRunning() ? CsServe.port() : TRANSPORT_PORT
+	const out = new UTSJSONObject()
+	out['announce'] = buildAnnounce(discId, port, discName, discPrefix, discSince)
+	out['service'] = 'chuanshu-' + discId.substring(0, 8)
+	out['port'] = port
+	out['txt'] = buildTxt(discName, discPrefix, discSince)
+	return JSON.stringify(out)
+}
+
+/** One packet or one DNS-SD answer, arriving on a discovery thread while the page reads the same
+ *  roster from the main one, so `gate` again. The address is the packet's sender - never anything the
+ *  payload claims (spec §2), which is why an announcement has no host field to believe. */
+const discInbound: (text: string) => void = (text: string): void => {
+	CsServe.gate(function (): string {
+		const made = JSON.parse(text) as UTSJSONObject | null
+		if (made == null) {
+			return ''
+		}
+		const now = CsServe.nowSeconds()
+		if (made!.getString('via', '') == VIA_UDP) {
+			applyAnnounce(discRoster, made!.getString('text', ''), made!.getString('host', ''), now)
+			return ''
+		}
+		if (made!.getString('kind', '') == 'lost') {
+			forgetMdns(discRoster, made!.getString('prefix', ''))
+			return ''
+		}
+		const entries: string[] = []
+		const list = made!.getArray('txt')
+		if (list != null) {
+			for (let i = 0; i < list.length; i++) {
+				entries.push(list[i] as string)
+			}
+		}
+		applyTxt(discRoster, entries, made!.getString('host', ''), made!.getNumber('port') ?? 0, now)
+		return ''
+	})
+}
+
+/** Kotlin's account of the two sockets, written into the model's channels so `channelNote` can name
+ *  the path that died instead of showing an empty list. */
+function discChannels(text: string): void {
+	const made = JSON.parse(text) as UTSJSONObject | null
+	if (made == null) {
+		return
+	}
+	const read = (key: string): UTSJSONObject | null => {
+		const raw = made!.get(key)
+		return raw == null ? null : raw as UTSJSONObject
+	}
+	const udp = read('udp')
+	if (udp != null) {
+		discRoster.udp.state = udp!.getString('state', 'stopped')
+		discRoster.udp.detail = udp!.getString('detail', '')
+	}
+	const mdns = read('mdns')
+	if (mdns != null) {
+		discRoster.mdns.state = mdns!.getString('state', 'stopped')
+		discRoster.mdns.detail = mdns!.getString('detail', '')
+	}
+}
+
+function discNote(): string {
+	let note = ''
+	CsServe.gate(function (): string {
+		note = channelNote(discRoster)
+		return ''
+	})
+	return note
+}
+
+/** Open both paths. The identity is read first and cached: an announcement without a fingerprint prefix
+ *  is a device nobody can verify, so a phone whose key cannot be loaded says so instead of broadcasting
+ *  silence and looking like a machine that no PC can find. */
+export function discoverStart(cb: (ok: boolean, message: string) => void): void {
+	if (discOpen) {
+		cb(true, '局域网发现已经在跑')
+		return
+	}
+	onIo(function () {
+		const made = JSON.parse(CsIdentity.self()) as UTSJSONObject | null
+		if (made == null) {
+			onMain(function () {
+				cb(false, '本机身份读不出来')
+			})
+			return
+		}
+		const why = made!.getString('error', '')
+		if (why != '') {
+			onMain(function () {
+				cb(false, why)
+			})
+			return
+		}
+		discId = made!.getString('peer_id', '')
+		discName = made!.getString('name', '')
+		discPrefix = prefixOf(made!.getString('fingerprint', ''))
+		discSince = CsServe.nowSeconds()
+		if (discPrefix == '') {
+			onMain(function () {
+				cb(false, '本机指纹读不出来，发现层发不出可信的公告')
+			})
+			return
+		}
+		CsServe.gate(function (): string {
+			// A fresh roster per session: a candidate left from the last time this ran is silent now, and
+			// expiry measured against that old `seen` would either keep a ghost or drop a real machine.
+			discRoster = newRoster(discPrefix)
+			return ''
+		})
+		// Android's NsdManager wants the service type with a trailing dot; the contract spells it without.
+		const started = CsDiscovery.start(DISCOVERY_PORT, ANNOUNCE_INTERVAL_S,
+			MDNS_SERVICE_SHORT + '.', discProvider, discInbound)
+		CsServe.gate(function (): string {
+			discChannels(started)
+			return ''
+		})
+		discOpen = true
+		const line = discNote()
+		onMain(function () {
+			cb(true, line)
+		})
+	})
+}
+
+/** Close both paths and let the Wi-Fi radio power-save again. `stop()` waits for the mDNS teardown to
+ *  be posted back on the main thread, so it runs on io - calling it from the page's thread would
+ *  deadlock against the Looper it is waiting for. */
+export function discoverStop(cb: (ok: boolean, message: string) => void): void {
+	if (!discOpen) {
+		cb(true, '局域网发现没在跑')
+		return
+	}
+	onIo(function () {
+		const text = CsDiscovery.stop()
+		CsServe.gate(function (): string {
+			discChannels(text)
+			return ''
+		})
+		discOpen = false
+		const line = discNote()
+		onMain(function () {
+			cb(true, line)
+		})
+	})
+}
+
+/** The list the panel paints, swept on the way out: the PC trims its roster on its own thread, and a
+ *  phone has no reason to wake up for that when the page asks once a second anyway. */
+export function discoverPeers(): string {
+	let text = ''
+	CsServe.gate(function (): string {
+		const now = CsServe.nowSeconds()
+		sweepPeers(discRoster, now)
+		const out = new UTSJSONObject()
+		const rows: UTSJSONObject[] = []
+		const list = candidatesOf(discRoster)
+		for (let i = 0; i < list.length; i++) {
+			const one = list[i]
+			const row = new UTSJSONObject()
+			row['prefix'] = one.prefix
+			row['host'] = one.host
+			row['port'] = one.port
+			row['peer_id'] = one.peerId
+			row['name'] = one.name
+			row['version'] = one.version
+			row['fingerprint'] = one.fingerprint
+			row['via'] = one.via
+			row['age'] = now - one.seen
+			rows.push(row)
+		}
+		out['peers'] = rows
+		out['total'] = list.length
+		out['running'] = discOpen
+		out['note'] = channelNote(discRoster)
+		text = JSON.stringify(out)
+		return ''
+	})
+	return text
+}
+
+/** Channels, counters, warnings and the sentence the UI shows when nothing turned up. */
+export function discoverStatus(): string {
+	const text = CsDiscovery.status()
+	const made = JSON.parse(text) as UTSJSONObject | null
+	if (made == null) {
+		return '{"note":"' + discNote() + '"}'
+	}
+	CsServe.gate(function (): string {
+		discChannels(text)
+		return ''
+	})
+	made!['note'] = discNote()
+	made!['running'] = discOpen
+	return JSON.stringify(made!)
+}
+
+/** Presence is not trust: this is where a candidate stops being a broadcast and becomes a peer. Only
+ *  a digest that starts with the prefix it announced itself under is the same machine, and only the
+ *  digest read off the TLS connection counts - a phone that filled `fingerprint` from a packet would
+ *  pin whoever happened to shout loudest on 43721. */
+export function discoverVerify(prefix: string, fingerprint: string): boolean {
+	let ok = false
+	CsServe.gate(function (): string {
+		ok = markVerified(discRoster, prefix, fingerprint)
+		return ''
+	})
+	return ok
+}
+
+/** The roster's own rules, on this device: the same 22 assertions the browser runs, fed the same
+ *  synthetic announces. What it does not prove is the sockets, and that is the honest split - the
+ *  panel says which half has been shown. */
+export function discoverySelfReport(): string {
+	return selfReport()
 }
