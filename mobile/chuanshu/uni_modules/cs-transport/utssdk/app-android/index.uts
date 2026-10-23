@@ -861,8 +861,13 @@ export function discoverStop(cb: (ok: boolean, message: string) => void): void {
 /** The list the panel paints, swept on the way out: the PC trims its roster on its own thread, and a
  *  phone has no reason to wake up for that when the page asks once a second anyway. */
 export function discoverPeers(): string {
+	// Read on the way out, not from the moment 找设备 was pressed: both channels finish binding after
+	// start() answers, and a note taken from the roster alone can say 广播：未启动 next to a row that
+	// arrived over 广播.
+	const chan = CsDiscovery.status()
 	let text = ''
 	CsServe.gate(function (): string {
+		discChannels(chan)
 		const now = CsServe.nowSeconds()
 		sweepPeers(discRoster, now)
 		const out = new UTSJSONObject()

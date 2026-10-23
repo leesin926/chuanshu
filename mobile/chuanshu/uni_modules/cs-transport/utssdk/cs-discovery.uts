@@ -414,6 +414,9 @@ function channelText(ch: Channel): string {
 	if (ch.state == 'stopped') {
 		return '未启动'
 	}
+	if (ch.state == 'starting') {
+		return '正在启动'
+	}
 	if (ch.state == 'ok') {
 		return '正常'
 	}

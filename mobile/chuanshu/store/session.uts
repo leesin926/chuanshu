@@ -328,6 +328,9 @@ let discPrefixes: string[] = []
  *  announcement to check the TLS digest against - nothing to verify, and nothing to refuse. */
 let discPicked = ''
 let discRunning = false
+/** Whether this button has been pressed since the app started. Without it the card says "名单是上一次的"
+ *  before there has been a first run, and a person reads that as a lost list rather than an untouched one. */
+let discRanOnce = false
 
 // #ifdef APP-HARMONY
 const recvInbox: Inbox = newInbox()
@@ -1621,6 +1624,10 @@ export function lanStop(cb: (ok: boolean, message: string) => void): void {
 }
 
 export function lanPeers(): string {
+	// The sockets answer when they are ready, not when lanStart() returned, so the channel states are
+	// read here rather than trusted from the moment the button was pressed. Without this the list can
+	// show a machine heard over 广播 while the same snapshot still says 广播：未启动.
+	discChannels(lanStatusText())
 	const now = nowSecs()
 	sweepPeers(discRoster, now)
 	const out = new UTSJSONObject()
@@ -1723,9 +1730,9 @@ function paintDisc(rows: UTSJSONObject[], note: string, total: number): void {
 	s.discNames = names
 	s.discMeta = meta
 	s.discNote = note
-	s.discSummary = !discRunning
-		? '发现没在跑，下面这份名单是上一次的。'
-		: (total == 0 ? '两条通道都没听到设备。可以改用扫码或手输地址。' : '找到 ' + total.toString() + ' 台，点一台填进下面的连接。')
+	s.discSummary = discRunning
+		? (total == 0 ? '两条通道都没听到设备。可以改用扫码或手输地址。' : '找到 ' + total.toString() + ' 台，点一台填进下面的连接。')
+		: (discRanOnce ? '发现没在跑，下面这份名单是上一次的。' : '')
 }
 
 // #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
@@ -1824,6 +1831,9 @@ export function toggleDiscovery(): void {
 	s.discNote = '正在起广播端口 43721 和 mDNS……'
 	discStartChannels(function (ok: boolean, message: string): void {
 		discRunning = ok
+		if (ok) {
+			discRanOnce = true
+		}
 		s.discButton = ok ? '停止找设备' : '找局域网设备'
 		refreshDiscovery()
 		if (!ok) {
