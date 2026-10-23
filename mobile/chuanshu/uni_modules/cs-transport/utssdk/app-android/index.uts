@@ -178,6 +178,7 @@ export function request(
 	pinFpHex: string,
 	body: ArrayBuffer,
 	sha: string,
+	escape: string,
 	cb: ReplyCb
 ): void {
 	onIo(function () {
@@ -185,7 +186,7 @@ export function request(
 		// makes an empty pair code mean "the peer I already know" rather than "whoever answers".
 		const expected = pinFpHex != '' ? pinFpHex : CsIdentity.pinFor(host, port)
 		const text = CsWire.http(method, host, port, path, jsonBody, token, expected,
-			body.byteLength > 0 ? body.toByteBuffer() : null, sha, timeoutOf(method, path))
+			body.byteLength > 0 ? body.toByteBuffer() : null, sha, escape, timeoutOf(method, path))
 		const parsed = JSON.parse(text) as UTSJSONObject | null
 		if (parsed == null) {
 			ioFail('IO', '对端应答无法解析', cb)

@@ -184,6 +184,7 @@ public enum CsWire {
         _ pinHex: String,
         _ body: Data?,
         _ sha: String,
+        _ escape: String,
         _ timeoutMs: NSNumber
     ) -> String {
         let session = Session()
@@ -237,6 +238,9 @@ public enum CsWire {
             + "Connection: close\r\n"))
         if !token.isEmpty { head.append(contentsOf: CsBytes.bytes("X-Chuanshu-Auth: \(token)\r\n")) }
         if !sha.isEmpty { head.append(contentsOf: CsBytes.bytes("X-Sha256: \(sha)\r\n")) }
+        // Declared by the sender, obeyed by the receiver only when present: a peer whose TLS server hands
+        // its scripts the body up to the first 0x00 cannot be given raw bytes at all (spec §4).
+        if !escape.isEmpty { head.append(contentsOf: CsBytes.bytes("X-Chunk-Escape: \(escape)\r\n")) }
         head.append(contentsOf: CsBytes.bytes("Content-Length: \(length)\r\n\r\n"))
 
         let deadline = Date().addingTimeInterval(Double(Int(truncating: timeoutMs)) / 1000.0)

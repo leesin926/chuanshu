@@ -10,6 +10,7 @@ import org.json.JSONObject
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
+import java.io.OutputStream
 import java.io.RandomAccessFile
 import java.net.Inet4Address
 import java.net.InetSocketAddress
@@ -21,6 +22,7 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
+import java.util.concurrent.ConcurrentHashMap
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.TrustManager
@@ -57,6 +59,52 @@ object CsWire {
         val out = ByteArray(copy.remaining())
         copy.get(out)
         return out
+    }
+
+    // -------------------------------------------------------------------- write pace
+
+    /** Largest plaintext a TLS record is allowed to carry on the way out. One `write` of a whole 4 MiB
+     *  chunk makes records as big as the SSL engine's buffer, and a Harmony receiver does not survive
+     *  that: the declared byte count arrives, the content does not, and the receiving process can go
+     *  down with the attempt (protocol spec §4, `.probe/records.py`, `.probe/crashlog.py`).
+     *  The record *count* is irrelevant - only the rate is. */
+    private const val MAX_TLS_RECORD_PLAINTEXT = 4096
+
+    /** The floors a Harmony receiver was measured against, per 4 KiB record: full speed corrupts,
+     *  15 ms is byte-identical, 40 ms is the last resort. */
+    private val PACE_LADDER = listOf(0, 15, 40)
+
+    /** One floor per peer address, and never handed back for as long as this process lives: the run
+     *  that wrote faster is the one that killed the peer, which leaves nothing to learn from. Keyed by
+     *  address so a PC that asked for full speed does not inherit a courtesy owed to a phone. */
+    private val paceFloors = ConcurrentHashMap<String, Int>()
+
+    private fun paceKey(host: String, port: Int) = "$host:$port"
+
+    private fun paceOf(host: String, port: Int): Int = paceFloors[paceKey(host, port)] ?: 0
+
+    private fun raisePace(host: String, port: Int, ms: Int) {
+        if (ms > paceOf(host, port)) paceFloors[paceKey(host, port)] = ms
+    }
+
+    /** One rung slower for this peer, nothing when the ladder is spent. A chunk whose bytes all counted
+     *  but whose digest does not match, or one whose body died halfway in, is the same complaint: this
+     *  pipe cannot drain at this rate, and slowing down is the only repair that needs no help from the
+     *  peer. The caller resends that chunk, so the retry walks at the new floor. */
+    private fun slowPipe(host: String, port: Int) {
+        val now = paceOf(host, port)
+        PACE_LADDER.firstOrNull { it > now }?.let { paceFloors[paceKey(host, port)] = it }
+    }
+
+    private fun writePaced(out: OutputStream, data: ByteArray, paceMs: Long) {
+        var at = 0
+        while (at < data.size) {
+            val end = minOf(at + MAX_TLS_RECORD_PLAINTEXT, data.size)
+            out.write(data, at, end - at)
+            at = end
+            if (at < data.size && paceMs > 0) Thread.sleep(paceMs)
+        }
+        out.flush()
     }
 
     // -------------------------------------------------------------------- pinning
@@ -171,6 +219,7 @@ object CsWire {
         pinHex: String,
         body: ByteBuffer?,
         sha: String,
+        escape: String,
         timeoutMs: Number
     ): String {
         val payload = bytesOf(body)
@@ -187,13 +236,15 @@ object CsWire {
                 .append("Connection: close\r\n")
             if (token.isNotEmpty()) text.append("X-Chuanshu-Auth: $token\r\n")
             if (sha.isNotEmpty()) text.append("X-Sha256: $sha\r\n")
+            // Declared by the sender, obeyed by the receiver only when present: a peer whose TLS server
+            // hands its scripts the body up to the first 0x00 cannot be given raw bytes at all (spec §4).
+            if (escape.isNotEmpty()) text.append("X-Chunk-Escape: $escape\r\n")
             val jsonBytes = if (json.isEmpty()) ByteArray(0) else json.toByteArray(Charsets.UTF_8)
             val length = if (payload.isEmpty()) jsonBytes.size else payload.size
             text.append("Content-Length: $length\r\n\r\n")
             val out = socket.getOutputStream()
             out.write(text.toString().toByteArray(Charsets.US_ASCII))
-            if (payload.isEmpty()) out.write(jsonBytes) else out.write(payload)
-            out.flush()
+            writePaced(out, if (payload.isEmpty()) jsonBytes else payload, paceOf(host, port.toInt()).toLong())
 
             val ins = socket.getInputStream()
             val status = readLine(ins)
@@ -211,15 +262,22 @@ object CsWire {
                     }
                 }
                 val raw = if (declared >= 0) readExactly(ins, declared) else readAll(ins)
+                val rawText = String(raw, Charsets.UTF_8)
+                // The floor is read before the first big body, from the hello this peer just answered.
+                if (method == "GET" && path == "/v1/hello") {
+                    raisePace(host, port.toInt(), JSONObject(rawText).optInt("chunk_pace_ms", 0))
+                }
+                if (method == "PUT" && rawText.contains("CHUNK_DIGEST_MISMATCH")) slowPipe(host, port.toInt())
                 // `fp` is the leaf digest the handshake actually saw, not what the JSON claims, so the
                 // caller can pin the key rather than a number the peer typed about itself.
                 JSONObject()
                     .put("status", code)
-                    .put("body", String(raw, Charsets.UTF_8))
+                    .put("body", rawText)
                     .put("fp", pinned.trust.seen)
                     .toString()
             }
         } catch (e: Throwable) {
+            if (method == "PUT") slowPipe(host, port.toInt())
             errorOf(e, host)
         } finally {
             try {

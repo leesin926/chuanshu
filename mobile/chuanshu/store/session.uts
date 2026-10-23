@@ -935,9 +935,10 @@ const callWire = (
 	token: string,
 	body: ArrayBuffer,
 	sha: string,
+	escape: string,
 	cb: ReplyCallback
 ): void => {
-	request(method, activeOptions.host, activeOptions.port, path, jsonBody, token, s.scannedFp, body, sha, cb)
+	request(method, activeOptions.host, activeOptions.port, path, jsonBody, token, s.scannedFp, body, sha, escape, cb)
 }
 
 // #ifdef WEB
@@ -1440,6 +1441,47 @@ export function runDiscSelf() {
 	for (let i = 0; i < parts.length; i++) {
 		log(parts[i])
 	}
+}
+// #endif
+
+// #ifdef APP-HARMONY
+/** A phone with nothing it can send. The emulator has no camera roll and no photos, and the debug shell
+ *  cannot write into its media library, so a phone-to-phone run has no source file at all unless this end
+ *  makes one. The bytes are a counter, so the digest the other phone computes is checkable by anyone who
+ *  has both logs.
+ *
+ *  The file joins the same 待发送 list a gallery photo joins and leaves through the same button: what this
+ *  measures is the kernel, not a lane built around it. */
+export function probeSendTestFile(sizeMB: number): string {
+	const rel = 'chuanshu-probe-' + sizeMB.toString() + 'mb.bin'
+	const total = sizeMB * 1024 * 1024
+	const abs = storePrepareFile(rel, total)
+	if (abs == '') {
+		return '测试文件没能落盘'
+	}
+	const step = 64 * 1024
+	const block = new ArrayBuffer(step)
+	const view = new Uint8Array(block)
+	for (let i = 0; i < step; i++) {
+		view[i] = i % 251
+	}
+	let at = 0
+	while (at < total) {
+		const why = storeWriteAt(rel, at, block)
+		if (why != '') {
+			return '测试文件写到 ' + at.toString() + ' 字节失败：' + why
+		}
+		at = at + step
+	}
+	clearFiles()
+	pickedPaths.push(abs)
+	pickedNames.push(rel)
+	pickedRel.push(rel)
+	pickedSizes.push(total)
+	refreshList()
+	syncSendable()
+	log('测试文件已备好：' + rel + '　' + formatSize(total))
+	return ''
 }
 // #endif
 

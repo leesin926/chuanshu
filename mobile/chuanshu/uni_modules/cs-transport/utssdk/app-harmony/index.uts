@@ -420,6 +420,38 @@ function fieldOf(json: string, key: string): string {
 	return ''
 }
 
+/** One bare number field of a JSON object, taken by name; -1 when the peer did not send it.
+ *  A reader of its own because `fieldOf` only accepts a quoted value, and the pace a peer declares
+ *  (`chunk_pace_ms`, spec §4) is a number, not a string. */
+function numFieldOf(json: string, key: string): number {
+	const at = json.indexOf('"' + key + '"')
+	if (at < 0) {
+		return -1
+	}
+	const colon = json.indexOf(':', at + key.length + 2)
+	if (colon < 0) {
+		return -1
+	}
+	let i = colon + 1
+	while (i < json.length) {
+		const skip = json.charAt(i)
+		if (skip != ' ' && skip != '\t' && skip != '\n' && skip != '\r') {
+			break
+		}
+		i = i + 1
+	}
+	let digits = ''
+	while (i < json.length) {
+		const c = json.charAt(i)
+		if (c < '0' || c > '9') {
+			break
+		}
+		digits = digits + c
+		i = i + 1
+	}
+	return digits == '' ? -1 : parseInt(digits)
+}
+
 /** A name is only ever stored so the page can show it again, and the store file is line-oriented, so
  *  the characters that would move a field into the next record are taken out on the way in. */
 function oneLine(text: string): string {
@@ -1281,6 +1313,134 @@ function startsRequest(at: number, merged: Uint8Array): boolean {
  *  not merely late, so the socket is hung up on rather than buffered until memory runs out. */
 const HEAD_HUNT_MAX: number = 64 * 1024
 
+/** Largest TLS record a peer is asked to swallow at once. A whole 4 MiB chunk handed to `send` becomes
+ *  one record the size of the platform's own buffer, and the record count is not what a Harmony
+ *  receiver cannot survive - the rate is (spec §4 大体的写入节奏, `.probe/records.py`). */
+const WRITE_RECORD_BYTES: number = 4096
+
+/** Milliseconds to leave between those records, one floor per peer address, taken from that peer's own
+ *  `chunk_pace_ms` the first time it says hello. It is never handed back for as long as this process
+ *  lives: the run that asked for less is the run that killed the receiver outright
+ *  (`.probe/crashlog.py`), which leaves nothing to learn from. Keyed by address because a PC that asked
+ *  for full speed should not inherit the courtesy one phone extended to another phone. */
+const PACE_LADDER: number[] = [0, 15, 40]
+const paceKeys: string[] = []
+const paceFloor: number[] = []
+
+function paceFor(host: string, port: number): number {
+	const key = host + ':' + port.toString()
+	for (let i = 0; i < paceKeys.length; i++) {
+		if (paceKeys[i] == key) {
+			return paceFloor[i]
+		}
+	}
+	return 0
+}
+
+function setPace(host: string, port: number, ms: number): void {
+	const key = host + ':' + port.toString()
+	for (let i = 0; i < paceKeys.length; i++) {
+		if (paceKeys[i] == key) {
+			paceFloor[i] = ms
+			return
+		}
+	}
+	paceKeys.push(key)
+	paceFloor.push(ms)
+}
+
+/** One rung slower for this peer, and nothing when the ladder is already spent. A chunk whose bytes all
+ *  arrived but digest does not match, or whose body died on the way in, is the same complaint: this pipe
+ *  cannot drain at this rate. Slowing down is the only repair that does not need the peer's help, and the
+ *  shared sender resends that chunk anyway, so the next attempt walks at the new floor (spec §4). */
+function slowPipe(host: string, port: number): void {
+	const now = paceFor(host, port)
+	for (let i = 0; i < PACE_LADDER.length; i++) {
+		if (PACE_LADDER[i] > now) {
+			setPace(host, port, PACE_LADDER[i])
+			return
+		}
+	}
+}
+
+/** Wall clock when the watched paced write began, so its progress lines report elapsed time and a slow
+ *  pipe can be told apart from a dead loop. Only a chunk PUT is watched, so one value is enough. */
+let sendT0: number = 0
+let sendCur: number = 0
+let sendTotal: number = 0
+let sendWatchTag: string = ''
+let sendWatchOn: boolean = false
+
+/** A heartbeat that does not share the paced loop's promises. If the loop stops mid-body this keeps
+ *  printing the frozen cursor, which says the setTimeout machinery is alive and the write itself is
+ *  what never came back; if this goes quiet too, the whole clock stopped and no amount of pacing will
+ *  help. One line every five seconds while a chunk is in flight. */
+function sendWatchTick(): void {
+	if (!sendWatchOn) {
+		return
+	}
+	trace(sendWatchTag + ' 看门狗 游标 ' + sendCur.toString() + '/' + sendTotal.toString()
+		+ ' 已过 ' + (Date.now() - sendT0).toString() + ' 毫秒')
+	setTimeout((): void => {
+		sendWatchTick()
+	}, 5000)
+}
+
+/** Write a request body one small record at a time, pausing between them for as long as the peer asked.
+ *  Handed the whole 4 MiB at once, `send` makes a record bigger than the platform's own buffer and the
+ *  peer's receiving process does not survive it; the record *count* is not the problem, the rate is
+ *  (spec §4 大体的写入节奏, `.probe/records.py`, `.probe/crashlog.py`). A recursive top-level function
+ *  rather than a closure: the continuation needs to name itself, and the head is already its own send. */
+function sendRecords(
+	cli: socket.TLSSocket,
+	data: Uint8Array,
+	at: number,
+	paceMs: number,
+	done: () => void,
+	onFail: (why: string) => void,
+	label: string
+): void {
+	const take = data.length - at
+	const size = take < WRITE_RECORD_BYTES ? take : WRITE_RECORD_BYTES
+	/* A stalled body hides two different stalls in this loop, and which one gets fixed depends on which
+	 *  line is missing: `send` never resolving (the kernel stopped taking the record) or the next
+	 *  setTimeout never firing (this end stopped asking). The first twenty records print every step, then
+	 *  every 16th, with where the cursor was and how long ago the loop started.
+	 *  '' means the caller is not watching - every request but a chunk PUT. */
+	if (label != '') {
+		if (at == 0) {
+			sendT0 = Date.now()
+		}
+		sendCur = at
+		if (at < WRITE_RECORD_BYTES * 20 || at % (WRITE_RECORD_BYTES * 16) == 0) {
+			trace(label + ' 写下 ' + at.toString() + '/' + data.length.toString()
+				+ ' 已过 ' + (Date.now() - sendT0).toString() + ' 毫秒'
+				+ (at == 0 ? '，节奏 ' + paceMs.toString() + ' 毫秒' : ''))
+		}
+	}
+	cli.send(bufOf(sliceBytes(data, at, size))).then((): void => {
+		const next = at + size
+		if (label != '' && next < data.length
+			&& (next <= WRITE_RECORD_BYTES * 20 || next % (WRITE_RECORD_BYTES * 16) == 0)) {
+			trace(label + ' 系统收下 ' + next.toString() + '/' + data.length.toString()
+				+ ' 已过 ' + (Date.now() - sendT0).toString() + ' 毫秒')
+		}
+		if (next >= data.length) {
+			done()
+			return
+		}
+		if (paceMs <= 0) {
+			sendRecords(cli, data, next, paceMs, done, onFail, label)
+			return
+		}
+		setTimeout((): void => {
+			sendRecords(cli, data, next, paceMs, done, onFail, label)
+		}, paceMs)
+	}).catch((e: Error): void => {
+		onFail(errText(e))
+	})
+}
+
 /** One request over one connection.
  *
  *  The order is the whole design: bind, connect without the platform's own certificate validation, read
@@ -1298,6 +1458,7 @@ function httpRun(
 	expected: string,
 	body: ArrayBuffer,
 	sha: string,
+	escape: string,
 	timeoutMs: number,
 	cb: (r: HttpResult) => void
 ): void {
@@ -1309,6 +1470,10 @@ function httpRun(
 	let acc = new Uint8Array(0)
 	let headEnd = -1
 	let declared = -1
+	/** A teardown on this side has to be lined up against the next request's connect by absolute clock:
+	 *  that is the only way to tell whether this socket was closed by its own request or by the one before
+	 *  it, which is the difference between two bugs with the same symptom. */
+	const tag = 'C ' + method + ' ' + path
 
 	const stop = (): void => {
 		if (timer != 0) {
@@ -1316,10 +1481,36 @@ function httpRun(
 			timer = 0
 		}
 	}
-	const shut = (): void => {
+	/** Hand the answer over once this connection is really gone.
+	 *
+	 *  The caller makes the next request from inside this callback, and the chunk PUTs of one offer are
+	 *  issued back to back with no poll in between them. If close() is still unwinding when the next
+	 *  socket binds, that socket inherits the teardown: the request is closed with nothing read, and the
+	 *  peer's accepted connection reports its own descriptor as gone. Spaced requests - the state polls,
+	 *  which wait a second for their neighbours - never show it, which is why only the second chunk of an
+	 *  offer failed. A close that never settles must not hold a transfer hostage, so the handover is
+	 *  bounded. */
+	const shutThen = (next: () => void): void => {
+		let handed = false
+		const give = (): void => {
+			if (handed) {
+				return
+			}
+			handed = true
+			next()
+		}
 		cli.close().then((): void => {
+			give()
 		}).catch((e: Error): void => {
+			give()
 		})
+		setTimeout((): void => {
+			if (handed) {
+				return
+			}
+			trace(tag + ' 关连接的 promise 在 500 毫秒内没落地，先放行下一条请求')
+			give()
+		}, 500)
 	}
 	const fail = (code: string, detail: string): void => {
 		if (finished) {
@@ -1329,8 +1520,9 @@ function httpRun(
 		stop()
 		out.error = code
 		out.detail = detail
-		shut()
-		cb(out)
+		shutThen((): void => {
+			cb(out)
+		})
 	}
 	const take = (): void => {
 		if (finished) {
@@ -1340,8 +1532,9 @@ function httpRun(
 		stop()
 		out.status = statusOf(textOfBytes(sliceBytes(acc, 0, headEnd)))
 		out.body = textOfBytes(sliceBytes(acc, headEnd + 4, acc.length - headEnd - 4))
-		shut()
-		cb(out)
+		shutThen((): void => {
+			cb(out)
+		})
 	}
 	/** A response with no Content-Length has only the end of the stream to tell it apart, and this
 	 *  platform's 'close' event never arrives, so whatever actually came is the answer. */
@@ -1380,10 +1573,30 @@ function httpRun(
 		}
 	}
 	const sendPayload = (data: ArrayBuffer): void => {
-		cli.send(data).then((): void => {
-		}).catch((e: Error): void => {
-			fail('IO', '请求体没写出去：' + errText(e))
-		})
+		/** A chunk that never gets an answer has two completely different causes - this end still has bytes
+		 *  in hand, or the peer stopped taking them - and the request's own error line cannot tell them apart,
+		 *  because it is written when the reply is missed, not when the write is. Two lines around the body
+		 *  say which side was still moving. Only a PUT carries a chunk, so nothing else gains noise. */
+		const watched = method == 'PUT'
+		if (watched) {
+			sendWatchTag = tag
+			sendTotal = data.byteLength
+			sendCur = 0
+			sendWatchOn = true
+			sendT0 = Date.now()
+			sendWatchTick()
+		}
+		sendRecords(cli, new Uint8Array(data), 0, paceFor(host, port), (): void => {
+			sendWatchOn = false
+			if (watched) {
+				trace(tag + ' 请求体已全部交给系统，用时 ' + (Date.now() - sendT0).toString() + ' 毫秒')
+			}
+		}, (why: string): void => {
+			sendWatchOn = false
+			// The complaint lands on the request's error branch, and that is where the pipe gets slowed
+			// down - one rung per attempt, not one per place the failure is noticed.
+			fail('IO', '请求体没写出去：' + why)
+		}, watched ? tag : '')
 	}
 
 	let header = method + ' ' + path + ' HTTP/1.1\r\n'
@@ -1400,6 +1613,11 @@ function httpRun(
 	}
 	if (sha != '') {
 		header = header + 'X-Sha256: ' + sha + '\r\n'
+	}
+	// Declared by the sender, honoured by the receiver only when it is there: a peer whose TLS server hands
+	// its scripts the body up to the first 0x00 cannot be given raw bytes at all (spec §4 零字节转义).
+	if (escape != '') {
+		header = header + 'X-Chunk-Escape: ' + escape + '\r\n'
 	}
 	const jsonBytes = json == '' ? new Uint8Array(0) : bytesOf(json)
 	// A PUT carries the chunk itself; every other request carries the JSON. The two are never both, which
@@ -1540,23 +1758,49 @@ export function request(
 	pinFpHex: string,
 	body: ArrayBuffer,
 	sha: string,
+	escape: string,
 	cb: ReplyCb
 ): void {
 	// An address we already met is pinned whether or not the QR handed us the digest: that is what makes
 	// an empty pair code mean "the peer I already know" rather than "whoever answers".
 	const expected = pinFpHex != '' ? pinFpHex : pinFor(host, port)
-	httpRun(method, host, port, path, jsonBody, token, expected, body, sha, timeoutOf(method, path),
+	httpRun(method, host, port, path, jsonBody, token, expected, body, sha, escape, timeoutOf(method, path),
 		(r: HttpResult): void => {
-			if (r.error != '') {
-				reply(r.error, r.detail, cb)
-				return
+		/** The client half has no other witness: the serve log is the only file either device writes, and a
+		 *  request that dies between the socket and the page leaves nothing behind. Two lines per request -
+		 *  what the transport got, and whether the caller took it - say which of the two it was. */
+		trace('C ' + method + ' ' + path + ' → ' + (r.error != '' ? r.error : r.status.toString()) +
+			' 收到 ' + r.body.length.toString() + ' 字节' + (r.error != '' ? '　' + r.detail : ''))
+		if (r.error != '') {
+			// A chunk request that never got an answer is the pipe complaining the same way a wrong
+			// digest does, only louder - the body was written and the peer's reader went away.
+			if (method == 'PUT') {
+				slowPipe(host, port)
 			}
-			// A pair that succeeded is the moment the peer becomes someone we trust: record the key the
-			// handshake actually saw, together with what the peer said its id and name are.
-			if (r.status == 200 && method == 'POST' && path == '/v1/pair' && r.fp != '') {
-				addPin(host, port, r.fp, fieldOf(r.body, 'peer_id'), fieldOf(r.body, 'name'))
+			reply(r.error, r.detail, cb)
+			return
+		}
+		/** The peer's own floor for how fast a body may arrive, read off the hello it just answered, and
+		 *  only ever raised: a 4 MiB chunk written at full speed is the run that takes the receiving
+		 *  process down with it, so there is nothing to learn from a peer that asked for less. */
+		if (r.status == 200 && method == 'GET' && path == '/v1/hello') {
+			const asked = numFieldOf(r.body, 'chunk_pace_ms')
+			if (asked > paceFor(host, port)) {
+				setPace(host, port, asked)
 			}
-			cb(r.status, r.body)
+		}
+		// Every byte counted and different content: the records arrived faster than that peer could
+		// drain them. The shared sender resends this chunk, so hand the retry a slower pipe.
+		if (method == 'PUT' && r.body.indexOf('CHUNK_DIGEST_MISMATCH') >= 0) {
+			slowPipe(host, port)
+		}
+		// A pair that succeeded is the moment the peer becomes someone we trust: record the key the
+		// handshake actually saw, together with what the peer said its id and name are.
+		if (r.status == 200 && method == 'POST' && path == '/v1/pair' && r.fp != '') {
+			addPin(host, port, r.fp, fieldOf(r.body, 'peer_id'), fieldOf(r.body, 'name'))
+		}
+		cb(r.status, r.body)
+		trace('C ' + method + ' ' + path + ' 已交给调用方')
 		})
 }
 

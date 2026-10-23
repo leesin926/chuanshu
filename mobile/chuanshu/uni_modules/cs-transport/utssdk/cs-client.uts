@@ -3,9 +3,11 @@
  *  where the protocol lives on this end; the platform files only move bytes. */
 import {
 	CsFile,
+	ChunkBody,
 	ChunkPlan,
 	VerifyResult,
 	MAX_FILES_PER_OFFER,
+	OFFER_WAIT_S,
 	PROTOCOL_VERSION,
 	CHUNK_SIZE,
 	chunkCount,
@@ -13,6 +15,7 @@ import {
 	codeOf,
 	detailOf,
 	errorText,
+	escapeChunk,
 	finalizeResults,
 	formatSize,
 	numList,
@@ -31,7 +34,7 @@ export type ReplyCallback = (status: number, body: string) => void
 export type MetaCallback = (ok: boolean, id: string, size: number, sha256: string, mtime: number, type: string, message: string) => void
 export type BufferCallback = (buf: ArrayBuffer | null, message: string) => void
 export type HexCallback = (hex: string) => void
-export type Caller = (method: string, path: string, jsonBody: string, token: string, body: ArrayBuffer, sha: string, cb: ReplyCallback) => void
+export type Caller = (method: string, path: string, jsonBody: string, token: string, body: ArrayBuffer, sha: string, escape: string, cb: ReplyCallback) => void
 export type Writer = (line: string) => void
 export type ProgressCallback = (done: number, total: number) => void
 export type FinishCallback = (ok: boolean, summary: string) => void
@@ -109,7 +112,7 @@ function pathCheck(opts: TransferOptions): string {
 /** GET /v1/hello, plus the two checks that decide whether this is a peer worth pairing with at all:
  *  a version both ends speak, and a fingerprint that matches what discovery advertised. */
 function helloPeer(opts: TransferOptions, myFingerprint: string, call: Caller, write: Writer, done: ConnectDone): void {
-	call('GET', '/v1/hello', '', '', new ArrayBuffer(0), '', function (status: number, body: string) {
+	call('GET', '/v1/hello', '', '', new ArrayBuffer(0), '', '', function (status: number, body: string) {
 		if (status != 200) {
 			done(false, pinText(codeOf(body)), null)
 			return
@@ -170,7 +173,7 @@ function pairOnce(
 		const message = pairMessage(peerId, nonce, session.tlsFingerprint)
 		signPair(message, function (publicKeyB64: string, signatureB64: string) {
 			const json = pairJson(peerId, name, nonce, publicKeyB64, signatureB64, code, session.secret, session.tlsFingerprint)
-			call('POST', '/v1/pair', json, '', new ArrayBuffer(0), '', function (status: number, body: string) {
+			call('POST', '/v1/pair', json, '', new ArrayBuffer(0), '', '', function (status: number, body: string) {
 				const wire = codeOf(body)
 				if (status != 200) {
 					cb(false, pinText(wire != '' ? wire : 'NOT_PAIRED') + ' ' + detailOf(body))
@@ -267,9 +270,12 @@ export function sendFiles(
 
 	/** One request, with the silent re-pair in front of it. `repaired` is the guard: a peer that
 	 *  still says NOT_PAIRED after a signature-only pair genuinely does not know us, and looping
-	 *  there would ask the user for a code they cannot see. */
-	function authed(method: string, path: string, json: string, body: ArrayBuffer, sha: string, repaired: boolean, cb: ReplyCallback): void {
-		call(method, path, json, session.token, body, sha, function (status: number, resp: string) {
+	 *  there would ask the user for a code they cannot see.
+	 *
+	 *  `escape` is the wire encoding of `body` ('' means the bytes are the content itself), decided
+	 *  per request by the caller because only a chunk can carry a zero byte. */
+	function authed(method: string, path: string, json: string, body: ArrayBuffer, sha: string, escape: string, repaired: boolean, cb: ReplyCallback): void {
+		call(method, path, json, session.token, body, sha, escape, function (status: number, resp: string) {
 			if (status != 403 || codeOf(resp) != 'NOT_PAIRED' || repaired) {
 				cb(status, resp)
 				return
@@ -281,7 +287,7 @@ export function sendFiles(
 					cb(status, resp)
 					return
 				}
-				authed(method, path, json, body, sha, true, cb)
+				authed(method, path, json, body, sha, escape, true, cb)
 			})
 		})
 	}
@@ -300,8 +306,8 @@ export function sendFiles(
 		return found == null ? 0 : found!.size
 	}
 
-	function putChunk(path: string, buf: ArrayBuffer, sha: string, attempt: number, cb: (ok: boolean, body: string) => void) {
-		authed('PUT', path, '', buf, sha, false, function (status: number, body: string) {
+	function putChunk(path: string, buf: ArrayBuffer, sha: string, escape: string, attempt: number, cb: (ok: boolean, body: string) => void) {
+		authed('PUT', path, '', buf, sha, escape, false, function (status: number, body: string) {
 			if (status == 200) {
 				cb(true, body)
 				return
@@ -310,7 +316,7 @@ export function sendFiles(
 			// A rejected chunk is one lost chunk: resend it instead of restarting the file.
 			if (code == 'CHUNK_DIGEST_MISMATCH' && attempt < 2) {
 				write('分块校验失败，重发 ' + path + '（第 ' + (attempt + 1).toString() + ' 次）')
-				putChunk(path, buf, sha, attempt + 1, cb)
+				putChunk(path, buf, sha, escape, attempt + 1, cb)
 				return
 			}
 			cb(false, body)
@@ -350,8 +356,11 @@ export function sendFiles(
 				return
 			}
 			digestHex(buf, function (sha: string) {
+				// The digest is of the chunk as the manifest describes it; the escape only says how these
+				// bytes walk over to a peer whose TLS server stops at a zero.
+				const wire = escapeChunk(buf)
 				const path = '/v1/offer/' + offerId + '/chunk/' + file.id + '/' + index.toString()
-				putChunk(path, buf, sha, 0, function (ok: boolean, body: string) {
+				putChunk(path, wire.bytes, sha, wire.escape, 0, function (ok: boolean, body: string) {
 					if (!ok) {
 						fileEvent(file.relpath, '推送失败', itemIndex, plan.missing.length)
 						cb(false, pinText(codeOf(body)) + ' ' + detailOf(body))
@@ -385,7 +394,7 @@ export function sendFiles(
 
 	function finalize(offerId: string, isRetry: boolean) {
 		write('请求对方校验整文件')
-		authed('POST', '/v1/offer/' + offerId + '/finalize', '{}', new ArrayBuffer(0), '', false, function (status: number, body: string) {
+		authed('POST', '/v1/offer/' + offerId + '/finalize', '{}', new ArrayBuffer(0), '', '', false, function (status: number, body: string) {
 			if (status != 200) {
 				finish(false, pinText(codeOf(body)) + ' ' + detailOf(body))
 				return
@@ -449,24 +458,52 @@ export function sendFiles(
 		const offerId = randomHex(8)
 		const json = offerJson(offerId, files, selfId, selfName)
 		write('提交清单：' + files.length.toString() + ' 个文件')
-		// The receiver may hold this open for as long as its user takes to decide, so the
-		// transport timeout has to outlive that window rather than retry the offer.
-		authed('POST', '/v1/offer', json, new ArrayBuffer(0), '', false, function (status: number, body: string) {
-			if (status != 200) {
-				for (let i = 0; i < opts.relpaths.length; i++) {
-					fileEvent(opts.relpaths[i], '被拒绝', 0, 0)
-				}
-				finish(false, pinText(codeOf(body) != '' ? codeOf(body) : 'DECLINED') + ' ' + detailOf(body))
-				return
-			}
-			pushChunks(offerId, statePlans(body), function (ok: boolean, why: string) {
-				if (!ok) {
-					finish(false, why)
+		/** spec §4 待决应答: a receiver that will not hold the connection answers
+		 *  `{"accepted": false}` as soon as the manifest is registered, and the answer belongs to a
+		 *  person who has not been asked yet. Re-send the same manifest once a second until the plan
+		 *  comes back - pushing to a plan built from that stub is what made this end finalize a
+		 *  transfer it had never filled. A receiver that does park the socket answers with the real
+		 *  plan on the first try, so both shapes go through this loop. */
+		let waited = 0
+		function ask(): void {
+			authed('POST', '/v1/offer', json, new ArrayBuffer(0), '', '', false, function (status: number, body: string) {
+				if (status != 200) {
+					for (let i = 0; i < opts.relpaths.length; i++) {
+						fileEvent(opts.relpaths[i], '被拒绝', 0, 0)
+					}
+					finish(false, pinText(codeOf(body) != '' ? codeOf(body) : 'DECLINED') + ' ' + detailOf(body))
 					return
 				}
-				finalize(offerId, false)
+				const answer = parseJson(body)
+				if (answer == null) {
+					finish(false, '对端的应答读不懂')
+					return
+				}
+				if (!answer!.getBoolean('accepted', true)) {
+					if (waited >= OFFER_WAIT_S) {
+						for (let i = 0; i < opts.relpaths.length; i++) {
+							fileEvent(opts.relpaths[i], '被拒绝', 0, 0)
+						}
+						finish(false, errorText('DECLINED') + '：' + waited.toString() + ' 秒内对方没有作答')
+						return
+					}
+					waited = waited + 1
+					if (waited == 1 || waited % 10 == 0) {
+						write('等对方决定（' + waited.toString() + ' 秒）')
+					}
+					setTimeout((): void => { ask() }, 1000)
+					return
+				}
+				pushChunks(offerId, statePlans(body), function (ok: boolean, why: string) {
+					if (!ok) {
+						finish(false, why)
+						return
+					}
+					finalize(offerId, false)
+				})
 			})
-		})
+		}
+		ask()
 	}
 
 	function prepareThenOffer() {

@@ -14,7 +14,8 @@ import {
 	newPassphrase,
 	PASSPHRASE_CHARS,
 	SESSION_IDLE_S,
-	OFFER_IDLE_S
+	OFFER_IDLE_S,
+	unescapeChunk
 } from '../cs-protocol.uts'
 import {
 	BufferCallback,
@@ -750,6 +751,7 @@ export function request(
 	pinFpHex: string,
 	body: ArrayBuffer,
 	sha: string,
+	escape: string,
 	cb: (status: number, resBody: string) => void
 ): void {
 	if (peer.code == '') {
@@ -810,7 +812,9 @@ export function request(
 			return
 		}
 		if (method == 'PUT' && parts[4] == 'chunk' && parts.length == 7) {
-			routeChunk(parts, body, sha, cb)
+			// The demo peer stands in for a receiver that got the chunk over a wire which cannot carry a
+			// zero byte, so it stores what the sender meant, not how it was encoded to get here.
+			routeChunk(parts, unescapeChunk(body, escape), sha, cb)
 			return
 		}
 		if (method == 'DELETE') {
@@ -1031,8 +1035,10 @@ const simDigestHex: (buf: ArrayBuffer, cb: HexCallback) => void = (buf: ArrayBuf
 	cb(h)
 }
 
-const simCall: Caller = (method: string, path: string, jsonBody: string, token: string, body: ArrayBuffer, sha: string, cb: ReplyCallback): void => {
-	const reply = askOn(recvInbox, SIM_PEER_ID, method, path, jsonBody, token, body, sha)
+const simCall: Caller = (method: string, path: string, jsonBody: string, token: string, body: ArrayBuffer, sha: string, escape: string, cb: ReplyCallback): void => {
+	// Same rule as the browser's own peer: the header says whether these bytes are a chunk or an encoding
+	// of one, and the receive kernel below only ever counts and digests the chunk.
+	const reply = askOn(recvInbox, SIM_PEER_ID, method, path, jsonBody, token, unescapeChunk(body, escape), sha)
 	if (!reply.pending) {
 		cb(reply.status, reply.body)
 		return

@@ -22,6 +22,9 @@ export const PASSPHRASE_CHARS: number = 8
  *  dies would otherwise lock the receiver until somebody opens 我的页 and un-pins it by hand. */
 export const SESSION_IDLE_S: number = 900
 export const OFFER_IDLE_S: number = 3600
+/** How long a sender keeps re-sending the same manifest while the peer's user has not decided
+ *  (spec §4 待决应答). The PC reads the same number out of protocol.json. */
+export const OFFER_WAIT_S: number = 60
 export const QR_SCHEME: string = 'chuanshu://p'
 /** Broadcast has no other way to be found, so this one port may not fall back the way
  *  TRANSPORT_PORT does (contract ports.note). A device that had to rebind its TLS port still
@@ -161,6 +164,107 @@ export function chunkSizeAt(size: number, index: number): number {
 	}
 	const rest = size - index * CHUNK_SIZE
 	return rest < CHUNK_SIZE ? rest : CHUNK_SIZE
+}
+
+/** The value of `X-Chunk-Escape` this end writes when it hides a zero byte (spec §4). */
+export const CHUNK_ESCAPE_VALUE: string = 'stu'
+
+/** A chunk as it leaves this device: the bytes, plus the header that says how to read them ('' means
+ *  the body is the chunk itself, exactly as it was before this encoding existed). */
+export class ChunkBody {
+	bytes: ArrayBuffer = new ArrayBuffer(0)
+	escape: string = ''
+}
+
+/** spec §4 零字节转义: a Harmony peer's TLS server hands JavaScript only the bytes in front of the
+ *  first 0x00 and then stops reading that connection, so a real file chunk cannot cross to that end
+ *  as it is. `0x1B → 0x1B 0x1B`, `0x00 → 0x1B B`, everything else literal; `X-Sha256` stays the
+ *  digest of the original bytes, which is why the caller digests before asking for this.
+ *  A body with no zero is returned untouched - no copy, no header, no change for a peer that can
+ *  take the raw bytes. */
+export function escapeChunk(buf: ArrayBuffer): ChunkBody {
+	const out = new ChunkBody()
+	out.bytes = buf
+	const src = new Uint8Array(buf)
+	let extra = 0
+	for (let i = 0; i < src.length; i++) {
+		const byte = src[i]
+		// Both escapes replace one byte with two, so each one costs exactly one more byte. Counting a zero
+		//  as two made the packed body longer than the bytes it holds: the request declared those extra
+		//  bytes, the tail arrived as NULs the digest was never taken over, and the peer waited for the
+		//  rest of a body that did not exist.
+		if (byte == 0 || byte == 0x1B) {
+			extra = extra + 1
+		}
+	}
+	if (extra == 0) {
+		return out
+	}
+	const packed = new ArrayBuffer(src.length + extra)
+	const dst = new Uint8Array(packed)
+	let at = 0
+	for (let i = 0; i < src.length; i++) {
+		const byte = src[i]
+		if (byte == 0) {
+			dst[at] = 0x1B
+			at = at + 1
+			dst[at] = 0x42
+			at = at + 1
+			continue
+		}
+		if (byte == 0x1B) {
+			dst[at] = 0x1B
+			at = at + 1
+			dst[at] = 0x1B
+			at = at + 1
+			continue
+		}
+		dst[at] = byte
+		at = at + 1
+	}
+	out.bytes = packed
+	out.escape = CHUNK_ESCAPE_VALUE
+	return out
+}
+
+/** Read a body back the way its sender meant it: untouched when no `X-Chunk-Escape` came with it, the
+ *  undoing of `escapeChunk` when one did. A receiver decides this from the header alone - never by
+ *  guessing from the bytes, because a chunk that happens to start with 0x1B is a chunk, not an escape.
+ *  An encoding this end does not know is passed through as it arrived: the length and digest checks
+ *  that follow are the ones that say what it was, and quietly dropping bytes here would hide that. */
+export function unescapeChunk(buf: ArrayBuffer, escape: string): ArrayBuffer {
+	if (escape != CHUNK_ESCAPE_VALUE) {
+		return buf
+	}
+	const src = new Uint8Array(buf)
+	const packed = new ArrayBuffer(src.length)
+	const dst = new Uint8Array(packed)
+	let at = 0
+	let i = 0
+	while (i < src.length) {
+		if (src[i] == 0x1B && i + 1 < src.length) {
+			if (src[i + 1] == 0x1B) {
+				dst[at] = 0x1B
+				at = at + 1
+				i = i + 2
+				continue
+			}
+			if (src[i + 1] == 0x42) {
+				at = at + 1
+				i = i + 2
+				continue
+			}
+		}
+		dst[at] = src[i]
+		at = at + 1
+		i = i + 1
+	}
+	const out = new ArrayBuffer(at)
+	const view = new Uint8Array(out)
+	for (let i = 0; i < at; i++) {
+		view[i] = dst[i]
+	}
+	return out
 }
 
 export class CsFile {

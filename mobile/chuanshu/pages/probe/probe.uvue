@@ -27,6 +27,9 @@
 			<button class="btn" @click="runHoldLog">监听日志</button>
 			<button class="btn" @click="runBulk">客户端读大块</button>
 		</view>
+		<view class="row">
+			<button class="btn" @click="runSendProbe">造 5 MB 测试文件发给对端</button>
+		</view>
 		<!-- #endif -->
 		<!-- #ifdef APP-IOS -->
 		<view class="row">
@@ -66,6 +69,9 @@
 	// #endif
 	// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
 	import { lanStart, lanStop, lanPeers, lanStatus, lanSelfReport } from '@/store/session.uts'
+	// #endif
+	// #ifdef APP-HARMONY
+	import { probeSendTestFile, onSend } from '@/store/session.uts'
 	// #endif
 
 	const lines = ref('还没有运行。')
@@ -118,6 +124,20 @@
 	function runPc() {
 		lines.value = '拨号 PC 侧的两个监听（Ed25519 / RSA），最长约半分钟……'
 		pcDialProbe(show)
+	}
+
+	/** The emulator has no camera roll and the debug shell cannot write into its media library, so a
+	 *  phone-to-phone run has no source file unless this end makes one. The bytes join the same 待发送
+	 *  list a gallery photo joins and go out through the same `onSend`; what this measures is the kernel,
+	 *  not a lane built around it. Progress and the receipt verdict are on the 发送文件 page. */
+	function runSendProbe() {
+		const why = probeSendTestFile(5)
+		if (why != '') {
+			lines.value = why
+			return
+		}
+		onSend()
+		lines.value = '已造好 5 MB 测试文件并发出。进度与「对方已收下」看发送文件页。'
 	}
 	// #endif
 
