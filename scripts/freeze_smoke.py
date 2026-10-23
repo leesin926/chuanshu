@@ -5,10 +5,12 @@ The in-process UI selftest cannot cover what only a frozen build breaks (bundled
 files, native extensions, resource lookup under ``sys._MEIPASS``), so this drives the
 actual exe. It writes into a scratch APPDATA and closes only the process it started.
 
-Expect one Windows Firewall prompt per new exe path: the build is unsigned, so Windows
-asks before it accepts inbound mDNS. Answering cancel leaves permanent *block* rules for
-that path - which is exactly what the installer's "firewall" task exists to avoid. The CLI
-half below runs with --no-discover, so it does not open a second prompt.
+Expect a Windows Firewall prompt per new exe path: the build is unsigned, so Windows asks
+before it accepts inbound traffic. Answering cancel leaves permanent *block* rules for that
+path - which is exactly what the installer's "firewall" task exists to avoid, and what
+`ChuanShu-cli.exe firewall` then reads back as blocked. `--no-discover` does not dodge the
+prompt: the CLI leg's plain TCP listener was enough to raise one on this machine, and this
+gate leaves that prompt standing for the user to answer - it never clicks a system dialog.
 
     py -X utf8 scripts/freeze_smoke.py [dist/ChuanShu/ChuanShu.exe]
 """
@@ -65,8 +67,8 @@ def window_of(pid: int) -> int | None:
     return found[0] if found else None
 
 
-def cli_legs(exe: Path, env: dict[str, str]) -> list[str]:
-    """Run the terminal face of the same build; returns the checks that did not hold.
+def cli_legs(exe: Path, env: dict[str, str]) -> tuple[list[str], int]:
+    """Run the terminal face of the same build; returns the checks that did not hold and the legs run.
 
     Three things only a frozen CLI can prove: app/cli.py reached the bundle at all,
     protocol.json and the catalogues resolve under ``sys._MEIPASS`` from a Qt-free
@@ -74,10 +76,13 @@ def cli_legs(exe: Path, env: dict[str, str]) -> list[str]:
     """
     cli = exe.parent / (exe.stem + "-cli.exe")
     if not cli.is_file():
-        return [f"{cli.name} is not next to {exe.name}"]
+        return [f"{cli.name} is not next to {exe.name}"], 0
     problems: list[str] = []
+    legs = 0
 
     def ask(*args: str) -> tuple[int, str]:
+        nonlocal legs
+        legs += 1
         got = subprocess.run([str(cli), *args], env=env, capture_output=True, timeout=90)
         return got.returncode, decode(got.stdout + got.stderr)
 
@@ -97,7 +102,21 @@ def cli_legs(exe: Path, env: dict[str, str]) -> list[str]:
     rc, listen = ask("receive", "--root", str(root), "--port", str(CLI_PORT), "--yes", "--seconds", "3", "--no-discover")
     if rc != 0 or f"监听：{CLI_PORT}" not in listen:
         problems.append(f"the frozen receiver did not serve {CLI_PORT}: rc={rc} {listen[:300]}")
-    return problems
+    if "入站：" not in listen:
+        problems.append(f"the frozen receiver promised the port without the inbound half: {listen[-300:]}")
+
+    # Windows matches firewall rules by program path, so this is the one leg that asks about the
+    # shipped binary rather than about python.exe - and the answer is whatever this machine was told
+    # to do with *this* path, which is why the check is that the sentence and the number agree.
+    rc, fw = ask("firewall")
+    verdict = re.search(r"结论：(\w+)", fw)
+    if not verdict:
+        problems.append(f"`firewall` printed no verdict: rc={rc} {fw[:300]}")
+    elif rc != {"open": 0, "unknown": 1, "no_allow": 2, "blocked": 3}[verdict.group(1)]:
+        problems.append(f"`firewall` said {verdict.group(1)} but exited {rc}")
+    else:
+        print(f"  [firewall] {verdict.group(1)} -> rc={rc}")
+    return problems, legs
 
 
 def main() -> int:
@@ -113,7 +132,7 @@ def main() -> int:
         shutil.rmtree(appdata)
     env = {**os.environ, "APPDATA": str(appdata), "USERPROFILE": str(appdata)}
 
-    problems = cli_legs(exe, env)
+    problems, legs = cli_legs(exe, env)
     for line in problems:
         print("  CLI " + line, file=sys.stderr)
 
@@ -160,7 +179,8 @@ def main() -> int:
             hits = [line for line in text.splitlines() if marker.lower() in line.lower()]
             if hits:
                 print(f"  [{marker}] {hits[-1]}")
-        print("cli legs: " + ("4 checked, all held" if not problems else f"{len(problems)} problem(s), listed above"))
+        print("cli legs: " + (f"{legs} checked, all held" if not problems
+                              else f"{len(problems)} problem(s), listed above"))
         return 0 if not bad and not problems else 1
     finally:
         if child.poll() is None:

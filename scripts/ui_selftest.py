@@ -55,6 +55,7 @@ from cryptography import x509  # noqa: E402
 from app import autostart  # noqa: E402
 from app.config import CLOSE_QUIT, CLOSE_TRAY, Settings  # noqa: E402
 from app.logging_setup import setup_logging  # noqa: E402
+from app.net import firewall  # noqa: E402
 from app.net import spec as protocol_spec  # noqa: E402
 from app.net.discovery import DiscoveryService, Peer  # noqa: E402
 from app.net.identity import Identity, client_context, fingerprint_of, load_or_create  # noqa: E402
@@ -70,7 +71,7 @@ SHOT = SCRATCH / "window.png"
 STAGED_SHOT = SCRATCH / "window-staged.png"
 # Everything the user is promised they can click or read, checked against its own minimum.
 CONTROLS = (
-    "name_label", "rename_button", "listen_label", "channel_label", "qr_label", "code_label",
+    "name_label", "rename_button", "listen_label", "channel_label", "firewall_label", "qr_label", "code_label",
     "pass_label", "refresh_pair_button",
     "receive_dir_field", "open_dir_button", "received_label", "received_list",
     "peer_list", "nearby_label", "pick_peer_button", "code_edit", "secret_edit", "connect_button",
@@ -1069,6 +1070,65 @@ def phase_reclaim(app: QApplication, panel, proto: protocol_spec.Protocol) -> No
     check("a restart finds nothing to resume among the finished arrivals", adopted == 0, adopted)
 
 
+def phase_firewall(app: QApplication, panel) -> None:
+    """The card says out loud when the platform itself will not let anyone in.
+
+    Discovery answers "can I be found" and the port answers "am I listening"; neither can see a
+    block rule the machine wrote against this exe, which is the state where a receiver is perfect
+    and still admits nobody. All four states the reader distinguishes are shown here, including the
+    one that has to stay a refusal to promise anything.
+    """
+    port = panel._receiver.port if panel._receiver is not None else 0
+
+    def show(status):
+        panel._firewall = status
+        panel._paint_firewall()
+        app.processEvents()
+        return panel.firewall_label.text()
+
+    allowed = firewall.Rule("probe", "allow", "in", ("public",), True)
+    denied = firewall.Rule("probe-block", "block", "in", ("public",), True)
+
+    show(None)
+    check("nothing asked yet, so the card claims nothing about inbound", panel.firewall_label.text() == "",
+          panel.firewall_label.text())
+
+    open_text = show(firewall.Status(tool="netsh", profile="public", enabled=True, default_inbound="block",
+                                     rules=(allowed,), port=port))
+    check("a rule that lets peers in is said as allowed", "放行了" in open_text, open_text)
+    check("and it comes with the same verdict the terminal reports",
+          "放行" not in open_text or panel._firewall.verdict == "open", f"{open_text} / {panel._firewall.verdict}")
+
+    blocked_text = show(firewall.Status(tool="netsh", profile="public", enabled=True, default_inbound="block",
+                                        rules=(allowed, denied), target=Path(sys.argv[0]), port=port))
+    check("a block rule is said out loud, with the port it strands", "挡着" in blocked_text and str(port) in blocked_text,
+          blocked_text)
+    command = firewall.fix_commands(panel._firewall, "ChuanShu")[0]
+    check("the tooltip hands over the command that would fix it", command in panel.firewall_label.toolTip(),
+          panel.firewall_label.toolTip())
+
+    quiet = show(firewall.Status(tool="netsh", profile="public", enabled=True, default_inbound="block",
+                                 rules=(), port=port))
+    check("no rule at all is not called open", "没放行" in quiet and str(port) in quiet, quiet)
+
+    unreadable = show(firewall.Status(tool="none", notes=("no tool",), port=port))
+    check("an unreadable platform is said as unreadable", "读不到" in unreadable, unreadable)
+    check("and it is never dressed up as an all-clear", "放行了" not in unreadable, unreadable)
+
+    # The pairing tick repaints the whole card, so the inbound line has to survive it: a verdict
+    # that vanished on the next tick would look like the problem had gone away.
+    show(firewall.Status(tool="netsh", profile="public", enabled=True, default_inbound="block",
+                         rules=(denied,), target=Path(sys.argv[0]), port=port))
+    panel._refresh_pairing()
+    app.processEvents()
+    check("the tick that repaints the card keeps the block rule on it", "挡着" in panel.firewall_label.text(),
+          panel.firewall_label.text())
+    panel.stop_listening()
+    check("closing the port drops the verdict with it", panel.firewall_label.text() == "", panel.firewall_label.text())
+    panel.start_listening()
+    app.processEvents()
+
+
 def phase_manual(app: QApplication, dialog: AutoDialog, panel, paths, base, files, hidden, hidden_root) -> None:
     """Reach a device discovery never announced - the fallback the empty picker promises."""
     # The picker asked for this address a phase ago, so it is a candidate by then and has been
@@ -1402,6 +1462,14 @@ def main() -> int:
         original_load = protocol_spec.load
         protocol_spec.load = lambda: replace(original_load(), transport_port=spare_port)
         print(f"NOTE  port {taken} already serves another peer; the probe uses {spare_port}", flush=True)
+    # Asking the platform's firewall costs a subprocess and answers with whatever this machine was
+    # configured to do, which is no fact about the code under test. The gate that reads the real
+    # rules is scripts/cli_selftest.py; here the card is shown a status it can be checked against.
+    original_inspect = firewall.inspect
+    firewall.inspect = lambda exe=None, port=0: firewall.Status(
+        tool="netsh" if os.name == "nt" else "firewalld", profile="public", enabled=True,
+        default_inbound="block", rules=(firewall.Rule("probe", "allow", "in", ("public",), True),),
+        target=exe, port=port)
     window = MainWindow(settings, languages)
     window.show()
     app.processEvents()
@@ -1410,6 +1478,7 @@ def main() -> int:
     try:
         phase_idle(app, window, proto)
         phase_start(app, window, proto)
+        phase_firewall(app, panel)
         phase_rail(app, window)
         phase_fit(app, window, "zh_CN at the minimum size")
         phase_incoming(app, dialog, panel, pusher, files, accept=True)
@@ -1436,6 +1505,7 @@ def main() -> int:
         phase_language(app, window, languages)
         phase_shutdown(app, window)
     finally:
+        firewall.inspect = original_inspect
         if original_load is not None:
             protocol_spec.load = original_load
         announcer.stop()

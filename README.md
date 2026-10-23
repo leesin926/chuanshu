@@ -33,15 +33,15 @@ app/
   autostart.py       开机自启：Windows 写 HKCU ...\CurrentVersion\Run，Linux 写 ~/.config/autostart/<名>.desktop，两边都只在打包后可用
   icons.py           读取 assets/icons/icons.json → QIcon/QPixmap（按角色取字形与尺寸，带缓存）
   main.py            GUI 入口
-  cli.py             命令行入口（`python -m app.cli`）：self/receive/send/peers/pins/unpair/pair-code，
-                     整条链路不 import PySide6，见"命令行（headless）"
+  cli.py             命令行入口（`python -m app.cli`）：self/receive/send/peers/pins/firewall/unpair/
+                     pair-code，整条链路不 import PySide6，见"命令行（headless）"
   ui/main_window.py  主窗口：无边框外壳、托盘、关闭询问、主题切换、retranslate()
   ui/language_manager.py  切语言的 Qt 半边：QTranslator + changed 信号，翻译核心在 app/i18n.py
   ui/settings_dialog.py 设置窗口：左侧四个分区、右侧设置项，非模态，每个控件改完即生效
   ui/title_bar.py    自绘标题栏：七个图标按钮 + popup_below()、拖动/缩放/最大化、边缘缩放 eventFilter
   ui/theme.py        深浅两套 Palette 与由它生成的 QSS
   ui/transfer.py     传输面板：接收开关、配对码+二维码、设备名单（含手输地址）、暂存与发送、
-                     来件确认弹框；所有线程回调都转成 Qt 信号再上 GUI
+                     来件确认弹框、本机卡的"入站"结论；所有线程回调都转成 Qt 信号再上 GUI
   ui/tray.py         系统托盘菜单（打开主界面 / 开机自启 / 退出）；`available()` 说这台桌面有没有托盘
 app/net/
   spec.py            读取 protocol/protocol.json：端点、错误码→HTTP、二维码字段顺序
@@ -52,21 +52,28 @@ app/net/
   discovery.py       局域网发现：mDNS 注册/浏览 + UDP 广播 43721；广播只带指纹前缀，
                      完整摘要必须经 verify() 从 /v1/hello 取回；每条通道可用与否单独上报
   errors.py          错误码的中文 msgid 字面量（给 pybabel 抽取用），与 protocol.json 必须一致
+  firewall.py        只读地问平台防火墙"这台机器放不放对端连进来"：Windows 按程序路径问 netsh，
+                     Linux 按端口问 firewalld/ufw；结论只有 open/no_allow/blocked/unknown 四个。
+                     窗口和终端都读它，所以两边不会把同一条规则叫成两个名字；它自己从不写规则
 protocol/
   protocol.json      机器可读契约：端口、chunk_size、端点清单、错误码表、限制值
   spec.md            语义与理由：为什么这么定，两端必须一致实现什么
 scripts/
   protocol_selftest.py  M0 验收：配对→多文件含目录→杀进程重启→续传→finalize→两条发现通道，
-                        64 处断言（报告写在 .probe/protocol_report.txt）
-  ui_selftest.py        M1 验收：驱动真实窗口，190 处断言、跑下来 389 条（部分按 8 种语言重复；
-                        含设置窗口、缩到最小尺寸不裁切、没有托盘的桌面不承诺托盘）。见"界面这层的验证"
+                        71 处断言、跑下来 78 条（报告写在 .probe/protocol_report.txt）
+  ui_selftest.py        M1 验收：驱动真实窗口，200 处断言、跑下来 399 条（部分按 8 种语言重复；
+                        含设置窗口、缩到最小尺寸不裁切、没有托盘的桌面不承诺托盘、入站那句防火墙结论）。见"界面这层的验证"
   cli_selftest.py       命令行验收（Windows 这台）：起两个 CLI 进程（各自一个身份目录）互配、双向传
-                        3MB 并逐字节对 sha256，顺带断言 import app.cli 不带进 Qt，12 处
+                        3MB 并逐字节对 sha256，顺带断言 import app.cli 不带进 Qt；再加一节 firewall：
+                        真跑一次 `firewall` 对得上退出码，并用备好的 netsh/firewalld/ufw 输出把四个结论、
+                        两个平台的放行命令都验一遍，30 处
   linux_selftest.py     命令行验收（Linux 那台，WSL 里跑）：XDG 路径、身份文件 0600 与旧私钥回收、
                         XDG 自启写读删、端口被占改用临时端口、双向传、没装 zeroconf 时 mDNS 通道
-                        自己报 unavailable、--lang，25 处。见"Linux 侧"
-  freeze_smoke.py       起打包好的产物：先跑 `*-cli.exe` 那四条（读契约、首跑铸码、--lang、真绑一个
-                        端口），再起窗口 exe、等窗口、截图、查日志有无 ERROR，然后只结束自己起的进程
+                        自己报 unavailable、--lang、这台机器上 firewalld/ufw 都没有时 `firewall` 报
+                        unknown（不是"没问题"），27 处。见"Linux 侧"
+  freeze_smoke.py       起打包好的产物：先跑 `*-cli.exe` 那四条腿（读契约＋首跑铸码、--lang、真绑一个
+                        端口并说出入站、`firewall` 的结论与退出码互相咬合），再起窗口 exe、等窗口、截图、查日志有无
+                        ERROR，然后只结束自己起的进程（系统弹的防火墙框留给用户答）
   i18n_sync.py          翻译守卫：按 locale/ 目录扫描，zh_CN 空条目自动镜像 msgid；其余任何
                         语言只要还有空条目或 fuzzy 就直接构建失败（LANGUAGE_NAMES 承诺了却没
                         建目录的语言同样报错）
@@ -193,7 +200,9 @@ self        我是谁、固定过谁、身份/数据/接收目录在哪
 receive     开接收（--yes 不问直接收，--root 换目录，--seconds 收一阵自己退，--port 换端口）
 send        发文件（粘配对串或 host[:端口]，第一次要 --code/--secret）
 peers       广播自己并听邻居（mDNS + UDP 都听；--no-verify 只列前缀）
-pins        列已固定的指纹      unpair 忘掉一台（前缀唯一即可）      pair-code  看/换（--rotate）配对码与密码
+pins        列已固定的指纹
+firewall    问这台机器的防火墙放不放对端连进来（只读；退出码就是结论，见下）
+unpair      忘掉一台（前缀唯一即可）      pair-code  看/换（--rotate）配对码与密码
 ```
 
 三个决定写在这里，改之前先读：
@@ -216,11 +225,35 @@ pins        列已固定的指纹      unpair 忘掉一台（前缀唯一即可�
   `listener_on()` 认出来了（后者报 `不是传书`），所以那个 except 分支守的是探测与 bind 之间的竞态，
   不是 Linux 的日常路径。
 
+`firewall` 这条命令回答的是**这台机器**放不放人进来，不是传书自己在不在听——这两件事以前只有第 2 条
+能说，第 1 条永远沉默，于是"我听得见但没人进得来"这种状态谁都不知道。事实只有一个来源
+`app/net/firewall.py`，窗口和终端都读它（`WORDS`/`word()`/`on_off()`/`fix_commands()` 也在里面，所以
+两个 face 不会把同一条规则叫成两个名字）：
+
+- **按系统各自适配**：Windows 的规则钉在**程序路径**上，所以问的是"正在跑的这一个 exe"——本机实测
+  `ChuanShu.exe` 是放行，而 `ChuanShu-cli.exe` 名下压两条"公用"阻止规则、判 blocked，这正是因为规则
+  按路径而非按名字匹配；Linux 的规则按**端口**写，所以问的是协议端口，`firewall-cmd --query-port` 或
+  `ufw status` 里那行 `ALLOW IN`。
+- **四个结论，各给一个退出码**：`open`→0、`unknown`→1、`no_allow`→2、`blocked`→3。脚本按数字分支，
+  不用去 parse 中文句子；"读不到"单独是一个码，不会被当成"没问题"。
+- **只读**：写规则要提权，那是安装器或用户双击装的事（见"安装包"），传书不在跑着的时候改自己机器的
+  防火墙。它给结论 + `fix_commands()` 那几条命令让你自己提权跑：Windows 是先清这个路径的入站规则、
+  再写一条 `profile=any remoteip=LocalSubnet`（不钉端口，理由见安装器那段注释），Linux 是按端口加。
+- **两个 face 都在开始监听那一刻自己说**：窗口那边是本机卡多一行"入站"（`chuanshu-firewall`
+  线程 + 信号回 GUI，`netsh` 那几百毫秒不占服务线程），四种状态各有一句话，鼠标停在上面能读到全部原始
+  事实和那几条命令；停止监听就把结论丢掉——它说的是一扇已经关上的门。配对码 5 秒刷新那次重绘不会把它抹掉。
+  终端那边不用另跑一条命令：`receive` 的横幅里就多一行"入站：…"，因为"监听：43720"单独摆在那儿会被
+  读成"连得进来"，而那恰恰是它证明不了的事。
+
 `scripts/cli_selftest.py` 是这条链路的验收：两个 CLI 进程（各自一个 APPDATA 身份目录）互配、双向传
 3MB、逐字节对 sha256、再查 `pins`/`self`/`peers`，并断言 `import app.cli` 不带进 Qt。第二条腿固定用
 43912 而不是契约端口，因为第一条腿那个进程还在 43720 上听——这正是 `listener_on()` 要挡的那件事。
+最后那节 `firewall_checks` 先真跑一次 `firewall`（这台机器的 netsh 答的，结论与退出码必须互相对得上），
+再用备好的 netsh/firewalld/ufw 输出把四个结论和两个平台的 `fix_commands()` 都验一遍——一台机器配好了
+证明不了另一台的配置，而"读的东西里没有任何一条在写规则"本身也是一条断言。第一条腿的横幅也断言了那行
+"入站："。
 Linux 那半边是 `scripts/linux_selftest.py`，在 WSL Ubuntu-24.04（Python 3.12，没装 PySide6）里跑，
-scratch `HOME`/`XDG_*` 指到 `/tmp`，25 条全绿。
+scratch `HOME`/`XDG_*` 指到 `/tmp`，27 条全绿。
 
 冻结产物里命令行是**第二个 exe**（`ChuanShu-cli.exe` / `ChuanShu-cli`），不是给窗口那条加开关：
 `console=False` 的窗口进程根本没有 stdout 可写，`ChuanShu.exe self` 打不出任何东西。两条命令台共用
@@ -344,9 +377,10 @@ PC 端现在是两个产物：Windows（已出包）与 Linux（目标）。命�
 
 **测到了什么层级**：`scripts/linux_selftest.py` 在 WSL Ubuntu-24.04（Python 3.12.3、
 cryptography 41.0.7、**没有 PySide6、没有 zeroconf**）跑，scratch `HOME`/`XDG_*` 指到 `/tmp`，
-25 条断言全绿。这一台恰好把两件事变成了实证而不是推理：`import app.cli` 不带 Qt 是因为这里
+27 条断言全绿。这一台恰好把两件事变成了实证而不是推理：`import app.cli` 不带 Qt 是因为这里
 根本装不了 Qt；mDNS 通道报 `unavailable`、UDP 广播 `ok`，正是 `discovery.py` 那条"每条通道单独
-上报"的分支。GUI 那半边（主题自动、无边框外壳、无托盘降级）只过了 `ui_selftest.py` 的
+上报"的分支；`firewall-cmd` 与 `ufw` 这里**两个都没装**（`command -v` 都是空），所以 `firewall`
+落到 `unknown`/退出码 1，而不是替用户说一句"放行着"。GUI 那半边（主题自动、无边框外壳、无托盘降级）只过了 `ui_selftest.py` 的
 offscreen 路径——offscreen 在 Windows 上就是"没有托盘"，所以降级逻辑被真跑了一遍，但字体度量
 与合成器行为在这里证明不了（见"界面这层的验证"第一条）。
 
@@ -354,8 +388,9 @@ offscreen 路径——offscreen 在 Windows 上就是"没有托盘"，所以降�
 在这台机器上**只做过语法检查**（`bash -n` 过了），没真跑过——WSL 里没有 PyInstaller，装它要往这台机器
 上装东西，等点头再做；AppImage / deb 仍然没定，脚本先只承诺 tar.gz。真桌面的 GUI 也卡在同一条：
 主题自动、Wayland 下 `startSystemMove()` 能不能拖动无边框窗口、X11 的边缘缩放、托盘在桌面环境里到底
-有没有（AppIndicator），都得有 PySide6 才谈得上。入站端口的防火墙等价物（`firewalld`/`ufw`，对应 #87）
-同理没碰过。
+有没有（AppIndicator），都得有 PySide6 才谈得上。入站防火墙那半边同理：这台机器给的是真 `unknown`
+（上一条），而**装着火墙的那台**答出来什么还只对着备好的 `firewall-cmd`/`ufw` 文本验过，在
+`cli_selftest.py` 的 `firewall_checks` 里。
 
 ## 打包
 
@@ -403,15 +438,24 @@ PATH）→ 常见安装目录 → PATH。
 > 专用+域，边界交给 `remoteip=LocalSubnet` 守：手机开热点时这张网卡就是"公用"，只放专用/域的规则
 > 在传书最主要的使用场景里根本不生效。端口也不钉死在 43720，协议允许它在被占用时回退临时端口。
 > 这条 `firewall` 任务现在**默认勾选**（不勾的后果是功能静默失效，勾上的代价只有一次 UAC，
-> 拒掉也不影响安装成功），但只弹一次：两条命令用 `cmd.exe /c "netsh … & netsh …"` 合进同一次提权。
-> 卸载按 `name=all dir=in program=<安装路径>` 删，连当初系统弹窗自建的那对也一并清掉，不留僵尸条目。
+> 拒掉也不影响安装成功），但只弹一次：所有命令用 `cmd.exe /c "netsh … & netsh …"` 合进同一次提权。
+> **两个 exe 各写一对**——规则按程序路径匹配，`ChuanShu.exe` 放行了不等于 `ChuanShu-cli.exe` 放行了，
+> 而命令行是冻结产物里的第二个入口；实测过漏掉它的那台机器：窗口能收，`ChuanShu-cli.exe receive` 在听、
+> 局域网对面零回应。卸载按 `name=all dir=in program=<安装路径>` 删两个路径，连当初系统弹窗自建的那对
+> 也一并清掉，不留僵尸条目。
 > `[Code]` 段里注释只能用 `//`：分号在 Pascal Script 里是语句分隔符，写 `;` 注释编译期就报
 > `'BEGIN' expected`。
 
-已在本机验证（Inno Setup 7.1.0）：`-Task installer` 编译通过，产出 35MB 安装包，
-`/PORTABLE=1 /SILENT /DIR=...` 便携安装后 exe 正常启动、翻译与日志路径均正确。
-上面两条 netsh 命令的**参数解析**过了：非提权状态下 netsh 是先解析参数再报"请求的操作需要提升"，
+已在本机验证（Inno Setup 7.1.0）：`-Task installer` 编译通过，产出 41MB 安装包（`dist\ChuanShu\` 是
+139MB 的 one-folder 目录，现在连 zeroconf 一起打进去），`/PORTABLE=1 /SILENT /DIR=...` 便携安装后
+exe 正常启动、翻译与日志路径均正确。Inno 的 `[Code]` 是编译期做语法与类型检查的，所以"两个 exe 各写
+一对"这版改动至少过了编译器这一道。
+早先那两条 netsh 命令的**参数解析**探过：非提权状态下 netsh 是先解析参数再报"请求的操作需要提升"，
 `cmd` 的 `&` 串联也确实发出两次调用，探针跑完 `name=chuanshu` 的规则数还是原来的 4 条，什么都没写进去。
+给第二个 exe 加的那一对**没有再探一次**：参数形状与第一对逐字相同、只换路径，而重跑探针等于再朝这台
+机器发一遍 `delete`/`add`（那是写系统的事，要点头）。它的真凭证在下一次双击安装之后——那时
+`ChuanShu-cli.exe firewall` 应该从 `blocked` 变成 `open`，这条现在读得到的是：本机 `ChuanShu.exe`
+放行、`ChuanShu-cli.exe` 名下压两条"公用"阻止规则（退出码 3）。
 
 `firewall` 任务已经真装过一次（用户手动双击，装到 `D:\Program Files\ChuanShu`），只读核对结果：
 `name=ChuanShu` 的规则**只有 1 条**、方向入、配置文件"域,专用,公用"、远程 IP `LocalSubnet`、
@@ -426,13 +470,17 @@ owns 三个监听口（`netstat`：TCP 43720、UDP 43721、每个网卡各一个
 界面这层的验证分三条路，各自能证明的东西不同：
 
 - **`scripts/ui_selftest.py`：进程内跑完整传输 + 设置窗口**（`QT_QPA_PLATFORM=offscreen`，
-  190 处 `check(`，一轮跑完打印 389 行 PASS；`windows` 平台同样全过）。
+  200 处 `check(`，一轮跑完打印 399 行 PASS；`windows` 平台同样全过）。
   它把 `APPDATA`/`XDG_DATA_HOME` 指到临时目录**再** import `app.*`，所以自测用的是自己的
   身份、自己的已配对表和自己的接收目录，碰不到真实那套。覆盖：打开时不监听（没端口、没二维码、
   按钮写着"开始接收"）→ 点一下才有端口/二维码/配对码且按钮翻成"停止接收"→ 再点回去三样都收走、
   真 `PeerConnection` 推进来的 offer 弹框（标题、文件名、保存路径、点的按钮）、拒绝路径拿到
   `DECLINED`、选中文件→点发送→输配对码→对面落盘逐字节一致、陌生设备要码而熟人不再问、
   手输地址连一个从不广播的机器（含地址填错要报错、不留半行）、切语言、退出释放端口。
+  本机卡那行"入站"单独一节：没问过就不表态、放行/被阻止/没有规则/读不到四种状态各说各的话、
+  被阻止时那句话里带上它挡在哪个端口上、提示词里给出`fix_commands()`那几条、5 秒重绘不丢掉结论、
+  停止监听就把结论撤走。这里不读真机防火墙（那台机器的配置不是被测代码的事实），`firewall.inspect`
+  被换成备好的状态；读真规则的那条门是 `cli_selftest.py`。
   设置窗口那半段：齿轮点开出的是同一个实例、开着时接收服务没被关掉、四个菜单行各显示自己那页、
   传输页逐字引用契约里的数字、在这里改的名字传到面板上也跟着变、接收目录换了端口不重开、
   "恢复默认"指回应用目录、外观和关闭行为单选生效、撤销设备后 key 从名单里消失、
@@ -468,12 +516,16 @@ owns 三个监听口（`netstat`：TCP 43720、UDP 43721、每个网卡各一个
   import SvgPathImage` 是显式导入，`warn-app.txt` 里 `missing module PIL/png/lxml` 那几条来自
   qrcode 自己的可选后端，我们这条路径不会 import），`_rust.pyd`、`protocol/protocol.json`、
   两个 `.mo`、`assets/icons/` 都在 `_internal` 里，冻结版能画二维码、能绑 43720、两条发现通道都 ok。
-  现在它还先跑 CLI 那四条，因为第二个入口是同一个 COLLECT 多带出来的，窗口那条腿证明不了它：
+  现在它还先跑 CLI 那四条腿，因为第二个入口是同一个 COLLECT 多带出来的，窗口那条腿证明不了它：
   冻结的 `ChuanShu-cli.exe self` 读得到 `_MEIPASS` 里的契约、首跑就印 6 位码、`--lang en` 拿到目录里的
-  句子、`receive --no-discover` 真绑上 43915。另外单独跑过一轮更狠的：三个 scratch 身份目录、1 MiB
+  句子、`receive --no-discover` 真绑上 43915 并且把入站那半句一起说出来、`firewall` 印出的结论与它的退出码互相对得上（这台机器
+  给的是 `blocked` → 3，因为那个路径名下有阻止规则——**这条腿要的就是它敢把自己那条路径的真实处境
+  说出来**）。另外单独跑过一轮更狠的：三个 scratch 身份目录、1 MiB
   双向落到磁盘逐字节对 sha256、陌生端拿错码与熟人不再要码两条分支都对（`.probe` 里的一次性脚本，
   没进仓库；四条腿本身已经在上面那条里成了一遍门）。默认路径就指 `dist/ChuanShu/`——指回某个 scratch
   副本会拿着旧结构出新结论，第一次跑就是这么暴露出"CLI 不在旁边"的。
+  `--no-discover` 挡不住 Windows 弹防火墙框：一个纯 TCP 监听就够弹了，所以跑完这一门桌上常留一个
+  系统框——那个框归用户答，脚本从不点它（点"取消"留下的就是上面那两条阻止规则）。
 
 ## 需要改的地方
 

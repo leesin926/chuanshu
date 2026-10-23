@@ -64,7 +64,9 @@ from PySide6.QtWidgets import (
 from app import icons
 from app.config import Settings
 from app.i18n import _, N
+from app.meta import APP_NAME
 from app.net import errors as proto_errors
+from app.net import firewall
 from app.net import spec as protocol_spec
 from app.net.discovery import DiscoveryService, Peer, local_ipv4, verify_peer
 from app.net.identity import load_or_create
@@ -513,6 +515,9 @@ class TransferPanel(QWidget):
     _peer_paired = Signal(str, str, str, str)  # fingerprint, peer_id, name, client ip
     #: The name is shown on the panel and edited in the settings window; both follow it.
     device_name_changed = Signal(str)
+    #: What the platform's firewall said about this program. Read on a worker thread because
+    #: asking it costs a subprocess, and only a port actually open is a reason to ask.
+    _firewall_read = Signal(object)  # firewall.Status
 
     def __init__(self, settings: Settings, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -548,6 +553,10 @@ class TransferPanel(QWidget):
         #: The peer a handshake is in flight for, so the page can say what it is doing.
         self._connecting: Peer | None = None
         self._connect_worker: threading.Thread | None = None
+        #: The last answer from the platform's firewall, and the thread that asked for it. None
+        #: means nobody has asked yet, which the card shows as an empty line rather than as "ok".
+        self._firewall: firewall.Status | None = None
+        self._firewall_worker: threading.Thread | None = None
         #: Built on the first 连接… click and reused, so it keeps its scroll position.
         self._candidates: _CandidateDialog | None = None
         #: Verified arrivals, newest last. Kept on disk so the 文件 page outlives this run.
@@ -579,6 +588,7 @@ class TransferPanel(QWidget):
         self._connect_failed.connect(self._on_connect_failed)
         self._received_arrived.connect(self._on_received)
         self._peer_paired.connect(self._on_peer_paired)
+        self._firewall_read.connect(self._on_firewall_read)
         self.retranslate()
         # Opening the app opens the port: the pairing picture is the first thing the window
         # promises, so it is painted by the launch rather than by a click that asks for it.
@@ -1049,6 +1059,11 @@ class TransferPanel(QWidget):
         self.channel_label = QLabel()
         self.channel_label.setObjectName("Muted")
         self.channel_label.setWordWrap(True)
+        #: The inbound half of "am I reachable": discovery says whether this machine can be found,
+        #: this says whether anything that found it can actually get in.
+        self.firewall_label = QLabel()
+        self.firewall_label.setObjectName("Muted")
+        self.firewall_label.setWordWrap(True)
 
         where = QHBoxLayout()
         where.setSpacing(6)
@@ -1074,6 +1089,7 @@ class TransferPanel(QWidget):
         mine_layout.addLayout(who)
         mine_layout.addWidget(self.listen_label)
         mine_layout.addWidget(self.channel_label)
+        mine_layout.addWidget(self.firewall_label)
         mine_layout.addLayout(where)
         rotate = QHBoxLayout()
         rotate.addWidget(self.refresh_pair_button)
@@ -1348,6 +1364,7 @@ class TransferPanel(QWidget):
         self.pass_label.setText(self._pass_text())
         self.listen_label.setText(self._listen_text())
         self.channel_label.setText(self._channel_text())
+        self._paint_firewall()
         self.receive_dir_title.setText(_("保存到"))
         self.receive_dir_field.setText(str(receive_root()))
         self.refresh_pair_button.setText(_("更换配对码和密码"))
@@ -1447,6 +1464,7 @@ class TransferPanel(QWidget):
         # Announcing starts with the port: a machine that is up is a machine worth finding.
         self.qr_label.show()
         self._refresh_pairing()
+        self._read_firewall(service.port)
         log.info("receiving enabled with %d interrupted offer(s) adopted", self._adopted)
 
     def stop_listening(self) -> None:
@@ -1457,6 +1475,9 @@ class TransferPanel(QWidget):
         if self._receiver is not None:
             self._receiver.stop()
             self._receiver = None
+        # The answer was about a port that is now closed, and the next listen may well land on a
+        # different number - so it is dropped rather than kept on screen as a stale guarantee.
+        self._firewall = None
         # Closing the port ended every session accepted through it, so a row that only ever
         # meant "someone dialled us" would be promising a connection that no longer exists.
         self._connected = [peer for peer in self._connected if peer.fingerprint not in self._inbound]
@@ -1466,6 +1487,7 @@ class TransferPanel(QWidget):
         self.qr_label.hide()
         self.listen_label.setText(self._listen_text())
         self.channel_label.setText(self._channel_text())
+        self._paint_firewall()
 
     def rotate_pairing(self) -> None:
         """更换配对码和密码: mint a fresh fixed pair and repaint the picture that carries them.
@@ -1509,6 +1531,74 @@ class TransferPanel(QWidget):
             return _("发现通道：{which} 都不可用，只能手输地址或粘贴配对串。").format(which=reason)
         return _("发现通道：{which} 不可用，仍可手输地址或粘贴配对串。").format(which=reason)
 
+    def _firewall_text(self) -> str:
+        """One line about whether a device that *found* this machine can also get in.
+
+        The card already says the port is open and that discovery works; those two facts together
+        are what a user reads as "ready", and neither of them can see a block rule the platform
+        wrote against this exe. So the inbound half is said on its own, in the four states the
+        reader can actually tell apart - and never as an all-clear nobody checked.
+        """
+        status = self._firewall
+        if status is None or self._receiver is None:
+            return ""
+        if status.verdict == "open":
+            return _("入站：防火墙放行了，别人连得进来。")
+        if status.verdict == "blocked":
+            return _("入站：防火墙挡着——本机在听 {port}，但这个程序名下留着阻止入站的规则，对方连不进来。").format(
+                port=self._receiver.port
+            )
+        if status.verdict == "no_allow":
+            return _("入站：防火墙没放行——本机在听 {port}，但没有任何规则让对端连进来。").format(port=self._receiver.port)
+        return _("入站：读不到防火墙的状态，所以这句话给不了保证。")
+
+    def _paint_firewall(self) -> None:
+        """The line plus the facts behind it, so a verdict on screen can always be read back."""
+        self.firewall_label.setText(self._firewall_text())
+        status = self._firewall
+        if status is None:
+            self.firewall_label.setToolTip("")
+            return
+        lines = [f"{status.tool}  {firewall.word(status.profile) or '-'}  {firewall.on_off(status.enabled)}"]
+        lines += [
+            f"{firewall.word(rule.action)} {firewall.word(rule.direction)} "
+            f"{'、'.join(firewall.word(p) for p in rule.profiles) or '-'}  {rule.name}"
+            for rule in status.rules
+        ]
+        lines += list(status.notes) + list(status.failed)
+        if status.verdict != "open":
+            lines.append(_("要放行，自己提权跑这几条（传书不替你写规则）："))
+            lines += firewall.fix_commands(status, APP_NAME)
+        self.firewall_label.setToolTip("\n".join(lines))
+
+    def _read_firewall(self, port: int) -> None:
+        """Ask the platform on a worker thread - answering costs a subprocess, not a syscall.
+
+        Asked once per listen, not once per tick: a block rule does not appear and disappear between
+        repaints, and a reader that polled would put a subprocess on the machine every five seconds
+        for the life of the app.
+        """
+        self._firewall = None
+        self._paint_firewall()
+        self._firewall_worker = threading.Thread(
+            target=self._read_firewall_run, args=(port,), name="chuanshu-firewall", daemon=True
+        )
+        self._firewall_worker.start()
+
+    def _read_firewall_run(self, port: int) -> None:
+        """The worker's body. Nothing here reaches the panel as an exception: an unreadable
+        platform is one of the states the card has a sentence for."""
+        try:
+            status = firewall.inspect(port=port)
+        except Exception as error:  # noqa: BLE001 - the reader is where the surprises are
+            log.warning("could not ask the firewall: %s", error)
+            status = firewall.Status(tool="error", port=port, failed=(f"{type(error).__name__}: {error}",))
+        self._firewall_read.emit(status)
+
+    def _on_firewall_read(self, status: firewall.Status) -> None:
+        self._firewall = status
+        self._paint_firewall()
+
     def _status_text(self) -> str:
         if self._receive_error:
             return _("这台机器开不了接收端口，但仍能主动发出去：{error}").format(error=self._receive_error)
@@ -1539,6 +1629,7 @@ class TransferPanel(QWidget):
         self.pass_label.setText(self._pass_text())
         self.listen_label.setText(self._listen_text())
         self.channel_label.setText(self._channel_text())
+        self._paint_firewall()
 
     def _open_receive_dir(self) -> None:
         root = receive_root()

@@ -10,9 +10,9 @@ root show the same numbers the window shows. Two caveats that follow from that:
 
 * 43720 is one socket. If the window is already listening, ``receive`` binds an ephemeral
   port and says so; discovery advertises the real number, so a phone still finds it.
-* the pin list is one file with no lock between processes. Pinning from both faces at the
-  same instant would have the later save overwrite the earlier one, so change pins from one
-  face at a time.
+* the pin list and the pair code are one file each, written by whichever face changed them.
+  A save merges with what is on disk instead of overwriting it, so a device pinned by the
+  window is still here after the terminal pins its own.
 
 What is printed on stdout is not run through gettext: a script reads the numbers and the
 error codes, and the catalogue is loaded only because the protocol error text is owned by
@@ -34,6 +34,7 @@ from app.config import Settings
 from app.logging_setup import setup_logging
 from app.meta import APP_NAME, VERSION
 from app.net import errors as proto_errors
+from app.net import firewall
 from app.net import spec as protocol_spec
 from app.net.discovery import DiscoveryService, Peer, verify_peer
 from app.net.identity import load_or_create
@@ -135,6 +136,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  python -m app.cli peers                       列出局域网里应答的设备\n"
             "  python -m app.cli send 192.168.1.7 a.pdf      发给对方（配对码从它屏幕上抄）\n"
             "  python -m app.cli pins                        列出固定的设备\n"
+            "  python -m app.cli firewall                     问防火墙：这台机器放不放别人连进来\n"
             "  python -m app.cli unpair 0a1b2c               忘记一台\n"
             "  python -m app.cli pair-code --rotate          换掉配对码和密码\n"
         ),
@@ -168,6 +170,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_peers)
 
     add("pins", "列出固定的设备").set_defaults(func=cmd_pins)
+
+    p = add("firewall", "问平台防火墙这台机器放不放对端连进来（只读）")
+    p.add_argument("--exe", type=Path, default=None, help="Windows 上问哪个程序（默认正在跑的这个）")
+    p.add_argument("--port", type=int, default=None, help="Linux 上按端口问（默认协议端口）")
+    p.set_defaults(func=cmd_firewall)
 
     p = add("unpair", "忘记一台设备，它要重新配对")
     p.add_argument("fingerprint", help="指纹（可只输前缀，但要唯一）")
@@ -276,6 +283,7 @@ def cmd_receive(args: argparse.Namespace, out: Terminal) -> int:
     out.say(f"配对码：{service.current_pair_code()}    密码：{service.passphrase()}")
     out.say(f"指纹：{identity.fingerprint}")
     out.say(f"接收目录：{root}")
+    out.say(_inbound_line(service.port))
     if adopted:
         out.say(f"上一次没传完的有 {adopted} 单，对方接着发会自动续上。")
     out.say("按 Ctrl-C 停止。" if not args.seconds else f"听 {args.seconds:.0f} 秒。")
@@ -460,6 +468,62 @@ def cmd_pins(args: argparse.Namespace, out: Terminal) -> int:
             line += f"  它serve的证书 {leaf[:12]}"
         out.say(line)
     return 0
+
+
+#: ``firewall`` exit codes: a script branches on the number, not on the Chinese sentence.
+_FIREWALL_EXIT = {"open": 0, "unknown": 1, "no_allow": 2, "blocked": 3}
+#: The four verdicts, written out here because the window has the same four sentences to pick from.
+_FIREWALL_TEXT = {
+    "open": "端口开着，放行规则在，外面连得进来。",
+    "no_allow": "这台机器在听，但这个网络下没有任何放行规则，而默认入站是挡，所以外面连不进来。",
+    "blocked": "这个程序名下压着阻止入站的规则。Windows 判阻止优先，所以再加多少条允许规则都不生效。",
+    "unknown": "读不到防火墙的状态，这一条不能当结论。",
+}
+#: The same four, in the one line `receive` owes the person standing at the port: "监听：43720"
+#: alone reads as a promise that peers can get in, and this is the half the listener cannot see.
+_INBOUND_LINE = {
+    "open": "入站：防火墙放行了，别人连得进来。",
+    "no_allow": "入站：没有任何规则放行这个端口，局域网里别人连不进来（细节跑 `firewall` 看）。",
+    "blocked": "入站：这个程序名下压着阻止入站的规则，局域网里别人连不进来（细节跑 `firewall` 看）。",
+    "unknown": "入站：读不到防火墙的状态，这一句给不了保证（细节跑 `firewall` 看）。",
+}
+
+
+def _inbound_line(port: int) -> str:
+    """One line about whether a device that found this port can also get in through it."""
+    status = firewall.inspect(port=port)
+    return _INBOUND_LINE[status.verdict]
+
+
+def cmd_firewall(args: argparse.Namespace, out: Terminal) -> int:
+    proto = protocol_spec.load()
+    port = int(args.port or proto.transport_port)
+    # Windows pins rules to the program's path, so the answer is about *this* binary: a rule that
+    # lets ChuanShu.exe in says nothing about ChuanShu-cli.exe. Linux reads ports, not paths.
+    status = firewall.inspect(Path(args.exe).expanduser() if args.exe else None, port)
+    word, on_off = firewall.word, firewall.on_off
+    target = status.target
+    out.say(f"问的是：{target if target is not None else f'端口 {status.port}'}")
+    out.say(f"平台：{status.tool}  当前网络：{word(status.profile) or '未知'}  "
+            f"防火墙：{on_off(status.enabled)}  默认入站：{word(status.default_inbound) or '未知'}")
+    for rule in status.rules:
+        out.say(f"规则  {word(rule.action)} {word(rule.direction)}"
+                f"  {'、'.join(word(p) for p in rule.profiles) or '所有网络'}"
+                f"  {on_off(rule.enabled)}  {rule.name}")
+    if not status.rules:
+        out.say("规则  " + ("这个程序名下没有任何入站规则。" if target is not None
+                            else f"端口 {status.port} 上没有任何放行规则。"))
+    for note in status.notes:
+        out.say(f"平台说：{note}")
+    for failure in status.failed:
+        out.say(f"没读到：{failure}")
+    out.say(f"结论：{status.verdict} —— {_FIREWALL_TEXT[status.verdict]}")
+    if status.verdict != "open":
+        out.say("要放行就自己提权跑这几条（传书不替你写防火墙规则）：")
+        for line in firewall.fix_commands(status, APP_NAME):
+            out.say(f"  {line}")
+    out.say(f"退出码：{status.verdict} -> {_FIREWALL_EXIT[status.verdict]}")
+    return _FIREWALL_EXIT[status.verdict]
 
 
 def cmd_unpair(args: argparse.Namespace, out: Terminal) -> int:

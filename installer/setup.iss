@@ -27,6 +27,9 @@
 #endif
 
 #define AppExeName AppName + ".exe"
+; 命令行是独立第二个 exe（app.spec 的 name=APP_NAME + "-cli"）。防火墙规则按程序路径判定，
+; 所以 {#AppExeName} 放行了不代表这个放行了——两条路径各自都要写一遍。
+#define AppCliExeName AppName + "-cli.exe"
 ; PyInstaller one-folder 输出目录，整个目录（含 _internal）原样拷进 {app}。
 #define DistDir "..\dist\" + AppName
 ; 简体中文消息文件的两级来源：项目内覆盖副本优先，其次编译器自带。
@@ -71,7 +74,7 @@ DisableProgramGroupPage=yes
 ; ---- 输出与压缩 ----
 OutputDir=..\dist\installer
 OutputBaseFilename={#AppName}-Setup-{#AppVersion}-x64
-; lzma2/max + solid：122MB 的 Qt one-folder 目录压到约 35MB。
+; lzma2/max + solid：139MB 的 one-folder 目录（Qt 与 zeroconf 都在里面）压到约 41MB。
 Compression=lzma2/max
 SolidCompression=yes
 
@@ -123,9 +126,9 @@ FirewallTask=Let Windows Firewall accept connections from other devices on this 
 #if HaveZh
 zh_CN.FirewallTask=允许 Windows 防火墙放行同一局域网内其它设备的连接（需要管理员权限）
 #endif
-FirewallSkipped=The firewall rules were not written. ChuanShu will ask Windows for permission the first time it listens; answering that dialog is easy to get wrong - a denial leaves a block rule behind, and Windows obeys a block rule even when an allow rule for the same program exists. Run these two commands yourself from an elevated prompt (first one clears whatever is already pinned to this exe):
+FirewallSkipped=The firewall rules were not written. ChuanShu will ask Windows for permission the first time it listens; answering that dialog is easy to get wrong - a denial leaves a block rule behind, and Windows obeys a block rule even when an allow rule for the same program exists. Run these commands yourself from an elevated prompt (for each of the two program files, the first one clears whatever is already pinned to it):
 #if HaveZh
-zh_CN.FirewallSkipped=没有写入防火墙规则。传书第一次监听时 Windows 会弹窗询问，而那个框很容易点错：一旦拒绝过，系统留下的是阻止规则，而 Windows 判定阻止优先——同一个程序就算再加一条允许规则也不会生效。可以稍后在管理员命令提示符里自己执行这两条（第一条先把钉在这个 exe 上的旧入站规则清掉）：
+zh_CN.FirewallSkipped=没有写入防火墙规则。传书第一次监听时 Windows 会弹窗询问，而那个框很容易点错：一旦拒绝过，系统留下的是阻止规则，而 Windows 判定阻止优先——同一个程序就算再加一条允许规则也不会生效。可以稍后在管理员命令提示符里自己执行这几条（窗口与命令行是两个 exe，各自第一条先把钉在那个路径上的旧入站规则清掉）：
 #endif
 
 [Files]
@@ -155,34 +158,46 @@ Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(
 // 生效的那一个——这台机器的 WLAN 是 Public，所以那四条全是"公用"。"点取消会留下阻止规则"这半句
 // 没法在这台机器上复现（要真的拒绝一次系统弹窗，那是写系统的事），所以这里不赌它到底留下什么，
 // 直接先把这个路径的入站规则清空再重写：无论留下的是阻止还是允许，结果都一样。
+
+// 清掉钉在这个程序路径上的全部入站规则。删除条件用 name=all + program + dir=in：netsh 的多个过滤
+// 条件是求交集的（help 里的例子就是 name=all protocol=tcp localport=80），所以只会命中这个 exe 自己
+// 的入站规则——用户给别的程序加的规则、以及这个程序名下的出站规则都不会被碰到。卸载后残留的、指向
+// 已删掉的路径的旧规则也不在这里，因为路径对不上。
+function ClearInbound(Exe: string): string;
+begin
+  Result := 'advfirewall firewall delete rule name=all dir=in program="' + Exe + '"';
+end;
+
+// 一个程序路径的"先清再放"一对，中间用 cmd 的 & 串起来，所以调用方只需在最前面写一次 netsh。
+// 三个配置文件全放，边界交给 remoteip=LocalSubnet 守：手机开热点时 Windows 把这张网卡判成"公用"，
+// 只放"专用+域"的规则在传书最主要的使用场景里根本不生效，这条实测过（当前网卡 NetworkCategory=Public）。
+// 端口不写死：协议里 transport_default 被占用时会退回临时端口，钉在 43720 的规则那时候就是假的。
+function AllowInbound(Exe: string; RuleName: string): string;
+begin
+  Result := ClearInbound(Exe)
+    + ' & netsh advfirewall firewall add rule name="' + RuleName + '" dir=in action=allow'
+    + ' profile=any remoteip=LocalSubnet program="' + Exe + '"';
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
-  Exe: string;
-  DelCmd: string;
-  AddCmd: string;
+  Commands: string;
 begin
   if CurStep <> ssPostInstall then Exit;
   if not WizardIsTaskSelected('firewall') then Exit;
-  Exe := ExpandConstant('{app}\{#AppExeName}');
-  // 删除条件用 name=all + program + dir=in：netsh 的多个过滤条件是求交集的（help 里的例子就是
-  // name=all protocol=tcp localport=80），所以只会命中这个 exe 自己的入站规则——用户给别的程序
-  // 加的规则、以及这个程序名下的出站规则都不会被碰到。卸载后残留的、指向已删掉的路径的旧规则
-  // 也不在这里，因为路径对不上。
-  DelCmd := 'advfirewall firewall delete rule name=all dir=in program="' + Exe + '"';
-  // 三个配置文件全放，边界交给 remoteip=LocalSubnet 守：手机开热点时 Windows 把这张网卡判成"公用"，
-  // 只放"专用+域"的规则在传书最主要的使用场景里根本不生效，这条实测过（当前网卡 NetworkCategory=Public）。
-  // 端口不写死：协议里 transport_default 被占用时会退回临时端口，钉在 43720 的规则那时候就是假的。
-  AddCmd := 'advfirewall firewall add rule name="{#AppName}" dir=in action=allow'
-    + ' profile=any remoteip=LocalSubnet'
-    + ' program="' + Exe + '"';
-  // 安装器默认是普通权限（[Setup] PrivilegesRequired=lowest），提权只为了这两条 netsh。
-  // 两条命令走同一个 cmd.exe，是为了让用户只看到一次 UAC 框——netsh 命令行一次只吃一条命令，
-  // 分两次 ShellExec('runas') 就会问两遍。路径带空格或 & 也没关系：它们在双引号里面，
+  // 窗口和命令行是 {app} 下的两个 exe，而 Windows 按程序路径判规则：只放 ChuanShu.exe 的那台机器，
+  // 用 ChuanShu-cli.exe receive 依然连不进来——终端明明在听，局域网对面却是零回应。这条实测过：
+  // 同一台机器上 ChuanShu.exe 读出来是放行，ChuanShu-cli.exe 名下压着阻止规则，读出来是挡。
+  Commands := AllowInbound(ExpandConstant('{app}\{#AppExeName}'), '{#AppName}')
+    + ' & netsh ' + AllowInbound(ExpandConstant('{app}\{#AppCliExeName}'), '{#AppName}-cli');
+  // 安装器默认是普通权限（[Setup] PrivilegesRequired=lowest），提权只为了这几条 netsh。
+  // 全部命令走同一个 cmd.exe，是为了让用户只看到一次 UAC 框——netsh 命令行一次只吃一条命令，
+  // 分几次 ShellExec('runas') 就会问几遍。路径带空格或 & 也没关系：它们在双引号里面，
   // cmd 不会把引号内的 & 当成语句分隔符。
-  if not ShellExec('runas', 'cmd.exe', '/c netsh ' + DelCmd + ' & netsh ' + AddCmd,
+  if not ShellExec('runas', 'cmd.exe', '/c netsh ' + Commands,
       '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
-    MsgBox(ExpandConstant('{cm:FirewallSkipped}') + #10#10 + 'netsh ' + DelCmd + #10 + 'netsh ' + AddCmd,
+    MsgBox(ExpandConstant('{cm:FirewallSkipped}') + #10#10 + 'netsh ' + Commands,
       mbInformation, MB_OK);
 end;
 
@@ -192,8 +207,10 @@ var
 begin
   // 和安装时同一个删除条件：按程序路径匹配，所以连当初系统弹窗自己建的那对
   // name=chuanshu 规则也一并清掉，不会在防火墙里留下指向已删除文件的僵尸条目。删不掉也照常卸载。
-  ShellExec('runas', 'netsh.exe',
-    'advfirewall firewall delete rule name=all dir=in program="' + ExpandConstant('{app}\{#AppExeName}') + '"',
+  // 两个 exe 都要清，仍旧走同一个 cmd.exe，所以卸载也只问一次。
+  ShellExec('runas', 'cmd.exe',
+    '/c netsh ' + ClearInbound(ExpandConstant('{app}\{#AppExeName}'))
+    + ' & netsh ' + ClearInbound(ExpandConstant('{app}\{#AppCliExeName}')),
     '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Result := True;
 end;

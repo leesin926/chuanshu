@@ -140,8 +140,12 @@ def main() -> int:
     # 4. A receiver on the contract port, and the identity material it wrote.
     first = start(["receive", "--yes", "--root", str(h_r / "work" / "in"),
                    "--seconds", "150", "--no-discover"], h_r)
-    port, code, secret = banner(read_until(first, r"按 Ctrl-C|听 \d+"))
+    announced = read_until(first, r"按 Ctrl-C|听 \d+")
+    port, code, secret = banner(announced)
     check("receiver bound the contract port", port == 43720, port)
+    # The inbound half of the banner, on a machine with no firewall tool to ask: it has to say
+    # something here too, because "监听：43720" is what a user reads as reachable.
+    check("the receiver said the inbound half too", "入站：" in announced, announced.strip()[-160:])
 
     # 5. Transfer S->R with R's pairing material.
     out1 = run(["send", f"127.0.0.1:{port}", "--code", code, "--secret", secret,
@@ -207,6 +211,14 @@ def main() -> int:
     stop(squatter)
     holder.kill()
     holder.wait(timeout=10)
+
+    # The firewall question on the machine that has neither firewalld nor ufw installed. This is the
+    # Linux half of the reader the Windows gate checks against netsh, and WSL is what proves the
+    # absent-tool branch: the honest answer about a firewall nobody can read is "unknown", never
+    # "you are open" - a silent all-clear here is exactly the #87 bug on the other platform.
+    fw = run(["firewall", "--port", str(port)], h_r)
+    check("a machine with no firewall tool says unknown and exits 1",
+          fw.returncode == 1 and "结论：unknown" in fw.stdout, tail(fw, 200))
 
     stop(first)
     stop(second)
