@@ -3,17 +3,19 @@
 Message ids are the Chinese source strings, so an untranslated build still reads
 correctly in Chinese and each locale only carries its own translations.
 
-Switching language re-reads the .mo catalogue and emits LanguageManager.changed;
-widgets re-apply their texts in a retranslate() slot.
+This module stays free of Qt: the network core (app/net/errors.py) builds its text
+through ``_()`` and a command-line run has to localize it without a QApplication.
+Everything that needs a running Qt - the ``changed`` signal widgets retranslate on
+and the qtbase catalogues for Qt's own button labels - lives in
+app/ui/language_manager.py, which delegates to the functions here.
 """
 
 from __future__ import annotations
 
 import gettext
 import logging
+import os
 from pathlib import Path
-
-from PySide6.QtCore import QCoreApplication, QObject, QLocale, QTranslator, Signal
 
 from app.meta import TRANSLATION_DOMAIN
 from app.paths import locale_dir
@@ -36,6 +38,7 @@ LANGUAGE_NAMES: dict[str, str] = {
 }
 
 _catalog: gettext.NullTranslations = gettext.NullTranslations()
+_current = "zh_CN"
 
 
 def _(msgid: str) -> str:
@@ -59,92 +62,79 @@ def _n(singular: str, plural: str, n: int) -> str:
     return _catalog.ngettext(singular, plural, n)
 
 
-class LanguageManager(QObject):
-    changed = Signal(str)
+def current() -> str:
+    """The locale code ``use()`` last loaded, or the default before anything is loaded."""
+    return _current
 
-    def __init__(self, parent: QObject | None = None) -> None:
-        super().__init__(parent)
-        self._localedir: Path = locale_dir()
-        self._current = "zh_CN"
-        self._qt_translator: QTranslator | None = None
 
-    @property
-    def current(self) -> str:
-        return self._current
+def available(localedir: Path | None = None) -> list[str]:
+    """Locale codes with a compiled catalogue, in LANGUAGE_NAMES order."""
+    root = localedir or locale_dir()
+    found = set()
+    if root.is_dir():
+        for entry in sorted(root.iterdir()):
+            if (entry / "LC_MESSAGES" / f"{TRANSLATION_DOMAIN}.mo").is_file():
+                found.add(entry.name)
+    ordered = [code for code in LANGUAGE_NAMES if code in found]
+    return ordered + sorted(found - set(ordered))
 
-    def display_name(self, code: str) -> str:
-        return LANGUAGE_NAMES.get(code, code)
 
-    def available(self) -> list[str]:
-        """Locale codes with a compiled catalogue, in LANGUAGE_NAMES order."""
-        found = set()
-        if self._localedir.is_dir():
-            for entry in sorted(self._localedir.iterdir()):
-                if (entry / "LC_MESSAGES" / f"{TRANSLATION_DOMAIN}.mo").is_file():
-                    found.add(entry.name)
-        ordered = [code for code in LANGUAGE_NAMES if code in found]
-        return ordered + sorted(found - set(ordered))
+def system_locale() -> str:
+    """The OS language as far as the environment tells us, without Qt.
 
-    def detect_system(self) -> str:
-        """Best match between the OS locale and the compiled catalogues."""
-        options = self.available()
-        if not options:
-            return "zh_CN"
-        name = QLocale.system().name()
-        if name in options:
-            return name
-        prefix = name.split("_")[0]
+    A headless run has no QLocale, and LANG/LC_ALL carry the same choice the user made
+    when the shell started. ``""`` when nothing is set, which ``resolve()`` treats as
+    "no idea".
+    """
+    for name in ("LC_ALL", "LC_MESSAGES", "LANGUAGE", "LANG"):
+        value = os.environ.get(name)
+        if value:
+            return value.split(".")[0]  # zh_CN.UTF-8 -> zh_CN
+    return ""
+
+
+def resolve(preference: str, system: str | None = None) -> str:
+    """Map a saved preference ("auto" or a locale code) onto an available locale.
+
+    ``system`` is the OS locale to fall back on; left out here so a GUI caller can hand
+    over QLocale's answer instead of this module having to reach for Qt.
+    """
+    options = available()
+    if preference and preference != "auto":
+        if preference in options:
+            return preference
+        prefix = preference.split("_")[0]
         for code in options:
             if code.split("_")[0] == prefix:
                 return code
-        return "en" if "en" in options else options[0]
+    if not options:
+        return "zh_CN"
+    name = system_locale() if system is None else system
+    if name in options:
+        return name
+    prefix = name.split("_")[0]
+    for code in options:
+        if code.split("_")[0] == prefix:
+            return code
+    return "en" if "en" in options else options[0]
 
-    def resolve(self, preference: str) -> str:
-        """Map a saved preference ("auto" or a locale code) onto an available locale."""
-        options = self.available()
-        if preference and preference != "auto":
-            if preference in options:
-                return preference
-            prefix = preference.split("_")[0]
-            for code in options:
-                if code.split("_")[0] == prefix:
-                    return code
-        return self.detect_system()
 
-    def set_language(self, code: str) -> None:
-        global _catalog
-        try:
-            _catalog = gettext.translation(
-                TRANSLATION_DOMAIN,
-                str(self._localedir),
-                languages=[code],
-                fallback=True,
-            )
-        except OSError:
-            log.exception("failed to load catalogue for %s", code)
-            _catalog = gettext.NullTranslations()
-        self._current = code
-        self._load_qt_translator(code)
-        log.info("language set to %s", code)
-        self.changed.emit(code)
+def use(code: str) -> None:
+    """Point ``_()`` and ``_n()`` at one locale's compiled catalogue."""
+    global _catalog, _current
+    try:
+        _catalog = gettext.translation(
+            TRANSLATION_DOMAIN,
+            str(locale_dir()),
+            languages=[code],
+            fallback=True,
+        )
+    except OSError:
+        log.exception("failed to load catalogue for %s", code)
+        _catalog = gettext.NullTranslations()
+    _current = code
+    log.info("language set to %s", code)
 
-    def _load_qt_translator(self, code: str) -> None:
-        """Localize Qt's built-in strings (dialog buttons, standard headers)."""
-        if self._qt_translator is not None:
-            QCoreApplication.removeTranslator(self._qt_translator)
-            self._qt_translator = None
 
-        import PySide6
-
-        qt_dir = Path(PySide6.__file__).resolve().parent / "translations"
-        for variant in (code, code.replace("_", "-"), code.replace("_", "-").lower()):
-            candidate = qt_dir / f"qtbase_{variant}.qm"
-            if candidate.is_file():
-                translator = QTranslator()
-                if translator.load(str(candidate)):
-                    self._qt_translator = translator
-                    QCoreApplication.installTranslator(translator)
-                    return
-                log.warning("found %s but QTranslator failed to load it", candidate)
-                return
-        log.debug("no qtbase catalogue for %s under %s", code, qt_dir)
+def display_name(code: str) -> str:
+    return LANGUAGE_NAMES.get(code, code)

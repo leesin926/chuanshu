@@ -44,9 +44,10 @@ from PySide6.QtWidgets import (
 from app import autostart
 from app.ui import theme
 from app.config import CLOSE_ASK, CLOSE_QUIT, CLOSE_TRAY, Settings
-from app.i18n import LanguageManager, N, _
+from app.i18n import N, _
 from app.meta import COPYRIGHT, VERSION
 from app.paths import logs_dir, receive_root, user_data_dir
+from app.ui.language_manager import LanguageManager
 from app.ui.transfer import TransferPanel
 
 if TYPE_CHECKING:

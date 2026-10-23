@@ -54,7 +54,6 @@ from cryptography import x509  # noqa: E402
 
 from app import autostart  # noqa: E402
 from app.config import CLOSE_QUIT, Settings  # noqa: E402
-from app.i18n import LanguageManager  # noqa: E402
 from app.logging_setup import setup_logging  # noqa: E402
 from app.net import spec as protocol_spec  # noqa: E402
 from app.net.discovery import DiscoveryService, Peer  # noqa: E402
@@ -63,6 +62,7 @@ from app.net.receive import STATE_FILE, ReceiveService  # noqa: E402
 from app.net.send import PeerConnection, plan  # noqa: E402
 from app.paths import receive_root, user_data_dir  # noqa: E402
 from app.ui import theme  # noqa: E402
+from app.ui.language_manager import LanguageManager  # noqa: E402
 from app.ui.main_window import NAV_ITEMS, PAGE_SETTINGS, MainWindow  # noqa: E402
 from app.ui.transfer import PAGE_FILES, PAGE_HISTORY, PAGE_RECEIVE, PAGE_SEND, PAGE_TRANSFER  # noqa: E402
 

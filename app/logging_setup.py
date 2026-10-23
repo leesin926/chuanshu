@@ -13,7 +13,13 @@ _format = "%(asctime)s %(levelname)-7s [%(name)s] %(message)s"
 _log_path = None
 
 
-def setup_logging(level: int = logging.DEBUG) -> None:
+def setup_logging(level: int = logging.DEBUG, console: bool | None = None) -> None:
+    """Send the log to a rotating file, and to stderr unless told otherwise.
+
+    ``console`` defaults to "not frozen": the packaged window has no stderr worth writing
+    to, while a command-line run has exactly one - and a user who did not ask for it gets
+    the file only, so progress lines are not buried under transport logs.
+    """
     global _log_path
     root = logging.getLogger()
     root.setLevel(level)
@@ -31,11 +37,11 @@ def setup_logging(level: int = logging.DEBUG) -> None:
     file_handler.setFormatter(logging.Formatter(_format))
     root.addHandler(file_handler)
 
-    if not is_frozen():
-        console = logging.StreamHandler(sys.stderr)
-        console.setLevel(logging.INFO)
-        console.setFormatter(logging.Formatter(_format))
-        root.addHandler(console)
+    if console if console is not None else not is_frozen():
+        stream = logging.StreamHandler(sys.stderr)
+        stream.setLevel(logging.INFO)
+        stream.setFormatter(logging.Formatter(_format))
+        root.addHandler(stream)
 
     logging.getLogger("PySide6").setLevel(logging.INFO)
     logging.info("logging to %s", _log_path)

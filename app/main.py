@@ -8,11 +8,11 @@ import sys
 from app import icons
 from app.config import Settings
 from app.crash import SafeApplication, install_crash_handlers
-from app.i18n import LanguageManager
 from app.logging_setup import setup_logging
 from app.meta import APP_NAME, ORG_NAME
 from app.paths import locale_dir
 from app.ui import theme
+from app.ui.language_manager import LanguageManager
 from app.ui.main_window import MainWindow
 
 log = logging.getLogger(__name__)

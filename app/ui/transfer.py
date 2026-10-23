@@ -115,23 +115,6 @@ _HISTORY_FILTER_LABELS = {
 }
 
 
-def _split_addr(text: str, default_port: int, scheme: str) -> tuple[str, int, str]:
-    """Read ``host``, ``host:port`` or a pasted pairing payload.
-
-    Returns ``(host, port, advertised_prefix)``; only the pasted form carries a prefix,
-    which is why it gets checked against the certificate and the typed form does not.
-    """
-    if text.startswith(scheme):
-        fields = protocol_spec.parse_qr(text)
-        return fields["h"], int(fields.get("p") or default_port), fields.get("f", "")
-    host, sep, port = text.rpartition(":")
-    if not sep:
-        return text, default_port, ""
-    if not host or not port.isdigit():
-        raise ValueError(text)
-    return host, int(port), ""
-
-
 def _human(size: int) -> str:
     """The mockups write 128MB, not 128.0 MB: no space, and no decimal that says "exactly".
 
@@ -1895,7 +1878,7 @@ class TransferPanel(QWidget):
         and a machine that is not listening has no reason not to send files.
         """
         try:
-            host, port, prefix = _split_addr(text, self.proto.transport_port, self.proto.qr_scheme)
+            host, port, prefix = protocol_spec.split_addr(text, self.proto)
             peer = verify_peer(self.proto, Peer(prefix=prefix, host=host, port=port, via={"manual"}))
         except protocol_spec.ProtocolError as error:
             return None, _("{addr} 应答了，但不是能配的版本：{why}").format(addr=text, why=proto_errors.describe(error.code))

@@ -8,8 +8,8 @@
 
 | | 位置 | 内容 |
 |---|---|---|
-| PC 端 | 本仓库（远端名 `chuanshu-pc`） | PySide6 桌面端，Linux/Windows/macOS |
-| 手机端 | `chuanshu-mobile` | uni-app x，一套代码出 Android / iOS / 鸿蒙 |
+| PC 端 | 本仓库（远端名 `chuanshu-pc`） | PySide6 桌面端，Windows 已出包；Linux 是目标平台，路径与非 Windows 分支已在 `paths.py`，托盘/自启/无边框外壳与出包还没适配（macOS 未排期） |
+| 手机端 | `chuanshu-mobile` | uni-app x，出 Android 与鸿蒙两个平台。iOS 2026-10-24 起终止：没有 Mac 就没法出可签名的包，`app-ios` 那两半边代码留在树里不再推进 |
 | 协议契约 | 两边各存一份 `protocol/` | `protocol.json` 是唯一真相源，手机端放在 `shared/protocol/` 并带来源摘要戳 |
 
 分支按打包方式分开，不要让一个安装包背另一套方案的依赖：
@@ -27,13 +27,16 @@ app/
   meta.py            应用名 / 版本 / 发布者（唯一改这里即可发新版）
   paths.py           源码运行 与 冻结(打包) 运行 的路径解析
   config.py          settings.json 读写，存放于 %APPDATA%\ChuanShu\ChuanShu
-  i18n.py            gettext 目录 + LanguageManager，切语言发 changed 信号
+  i18n.py            Qt-free gettext 核心：_()/_n()/N()、current()/available()/resolve()/use()
   logging_setup.py   滚动日志，存放于 %APPDATA%\ChuanShu\ChuanShu\logs\app.log
   crash.py           全局异常捕获 + SafeApplication（Qt 槽函数异常不退出）
   autostart.py       开机自启（HKCU ...\CurrentVersion\Run，仅打包后可用）
   icons.py           读取 assets/icons/icons.json → QIcon/QPixmap（按角色取字形与尺寸，带缓存）
-  main.py            入口
+  main.py            GUI 入口
+  cli.py             命令行入口（`python -m app.cli`）：self/receive/send/peers/pins/unpair/pair-code，
+                     整条链路不 import PySide6，见"命令行（headless）"
   ui/main_window.py  主窗口：无边框外壳、托盘、关闭询问、主题切换、retranslate()
+  ui/language_manager.py  切语言的 Qt 半边：QTranslator + changed 信号，翻译核心在 app/i18n.py
   ui/settings_dialog.py 设置窗口：左侧四个分区、右侧设置项，非模态，每个控件改完即生效
   ui/title_bar.py    自绘标题栏：七个图标按钮 + popup_below()、拖动/缩放/最大化、边缘缩放 eventFilter
   ui/theme.py        深浅两套 Palette 与由它生成的 QSS
@@ -56,6 +59,8 @@ scripts/
                         51 条断言（报告写在 .probe/protocol_report.txt）
   ui_selftest.py        M1 验收：驱动真实窗口，132 条断言（含设置窗口、8 种语言下缩到最小
                         尺寸不裁切）。见"界面这层的验证"
+  cli_selftest.py       命令行验收：起两个 CLI 进程（各自一个身份目录）互配、双向传 3MB 并逐字节
+                        对 sha256，顺带断言 import app.cli 不带进 Qt，12 条。见"命令行（headless）"
   freeze_smoke.py       起打包好的 exe：等窗口、截图、查日志有无 ERROR，然后只结束自己起的进程
   i18n_sync.py          翻译守卫：按 locale/ 目录扫描，zh_CN 空条目自动镜像 msgid；其余任何
                         语言只要还有空条目或 fuzzy 就直接构建失败（LANGUAGE_NAMES 承诺了却没
@@ -107,9 +112,12 @@ Remove-Item env:QT_QPA_PLATFORM; py scripts/ui_selftest.py      # 真字形 + �
 - 语言优先级：`settings.json` 里的 `language` → 系统 locale → `en`。
   标题栏的语言菜单只列已编译的 locale，没有「跟随系统」项：`language` 保持 `auto` 就是跟随系统，
   一旦从菜单选了具体语言就固定下来（要恢复跟随，删掉 `settings.json` 里那个键）。
-- 切语言时 `LanguageManager.set_language()` 会重新加载 `.mo`、装上 Qt 自带的
-  `qtbase_*.qm`（负责对话框按钮等 Qt 内置文案），然后发 `changed` 信号；控件在
+- 切语言时 `ui/language_manager.py` 的 `set_language()` 先调 `app.i18n.use()` 换掉 gettext 目录，
+  再装上 Qt 自带的 `qtbase_*.qm`（负责对话框按钮等 Qt 内置文案），然后发 `changed` 信号；控件在
   `retranslate()` 里重设文本。新增界面时把文本设置都放进 `retranslate()`。
+- **`app/i18n.py` 不 import PySide6**：语言核心（`_`、`_n`、`N`、`current`、`available`、`resolve`、
+  `use`）是纯 gettext，QTranslator 与 `changed` 信号那一半单独住在 `ui/language_manager.py`。
+  这样 `app/net/errors.py` 的错误码标签和命令行都能翻译，而不把 Qt 拖进 headless 路径。
 - 新增语言：`pybabel init -i locale/app.pot -d locale -D app -l ja`，翻译后
   `build.ps1 -Task i18n`，`app/i18n.py` 的 `LANGUAGE_NAMES` 加一项 `ja: 日本語`。
   守卫是扫目录的，所以"建了 .po 但没翻完"和"承诺了但没建目录"两种偷懒都会挡住。
@@ -169,6 +177,40 @@ Remove-Item env:QT_QPA_PLATFORM; py scripts/ui_selftest.py      # 真字形 + �
   三个动作按钮也从两列网格改成一列：最小宽度下每列只有 212px，而法语要 284/260/260。
   `ui_selftest.py` 会把两个窗口都缩到各自的最小尺寸，逐个控件比对 `minimumSizeHint`
   （会换行的标签比 `heightForWidth`），8 种语言各跑一遍。改完布局重跑它，别凭眼睛看一张大图就下结论。
+
+## 命令行（headless）
+
+`py -m app.cli <子命令>`，走的是 GUI 底下同一套 `app/net/`，整条链路不 import PySide6：
+
+```
+self        我是谁、固定过谁、身份/数据/接收目录在哪
+receive     开接收（--yes 不问直接收，--root 换目录，--seconds 收一阵自己退，--port 换端口）
+send        发文件（粘配对串或 host[:端口]，第一次要 --code/--secret）
+peers       广播自己并听邻居（mDNS + UDP 都听；--no-verify 只列前缀）
+pins        列已固定的指纹      unpair 忘掉一台（前缀唯一即可）      pair-code  看/换（--rotate）配对码与密码
+```
+
+三个决定写在这里，改之前先读：
+
+- **`receive` 的来件询问是用 `input()` 问在终端里的**，因为 `ReceiveService.handler` 同步跑在服务
+  线程上、手里还捏着对方的 socket（见"传输面板"第一条）。GUI 把那一步转成信号 + 弹框；命令行没有
+  事件循环，就在服务线程里直接读 stdin，用一把锁串行，并把回答窗口压在 `offer_wait_timeout_s` 之内。
+  stdin 那头没人（重定向、`-q` 跑在脚本里）会抛 `EOFError`，这单按拒绝处理并提示改用 `--yes`。
+- **命令行提示词不翻**：整个 `cli.py` 里没有 `_()`，所以 `pybabel extract` 抽不到它，7 份目录不必跟着
+  长一遍。唯一走目录的是错误码标签——`send` 失败时打印的 `errors.describe(code)` 和 GUI 标红的是同一句
+  话，但它只在 `--lang`（或窗口里固定过某个语言）时换，所以"自动"在命令行这边等于中文，不去跟系统 locale：
+  跟着 locale 走就会出现一句德语错误夹在一串中文里。退出码分得开：`0` 发完了，`1` 传坏了，`2` 是没配对码
+  ——脚本看见 `2` 知道这单要人来输码，看见 `1` 才需要去翻日志。`-q` 只留结果行（对端、发完了、每文件的
+  校验与摘要前缀），进度行在非 tty 时本来就不打。
+- **Windows 查不出端口被占，只能问出来**：`ThreadingHTTPServer` 带 `SO_REUSEADDR`，而 Windows 允许
+  第二个进程 bind 一个已经有人在听的端口——两边都打印 `监听：43720`，真正应答的只有先绑上那个，
+  于是给"第二个接收端"的文件全发进了第一个。`_serve()` 因此在 bind 前往 127.0.0.1 打一发 `/v1/hello`
+  （`listener_on()`），有人应答就改用临时端口并把占着的那台名字说出来；POSIX 上 bind 自己会
+  `EADDRINUSE`，走下面那个 except 分支，行为一致。
+
+`scripts/cli_selftest.py` 是这条链路的验收：两个 CLI 进程（各自一个 APPDATA 身份目录）互配、双向传
+3MB、逐字节对 sha256、再查 `pins`/`self`/`peers`，并断言 `import app.cli` 不带进 Qt。第二条腿固定用
+43912 而不是契约端口，因为第一条腿那个进程还在 43720 上听——这正是 `listener_on()` 要挡的那件事。
 
 ## 窗口外观（无边框 + 托盘）
 

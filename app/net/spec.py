@@ -201,3 +201,22 @@ def parse_qr(url: str) -> dict[str, str]:
     if "p" in fields and not fields["p"].isdigit():
         raise ProtocolError("UNSUPPORTED_PROTOCOL", {"qr_port": fields["p"]})
     return fields
+
+
+def split_addr(text: str, proto: Protocol) -> tuple[str, int, str]:
+    """Read ``host``, ``host:port`` or a pasted pairing payload.
+
+    Returns ``(host, port, advertised_prefix)``; only the pasted form carries a prefix,
+    which is why it gets checked against the certificate and the typed form does not.
+    Shared by the window's 手输地址 dialog and ``python -m app.cli send``, because reaching a
+    peer that never announced itself is the same three shapes on both sides.
+    """
+    if text.startswith(proto.qr_scheme):
+        fields = parse_qr(text)
+        return fields["h"], int(fields.get("p") or proto.transport_port), fields.get("f", "")
+    host, sep, port = text.rpartition(":")
+    if not sep:
+        return text, proto.transport_port, ""
+    if not host or not port.isdigit():
+        raise ValueError(text)
+    return host, int(port), ""

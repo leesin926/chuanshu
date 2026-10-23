@@ -23,9 +23,10 @@ from PySide6.QtWidgets import (
 
 from app import autostart, icons
 from app.config import CLOSE_ASK, CLOSE_QUIT, CLOSE_TRAY, Settings
-from app.i18n import LanguageManager, N, _
+from app.i18n import N, _
 from app.meta import COPYRIGHT, VERSION, display_name
 from app.ui import theme, transfer
+from app.ui.language_manager import LanguageManager
 from app.ui.settings_dialog import SettingsPage
 from app.ui.title_bar import EdgeResizeFilter, TitleBar, apply_rounded_corners
 from app.ui.transfer import TransferPanel
