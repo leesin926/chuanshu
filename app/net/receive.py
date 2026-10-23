@@ -469,6 +469,16 @@ class ReceiveService:
             return None
         return ed25519.Ed25519PublicKey.from_public_bytes(base64.b64decode(entry["public_key"]))
 
+    def _knows(self, fingerprint: str) -> bool:
+        """Whether this machine has ever paired with that identity key - key on file or not.
+
+        A peer this end dialled was pinned from its pair response, which never carried its public
+        key, so an empty key column is a pin and not a stranger. Recognition has to go by the pin
+        existing: §3 lets a pinned fingerprint in on its signature alone from either direction,
+        and the check below still verifies that signature against the key it was made with.
+        """
+        return self.identity.trusted_entry(fingerprint) is not None
+
     def handle_pair(self, body: dict, client_ip: str) -> dict:
         with self._lock:
             self._prune()
@@ -499,6 +509,7 @@ class ReceiveService:
             message = protocol_spec.pair_message(peer_id, nonce, declared_leaf)
             fingerprint = fingerprint_of_public_key(key)
             pinned = self._pinned_key(fingerprint)
+            known = pinned is not None or self._knows(fingerprint)
             if pinned is not None and _raw(pinned) != _raw(key):
                 # Same fingerprint, different bytes cannot happen; this is a collision
                 # of peer identity and must not silently pass.
@@ -525,7 +536,7 @@ class ReceiveService:
                     },
                 )
 
-            if pinned is None:
+            if not known:
                 failures = self._code_failures.setdefault(client_ip, [])
                 if len(failures) >= _CODE_MAX_FAILS:
                     raise protocol_spec.ProtocolError("PEER_BUSY", {"reason": "too many failed codes"})
@@ -539,6 +550,11 @@ class ReceiveService:
                     raise protocol_spec.ProtocolError("BAD_PAIR_CODE", {"reason": "passphrase"})
                 self.identity.trust(fingerprint, peer_id, name, declared, declared_leaf)
                 log.info("pinned new peer %s (%s)", name or "?", fingerprint[:12])
+            elif pinned is None:
+                # Dialled before, so pinned with no key on file. The signature above just proved
+                # this caller holds that key, which is the moment the key becomes worth keeping.
+                self.identity.trust(fingerprint, peer_id, name, declared, declared_leaf)
+                log.info("filled in the key of peer %s (%s)", name or "?", fingerprint[:12])
             else:
                 # Known key: the signature alone is enough, no code round trip.
                 self.identity.remember_peer(fingerprint, peer_id, name, declared_leaf)
@@ -555,7 +571,7 @@ class ReceiveService:
                 "name": self.device_name,
                 "protocol_version": self.proto.version,
                 "fingerprint": self.identity.fingerprint,
-                "resumed": pinned is not None,
+                "resumed": known,
             }
 
     def token_valid(self, token: str) -> bool:

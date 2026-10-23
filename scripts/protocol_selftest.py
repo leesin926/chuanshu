@@ -378,6 +378,48 @@ def phase_discovery(proto: protocol_spec.Protocol, workspace: Path) -> None:
         a_svc.stop()
 
 
+def phase_reverse_pin(proto: protocol_spec.Protocol, workspace: Path) -> None:
+    """One pairing must open the door from both ends, not only the end that typed the code.
+
+    The machine that dialled pinned its peer out of the pair response, and that response carries no
+    public key. Recognizing a pin by the key on file therefore treats the peer this end added itself
+    as a stranger the next time it calls - it asks for a code the other screen no longer shows. Two
+    PC instances swapping directions hit exactly this; the check runs on its own identities because
+    a re-pair rewrites the name frozen in the pin list, and the phases above assert on theirs.
+    """
+    pc = load_or_create(workspace / "reverse-pc")
+    phone = load_or_create(workspace / "reverse-phone")
+    let_in = lambda manifest, who, caller: True  # noqa: E731 - both ends always accept in this phase
+
+    # Leg 1: the phone dials the PC and types the code. The PC pins a key it was told about; the
+    # phone pins a fingerprint it only read out of the pair response.
+    pc_service = ReceiveService(pc, "PC-Waiting", let_in, host="127.0.0.1", port=0,
+                                root=workspace / "reverse-pc-received")
+    pc_service.start()
+    try:
+        out = PeerConnection(phone, "Phone-Simulator", "127.0.0.1", pc_service.port, pc.fingerprint)
+        out.hello()
+        out.pair(pc_service.current_pair_code(), pc_service.passphrase())
+        entry = phone.trusted_entry(pc.fingerprint) or {}
+        check("the end that dialled pins with no key on file", entry.get("public_key", "") == "", entry)
+    finally:
+        pc_service.stop()
+
+    # Leg 2: the PC calls back with no code, and the phone has to recognize its own pin.
+    phone_service = ReceiveService(phone, "Phone-Receiver", let_in, host="127.0.0.1", port=0,
+                                   root=workspace / "reverse-phone-received")
+    phone_service.start()
+    try:
+        back = PeerConnection(pc, "PC-Waiting", "127.0.0.1", phone_service.port, phone.fingerprint)
+        back.hello()
+        again = back.pair()
+        check("a peer once dialled re-pairs by signature alone", again["resumed"] is True, again["resumed"])
+        filled = (phone.trusted_entry(pc.fingerprint) or {}).get("public_key", "")
+        check("its key is filled in on the way in", filled != "", filled[:12])
+    finally:
+        phone_service.stop()
+
+
 def phase_catalogue(proto: protocol_spec.Protocol) -> None:
     en = gettext.translation("app", str(ROOT / "locale"), languages=["en"])
     zh = gettext.translation("app", str(ROOT / "locale"), languages=["zh_CN"])
@@ -404,6 +446,7 @@ def main() -> int:
         phase_in_process(proto, workspace)
         phase_restart(proto, workspace)
         phase_discovery(proto, workspace)
+        phase_reverse_pin(proto, workspace)
     phase_catalogue(proto)
     check("chunks per file match the contract", proto.chunk_size == 4194304, proto.chunk_size)
     print("\n".join(REPORT.read_text(encoding="utf-8").splitlines()))
