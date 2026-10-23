@@ -113,6 +113,21 @@ def check_discovery_mirror(body: dict) -> None:
         if f"{field}=" not in src and f"'{field}'" not in src:
             fail(f"cs-discovery.uts no longer reads or writes the TXT field {field!r}")
 
+    # The ArkTS half cannot import cs-protocol.uts, so it restates three of its constants. That copy is
+    # the one place a fork can hide: the phone would broadcast on a port nobody listens on and say
+    # nothing about it, because discovery failures are silent by construction.
+    harmony = (utssdk / "app-harmony" / "index.uts").read_text(encoding="utf-8")
+    restated = {
+        "DISCOVERY_PORT": str(body["ports"]["discovery_udp"]),
+        "ANNOUNCE_INTERVAL_S": str(discovery["announce_interval_s"]),
+        "MDNS_SERVICE_SHORT": short,
+    }
+    for name, expected in restated.items():
+        quote = "'" if not expected.isdigit() else ""
+        pattern = rf"const {name}: (?:number|string) = {quote}{re.escape(expected)}{quote}"
+        if re.search(pattern, harmony) is None:
+            fail(f"app-harmony/index.uts does not restate {name} = {expected!r} as the contract requires")
+
 
 def main() -> int:
     stamp_path = CONTRACT / "SOURCE.json"

@@ -17,6 +17,8 @@ import connection from '@ohos.net.connection'
 import deviceInfo from '@ohos.deviceInfo'
 import fs from '@ohos.file.fs'
 import util from '@ohos.util'
+import mdns from '@ohos.net.mdns'
+import common from '@ohos.app.ability.common'
 
 /** Must equal TRANSPORT_PORT in ../cs-protocol.uts; restated here because this file cannot import it. */
 const TRANSPORT_PORT: number = 43720
@@ -2219,4 +2221,454 @@ export function receiveStatus(): string {
 		+ '","fingerprint":"' + jsonText(identityFingerprint())
 		+ '","served":"' + jsonText(servedFingerprint())
 		+ '","addrs":[' + addrList() + '],"notes":' + serveNoteLog() + '}'
+}
+
+/* ================================================== 局域网发现：广播 + mDNS */
+
+/** Only bytes move here. The roster and the rules that judge a packet are ../cs-discovery.uts, which
+ *  this module cannot import (ArkTS resolves no sibling `.uts` file) while the page can - so the
+ *  announcement is handed over as callbacks and every datagram and DNS-SD answer is pushed back as it
+ *  arrived, for the page's copy of the model to merge, expire and filter. A phone that grew its own
+ *  merge rules here would be a phone the PC cannot be found by.
+ *
+ *  The shape of these calls is what the SDK in this build declares (`@ohos.net.mdns` since API 10:
+ *  `addLocalService` / `createDiscoveryService`, TXT as byte arrays), not the newer `MdnsServiceInfo`
+ *  spelling - the one HBuilderX type-checks against. A device that only has the newer half fails here
+ *  as a named channel, which is the same outcome as a device with no mDNS at all: the pairing code and
+ *  the typed address keep working. */
+
+/** Must equal DISCOVERY_PORT / ANNOUNCE_INTERVAL_S / MDNS_SERVICE_SHORT in ../cs-protocol.uts;
+ *  restated here for the same reason TRANSPORT_PORT is. */
+const DISCOVERY_PORT: number = 43721
+const ANNOUNCE_INTERVAL_S: number = 3
+const MDNS_SERVICE_SHORT: string = '_chuanshu._tcp'
+
+type DiscAnnounce = () => string
+type DiscTxt = () => string[]
+type DiscName = () => string
+type DiscTlsPort = () => number
+type DiscPacket = (host: string, text: string) => void
+type DiscService = (kind: string, host: string, port: number, entries: string[], prefix: string) => void
+
+let discAnnounce: DiscAnnounce | null = null
+let discTxt: DiscTxt | null = null
+let discName: DiscName | null = null
+let discTlsPort: DiscTlsPort | null = null
+let discPacket: DiscPacket | null = null
+let discService: DiscService | null = null
+
+let discUdp: socket.UDPSocket | null = null
+let discSearch: mdns.DiscoveryService | null = null
+let discPublished: mdns.LocalServiceInfo | null = null
+let discTimer = -1
+let discRunning = false
+let discUdpState = 'stopped'
+let discUdpDetail = ''
+let discMdnsState = 'stopped'
+let discMdnsDetail = ''
+let discBytesIn = 0
+let discSent = 0
+let discFound = 0
+let discLost = 0
+const discNotes: string[] = []
+/** serviceName -> fingerprint prefix, filled from the TXT of every answer seen. A goodbye names the
+ *  service but carries no `fp`, and the roster expires by prefix - so the name has to be remembered
+ *  here, which is what the PC's `_mdns_names` dict is for. */
+const discNames = new Map<string, string>()
+
+function discNote(text: string): void {
+	discNotes.push(text)
+	while (discNotes.length > 24) {
+		discNotes.shift()
+	}
+}
+
+/** The page's callback, from a platform event. A throw there is the roster's bug and must not take the
+ *  datagram listener with it - the same reason the PC catches around its whole receive loop. */
+function discDeliverPacket(host: string, text: string): void {
+	const fn = discPacket
+	if (fn == null || !discRunning) {
+		return
+	}
+	try {
+		fn(host, text)
+	} catch (e) {
+		discNote('广播回调抛了：' + errText(e))
+	}
+}
+
+function discDeliverService(kind: string, host: string, port: number, entries: string[], prefix: string): void {
+	const fn = discService
+	if (fn == null || !discRunning) {
+		return
+	}
+	try {
+		fn(kind, host, port, entries, prefix)
+	} catch (e) {
+		discNote('服务回调抛了：' + errText(e))
+	}
+}
+
+/** One announcement out, to every address a broadcast can plausibly reach. The limited address is what
+ *  the PC sends to; a phone's driver is less sure about it, so each interface's directed broadcast goes
+ *  out too. Same bytes either way, so a listener cannot tell which path delivered it. */
+function discTargets(): string[] {
+	const out: string[] = []
+	out.push('255.255.255.255')
+	const info = lanInfo()
+	for (let i = 0; i < info.addrs.length; i++) {
+		const one = info.addrs[i]
+		const value = ipToNumber(one.addr)
+		if (value == -1 || one.prefix < 8 || one.prefix > 30) {
+			continue
+		}
+		const hostBits = Math.pow(2, 32 - one.prefix)
+		const directed = value - (value % hostBits) + hostBits - 1
+		const text = discNumberToIp(directed)
+		if (text != '' && out.indexOf(text) < 0) {
+			out.push(text)
+		}
+	}
+	return out
+}
+
+function discNumberToIp(value: number): string {
+	if (value < 0) {
+		return ''
+	}
+	const a = Math.floor(value / 16777216) % 256
+	const b = Math.floor(value / 65536) % 256
+	const c = Math.floor(value / 256) % 256
+	const d = value % 256
+	return a.toString() + '.' + b.toString() + '.' + c.toString() + '.' + d.toString()
+}
+
+function discAnnounceOnce(): void {
+	const udp = discUdp
+	const maker = discAnnounce
+	if (udp == null || maker == null) {
+		return
+	}
+	let text = ''
+	try {
+		text = maker()
+	} catch (e) {
+		discNote('本机公告造不出来：' + errText(e))
+		return
+	}
+	if (text == '') {
+		return
+	}
+	const list = discTargets()
+	for (let i = 0; i < list.length; i++) {
+		const target: socket.NetAddress = { family: 1, port: DISCOVERY_PORT, address: list[i] }
+		const options: socket.UDPSendOptions = { data: text, address: target }
+		const label = list[i]
+		udp.send(options).then((): void => {
+			discSent = discSent + 1
+		}).catch((e: Error): void => {
+			// One interface refusing broadcast (a VPN, a hot spot that drops it) must not stop the others.
+			discNote('往 ' + label + ' 公告失败：' + errText(e))
+		})
+	}
+}
+
+/** Bound first, listened to second: on this device a handler attached before bind() is dropped, which
+ *  is the same reason the TLS client registers `on('message')` inside its `bind().then()`.
+ *
+ *  `broadcast: true` is the second step and has to be set before the first packet leaves, but it is not
+ *  fatal if it fails - the directed broadcasts usually still go out. So it is reported, not chained. */
+function discOpenUdp(port: number): void {
+	const udp = socket.constructUDPSocketInstance()
+	discUdp = udp
+	const local: socket.NetAddress = { family: 1, port: port, address: '0.0.0.0' }
+	udp.bind(local).then((): Promise<void> => {
+		const options: socket.UDPExtraOptions = { broadcast: true }
+		return udp.setExtraOptions(options)
+	}).then((): void => {
+		udp.on('message', (value: socket.SocketMessageInfo): void => {
+			// The sender's address, never anything the payload claims - an announcement carries no host
+			// field precisely so there is only one answer to "where do I dial back".
+			discBytesIn = discBytesIn + value.remoteInfo.size
+			discDeliverPacket(value.remoteInfo.address, textOfBytes(new Uint8Array(value.message)))
+		})
+		discUdpState = 'ok'
+		discUdpDetail = ''
+		discNote('广播端口 ' + port.toString() + ' 已绑上，正在收发')
+		discAnnounceOnce()
+		discTimer = setInterval((): void => {
+			discAnnounceOnce()
+		}, ANNOUNCE_INTERVAL_S * 1000)
+	}).catch((e: Error): void => {
+		discUdpState = 'unavailable'
+		discUdpDetail = errText(e)
+		discNote('广播通道起不来：' + discUdpDetail)
+	})
+}
+
+function discCloseUdp(): void {
+	if (discTimer >= 0) {
+		clearInterval(discTimer)
+		discTimer = -1
+	}
+	const udp = discUdp
+	discUdp = null
+	if (udp != null) {
+		try {
+			udp.off('message')
+		} catch (e) {
+			discNote('广播监听摘不干净：' + errText(e))
+		}
+		try {
+			udp.close()
+		} catch (e) {
+			discNote('广播套接字关不干净：' + errText(e))
+		}
+	}
+	discUdpState = 'stopped'
+	discUdpDetail = ''
+}
+
+/* ------------------------------------------------------------------ DNS-SD halves */
+
+/** The four TXT keys as byte arrays, built from the page's own `buildTxt` list so no platform invents
+ *  its own spelling of `fp`. This API carries a TXT value as numbers, not text. */
+function discAttributes(): mdns.ServiceAttribute[] {
+	const out: mdns.ServiceAttribute[] = []
+	const maker = discTxt
+	if (maker == null) {
+		return out
+	}
+	let entries: string[] = []
+	try {
+		entries = maker()
+	} catch (e) {
+		discNote('TXT 造不出来：' + errText(e))
+		return out
+	}
+	for (let i = 0; i < entries.length; i++) {
+		const entry = entries[i]
+		const eq = entry.indexOf('=')
+		if (eq <= 0) {
+			continue
+		}
+		const raw = bytesOf(entry.substring(eq + 1))
+		const value: number[] = []
+		for (let k = 0; k < raw.length; k++) {
+			value.push(raw[k])
+		}
+		const attribute: mdns.ServiceAttribute = { key: entry.substring(0, eq), value: value }
+		out.push(attribute)
+	}
+	return out
+}
+
+function discEntriesOf(list: mdns.ServiceAttribute[] | undefined): string[] {
+	const out: string[] = []
+	if (list == null) {
+		return out
+	}
+	const held = list!
+	for (let i = 0; i < held.length; i++) {
+		const bytes = new Uint8Array(held[i].value.length)
+		for (let k = 0; k < held[i].value.length; k++) {
+			bytes[k] = held[i].value[k]
+		}
+		out.push(held[i].key + '=' + textOfBytes(bytes))
+	}
+	return out
+}
+
+function discPrefixOfTxt(entries: string[]): string {
+	for (let i = 0; i < entries.length; i++) {
+		if (entries[i].substring(0, 3) == 'fp=') {
+			return entries[i].substring(3)
+		}
+	}
+	return ''
+}
+
+function discServiceLabel(): string {
+	const maker = discName
+	if (maker == null) {
+		return 'chuanshu'
+	}
+	try {
+		return maker()
+	} catch (e) {
+		return 'chuanshu'
+	}
+}
+
+function discPortOf(): number {
+	const maker = discTlsPort
+	if (maker == null) {
+		return TRANSPORT_PORT
+	}
+	try {
+		return maker()
+	} catch (e) {
+		return TRANSPORT_PORT
+	}
+}
+
+/** Every mDNS call wants a context, and a UTS plugin has no UIAbility of its own to ask - the runtime's
+ *  `UTSHarmony.getUIAbilityContext()` is the Stage-mode handle for it. (featureAbility.getContext() is
+ *  the FA-mode one and this app is Stage, so it would only say so at compile time.) */
+function discContext(): common.UIAbilityContext {
+	return UTSHarmony.getUIAbilityContext()
+}
+
+function discLocalInfo(): mdns.LocalServiceInfo {
+	const host: mdns.NetAddress = { family: 1, port: discPortOf(), address: '0.0.0.0' }
+	const info: mdns.LocalServiceInfo = {
+		serviceType: MDNS_SERVICE_SHORT,
+		serviceName: discServiceLabel(),
+		port: discPortOf(),
+		host: host,
+		serviceAttribute: discAttributes()
+	}
+	return info
+}
+
+function discPublish(): void {
+	const info = discLocalInfo()
+	discPublished = info
+	mdns.addLocalService(discContext(), info).then((): void => {
+		discNote('mDNS 已发布 ' + info.serviceName)
+	}).catch((e: Error): void => {
+		discPublished = null
+		discMdnsState = 'unavailable'
+		discMdnsDetail = 'mDNS 注册失败：' + errText(e)
+		discNote(discMdnsDetail)
+	})
+}
+
+function discBrowse(): void {
+	const svc = mdns.createDiscoveryService(discContext(), MDNS_SERVICE_SHORT)
+	svc.on('serviceFound', (info: mdns.LocalServiceInfo): void => {
+		if (discMdnsState != 'ok') {
+			discMdnsState = 'ok'
+			discMdnsDetail = ''
+		}
+		const entries = discEntriesOf(info.serviceAttribute)
+		const prefix = discPrefixOfTxt(entries)
+		if (prefix != '' && info.serviceName != '') {
+			discNames.set(info.serviceName, prefix)
+		}
+		discFound = discFound + 1
+		discDeliverService('got', info.host != null ? info.host!.address : '', info.port ?? 0, entries, prefix)
+	})
+	svc.on('serviceLost', (info: mdns.LocalServiceInfo): void => {
+		discLost = discLost + 1
+		// A goodbye names the service and carries no TXT, so the prefix comes from what the answer said
+		// when it arrived. Nothing remembered means nothing to expire - the 15 s sweep is the backstop.
+		const remembered = discNames.get(info.serviceName)
+		discDeliverService('lost', '', 0, discEntriesOf(info.serviceAttribute), remembered ?? '')
+	})
+	svc.on('discoveryStart', (event: mdns.DiscoveryEventInfo): void => {
+		discNote('mDNS 搜索已开始')
+	})
+	svc.on('discoveryStop', (event: mdns.DiscoveryEventInfo): void => {
+		discMdnsState = 'unavailable'
+		discMdnsDetail = 'mDNS 搜索被系统停了，错误码 ' + (event.errorCode ?? -1).toString()
+		discNote(discMdnsDetail)
+	})
+	svc.startSearchingMDNS()
+	discSearch = svc
+}
+
+function discTeardownMdns(): void {
+	const svc = discSearch
+	discSearch = null
+	if (svc != null) {
+		try {
+			svc.stopSearchingMDNS()
+			svc.off('serviceFound')
+			svc.off('serviceLost')
+		} catch (e) {
+			discNote('mDNS 搜索停不干净：' + errText(e))
+		}
+	}
+	const made = discPublished
+	discPublished = null
+	if (made != null) {
+		mdns.removeLocalService(discContext(), made!).catch((e: Error): void => {
+			discNote('mDNS 注销失败：' + errText(e))
+		})
+	}
+	discNames.clear()
+	discMdnsState = 'stopped'
+	discMdnsDetail = ''
+}
+
+/** Hand the callbacks over before starting: this file has no identity, no roster and no protocol
+ *  constants of its own beyond the three mirrored ones above. */
+export function lanBind(announce: DiscAnnounce, txt: DiscTxt, name: DiscName, tlsPort: DiscTlsPort,
+	onPacket: DiscPacket, onService: DiscService): void {
+	discAnnounce = announce
+	discTxt = txt
+	discName = name
+	discTlsPort = tlsPort
+	discPacket = onPacket
+	discService = onService
+}
+
+export function lanOpen(): string {
+	if (discRunning) {
+		return lanStatusText()
+	}
+	discRunning = true
+	discBytesIn = 0
+	discSent = 0
+	discFound = 0
+	discLost = 0
+	discOpenUdp(DISCOVERY_PORT)
+	try {
+		discPublish()
+		discBrowse()
+		if (discMdnsState != 'unavailable') {
+			discMdnsState = 'starting'
+		}
+	} catch (e) {
+		discMdnsState = 'unavailable'
+		discMdnsDetail = errText(e)
+		discNote('mDNS 这条通道本机没有：' + discMdnsDetail)
+	}
+	discNote('发现已启动（广播端口 ' + DISCOVERY_PORT.toString() + '）')
+	return lanStatusText()
+}
+
+export function lanClose(): string {
+	if (!discRunning) {
+		return lanStatusText()
+	}
+	discRunning = false
+	discCloseUdp()
+	discTeardownMdns()
+	discNote('发现已停止')
+	return lanStatusText()
+}
+
+export function lanRunning(): boolean {
+	return discRunning
+}
+
+function discLog(): string {
+	let out = ''
+	for (let i = 0; i < discNotes.length; i++) {
+		out = out + (out == '' ? '' : ',') + '"' + jsonText(discNotes[i]) + '"'
+	}
+	return '[' + out + ']'
+}
+
+/** Channels, counters and the last lines of what happened - a channel that died has to be describable,
+ *  because an empty device list on its own does not say whether to wait, use the QR or type the address. */
+export function lanStatusText(): string {
+	return '{"udp":{"state":"' + jsonText(discUdpState) + '","detail":"' + jsonText(discUdpDetail)
+		+ '"},"mdns":{"state":"' + jsonText(discMdnsState) + '","detail":"' + jsonText(discMdnsDetail)
+		+ '"},"counts":{"bytes_in":' + discBytesIn.toString() + ',"sent":' + discSent.toString()
+		+ ',"found":' + discFound.toString() + ',"lost":' + discLost.toString()
+		+ '},"running":' + (discRunning ? 'true' : 'false')
+		+ ',"notes":' + discLog() + '}'
 }

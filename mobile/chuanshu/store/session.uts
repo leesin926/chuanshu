@@ -39,6 +39,12 @@ import { receiveWrongCode, demoPcConnect, demoPcSend, demoPcDisconnect, demoPcCo
  *  importing there would collide with those definitions. */
 import { receiveCode, receivePassphrase, receiveRotatePairing, receiveHoldSlot, receiveSeen, receiveSnapshot, receiveDecide } from '@/uni_modules/cs-transport'
 // #endif
+// #ifdef APP-ANDROID
+/** Android keeps its roster inside the plugin, because there UTS does compile against Kotlin and the
+ *  sockets run on their own threads; the six names below are the module's own. They are re-exported
+ *  under one page-facing spelling so a page asks the same question on every phone. */
+import { discoverStart, discoverStop, discoverPeers, discoverStatus, discoverVerify, discoverySelfReport } from '@/uni_modules/cs-transport'
+// #endif
 // #ifdef APP-HARMONY
 /** These two lists have no one place to merge into on this platform. The ArkTS half of the module
  *  cannot read ../cs-receive.uts at all, so here the state machine is imported from its own path and
@@ -90,6 +96,32 @@ import {
 	saveTrustedPeers,
 	loadOfferStates,
 	saveOfferStates
+} from '@/uni_modules/cs-transport'
+/** The discovery model, by its own path for the same reason the receive machine above is: this is the
+ *  one platform where the plugin cannot read it. A phone that merged candidates by its own rules would
+ *  show a PC a different list than a browser shows the same PC. */
+import {
+	Roster,
+	newRoster,
+	prefixOf,
+	forgetMdns,
+	sweepPeers,
+	candidatesOf,
+	markVerified,
+	buildAnnounce,
+	buildTxt,
+	applyAnnounce,
+	applyTxt,
+	channelNote,
+	selfReport
+} from '@/uni_modules/cs-transport/utssdk/cs-discovery.uts'
+import {
+	serveIsRunning,
+	servePort,
+	lanBind,
+	lanOpen,
+	lanClose,
+	lanStatusText
 } from '@/uni_modules/cs-transport'
 // #endif
 // #ifdef APP-IOS
@@ -1398,3 +1430,186 @@ export function initSession() {
 	syncSendable()
 	log('就绪')
 }
+
+/* ------------------------------------------------------------------ 局域网发现 */
+
+// #ifdef APP-ANDROID
+/** Android answers these from the plugin: the roster lives there, next to the two threads that fill it.
+ *  The page asks the same six questions on every phone, so the store is the one place they are named. */
+export function lanStart(cb: (ok: boolean, message: string) => void): void {
+	discoverStart(cb)
+}
+
+export function lanStop(cb: (ok: boolean, message: string) => void): void {
+	discoverStop(cb)
+}
+
+export function lanPeers(): string {
+	return discoverPeers()
+}
+
+export function lanStatus(): string {
+	return discoverStatus()
+}
+
+export function lanVerify(prefix: string, fingerprint: string): boolean {
+	return discoverVerify(prefix, fingerprint)
+}
+
+export function lanSelfReport(): string {
+	return discoverySelfReport()
+}
+// #endif
+
+// #ifdef APP-HARMONY
+/** The same six answers, built here instead of in the module: on this platform the plugin cannot read
+ *  the shared model, so the roster is a plain value of the app and the ArkTS half only moves bytes.
+ *  Nothing on this page runs on another thread, so the mutations need no gate - the callbacks land on
+ *  the same JavaScript turn that reads the list. */
+
+let discRoster: Roster = newRoster('')
+let discId = ''
+let discName = ''
+let discPrefix = ''
+let discSince: number = 0
+let discOpen = false
+
+/** Read when a packet is due rather than pushed by a timer that dies with the screen: the port in the
+ *  announcement has to be the one actually open, and `ts` the moment discovery started - the PC keeps
+ *  both of those as the peer's own words rather than as this phone's guess. */
+function discServicePort(): number {
+	return serveIsRunning() ? servePort() : TRANSPORT_PORT
+}
+
+const discAnnounceText: () => string = (): string => {
+	if (discPrefix == '') {
+		return ''
+	}
+	return buildAnnounce(discId, discServicePort(), discName, discPrefix, discSince)
+}
+
+const discTxtEntries: () => string[] = (): string[] => buildTxt(discName, discPrefix, discSince)
+const discLabel: () => string = (): string => 'chuanshu-' + discId.substring(0, 8)
+/* A const arrow, not a `function`: this file already learned that a module-level function declaration
+ *  cannot be handed over as a callback value on this platform. */
+const discPortOf: () => number = (): number => discServicePort()
+
+const discPacket: (host: string, text: string) => void = (host: string, text: string): void => {
+	applyAnnounce(discRoster, text, host, nowSecs())
+}
+
+const discAnswer: (kind: string, host: string, port: number, entries: string[], prefix: string) => void =
+	(kind: string, host: string, port: number, entries: string[], prefix: string): void => {
+		if (kind == 'lost') {
+			if (prefix != '') {
+				forgetMdns(discRoster, prefix)
+			}
+			return
+		}
+		applyTxt(discRoster, entries, host, port, nowSecs())
+	}
+
+/** The socket's own account of the two channels, written into the model so `channelNote` can name the
+ *  path that died instead of showing an empty list. */
+function discChannels(text: string): void {
+	const made = JSON.parse(text) as UTSJSONObject | null
+	if (made == null) {
+		return
+	}
+	const read = (key: string): UTSJSONObject | null => {
+		const raw = made!.get(key)
+		return raw == null ? null : raw as UTSJSONObject
+	}
+	const udp = read('udp')
+	if (udp != null) {
+		discRoster.udp.state = udp!.getString('state', 'stopped')
+		discRoster.udp.detail = udp!.getString('detail', '')
+	}
+	const dns = read('mdns')
+	if (dns != null) {
+		discRoster.mdns.state = dns!.getString('state', 'stopped')
+		discRoster.mdns.detail = dns!.getString('detail', '')
+	}
+}
+
+export function lanStart(cb: (ok: boolean, message: string) => void): void {
+	if (discOpen) {
+		cb(true, '局域网发现已经在跑')
+		return
+	}
+	discId = peerIdText()
+	discName = deviceNameText()
+	discPrefix = prefixOf(identityFingerprint())
+	if (discPrefix == '') {
+		cb(false, '本机指纹读不出来，发现层发不出可信的公告')
+		return
+	}
+	discSince = nowSecs()
+	// A fresh roster per session: a candidate left from the last run is silent now, and expiry measured
+	// against that old `seen` would either keep a ghost or drop a real machine.
+	discRoster = newRoster(discPrefix)
+	lanBind(discAnnounceText, discTxtEntries, discLabel, discPortOf, discPacket, discAnswer)
+	discChannels(lanOpen())
+	discOpen = true
+	cb(true, channelNote(discRoster))
+}
+
+export function lanStop(cb: (ok: boolean, message: string) => void): void {
+	if (!discOpen) {
+		cb(true, '局域网发现没在跑')
+		return
+	}
+	discChannels(lanClose())
+	discOpen = false
+	cb(true, channelNote(discRoster))
+}
+
+export function lanPeers(): string {
+	const now = nowSecs()
+	sweepPeers(discRoster, now)
+	const out = new UTSJSONObject()
+	const rows: UTSJSONObject[] = []
+	const list = candidatesOf(discRoster)
+	for (let i = 0; i < list.length; i++) {
+		const one = list[i]
+		const row = new UTSJSONObject()
+		row['prefix'] = one.prefix
+		row['host'] = one.host
+		row['port'] = one.port
+		row['peer_id'] = one.peerId
+		row['name'] = one.name
+		row['version'] = one.version
+		row['fingerprint'] = one.fingerprint
+		row['via'] = one.via
+		row['age'] = now - one.seen
+		rows.push(row)
+	}
+	out['peers'] = rows
+	out['total'] = list.length
+	out['running'] = discOpen
+	out['note'] = channelNote(discRoster)
+	return JSON.stringify(out)
+}
+
+export function lanStatus(): string {
+	const text = lanStatusText()
+	const made = JSON.parse(text) as UTSJSONObject | null
+	if (made == null) {
+		return '{"note":"' + channelNote(discRoster) + '"}'
+	}
+	discChannels(text)
+	made!['note'] = channelNote(discRoster)
+	made!['running'] = discOpen
+	return JSON.stringify(made!)
+}
+
+/** Presence is not trust: this is where a candidate stops being a broadcast and becomes a peer, and
+ *  only the digest read off the TLS connection may arrive here. */
+export function lanVerify(prefix: string, fingerprint: string): boolean {
+	return markVerified(discRoster, prefix, fingerprint)
+}
+
+export function lanSelfReport(): string {
+	return selfReport()
+}
+// #endif

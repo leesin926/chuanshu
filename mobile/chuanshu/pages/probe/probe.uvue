@@ -7,7 +7,7 @@
 			<button class="btn" @click="runCert">证书</button>
 			<button class="btn" @click="runTls">TLS 自检</button>
 		</view>
-		<!-- #ifdef APP-ANDROID -->
+		<!-- #ifdef APP-ANDROID || APP-HARMONY -->
 		<view class="row">
 			<button class="btn" @click="runDiscSelf">发现自检</button>
 			<button class="btn" @click="runDiscStart">发现起来</button>
@@ -64,8 +64,8 @@
 	// #ifdef WEB
 	import { shaSelfTest } from '@/uni_modules/cs-transport'
 	// #endif
-	// #ifdef APP-ANDROID
-	import { discoverySelfReport, discoverStart, discoverStop, discoverPeers, discoverStatus } from '@/uni_modules/cs-transport'
+	// #ifdef APP-ANDROID || APP-HARMONY
+	import { lanStart, lanStop, lanPeers, lanStatus, lanSelfReport } from '@/store/session.uts'
 	// #endif
 
 	const lines = ref('还没有运行。')
@@ -134,28 +134,32 @@
 	}
 	// #endif
 
-	// #ifdef APP-ANDROID
+	// #ifdef APP-ANDROID || APP-HARMONY
 	/** Two halves, and only one of them is provable from a button. The 发现自检 list is the roster's own
 	 *  rules against synthetic announces - the same 22 the browser runs; what this phone adds is whether
 	 *  its own NIC will carry a broadcast and resolve a service at all, and that needs the PC across the
-	 *  room. A green list here has never once meant the LAN works. */
+	 *  room. A green list here has never once meant the LAN works.
+	 *
+	 *  Both phones ask the store, not the plugin: on Android the roster lives in the plugin and the store
+	 *  forwards, on Harmony it lives in the store because ArkTS cannot read the shared model inside a
+	 *  plugin. The page has no reason to know which of the two it is talking to. */
 	function runDiscSelf() {
-		lines.value = discoverySelfReport()
+		lines.value = lanSelfReport()
 	}
 
 	function runDiscStart() {
 		lines.value = '正在起广播端口 43721 和 mDNS……'
-		discoverStart((ok: boolean, message: string) => {
+		lanStart((ok: boolean, message: string) => {
 			lines.value = (ok ? '已启动：' : '起不来：') + message
 		})
 	}
 
 	function runDiscPeers() {
-		lines.value = discoverPeers() + '\n' + discoverStatus()
+		lines.value = lanPeers() + '\n' + lanStatus()
 	}
 
 	function runDiscStop() {
-		discoverStop((ok: boolean, message: string) => {
+		lanStop((ok: boolean, message: string) => {
 			lines.value = '已停下：' + message
 		})
 	}
