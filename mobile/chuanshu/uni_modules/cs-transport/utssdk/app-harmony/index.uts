@@ -1253,6 +1253,34 @@ function findHeadEnd(acc: Uint8Array): number {
 	return -1
 }
 
+const REQUEST_LINES: Uint8Array[] = [bytesOf('GET '), bytesOf('PUT '), bytesOf('POST '), bytesOf('DELETE ')]
+
+/** Does a record start with a request line? The question is worth asking because the header block is not
+ *  always the first thing this server is handed: see the rotation in `onBytes`. */
+function startsRequest(at: number, merged: Uint8Array): boolean {
+	for (let i = 0; i < REQUEST_LINES.length; i++) {
+		const line = REQUEST_LINES[i]
+		if (at + line.length > merged.length) {
+			continue
+		}
+		let hit = true
+		for (let j = 0; j < line.length; j++) {
+			if (merged[at + j] != line[j]) {
+				hit = false
+				break
+			}
+		}
+		if (hit) {
+			return true
+		}
+	}
+	return false
+}
+
+/** How long a connection may keep sending bytes that never become a request line. Past this the header is
+ *  not merely late, so the socket is hung up on rather than buffered until memory runs out. */
+const HEAD_HUNT_MAX: number = 64 * 1024
+
 /** One request over one connection.
  *
  *  The order is the whole design: bind, connect without the platform's own certificate validation, read
@@ -1626,6 +1654,9 @@ class Conn {
 	conn: socket.TLSSocketConnection | null = null
 	ip: string = ''
 	acc: Uint8Array = new Uint8Array(0)
+	/** Where each record that landed before the header block began, counted in `acc`. The header is found
+	 *  by its request line rather than by position 0, so those offsets are what make rotation possible. */
+	recStarts: number[] = []
 	head: string = ''
 	declared: number = -1
 	body: ArrayBuffer | null = null
@@ -1988,13 +2019,35 @@ function onBytes(c: Conn, info: socket.SocketMessageInfo): void {
 			note('连接' + c.id.toString() + ' 第4包 ' + chunk.length.toString() + '字节 累计 ' + c.written.toString())
 		}
 		if (c.declared < 0) {
+			const accLen = c.acc.length
 			const merged = cat(c.acc, chunk)
 			const at = findHeadEnd(merged)
 			if (at < 0) {
+				if (merged.length > HEAD_HUNT_MAX) {
+					note('请求头一直没来：已经 ' + merged.length.toString() + ' 字节')
+					closeConn(c)
+					return
+				}
+				c.recStarts.push(accLen)
 				c.acc = merged
 				return
 			}
-			c.head = textOfBytes(merged.subarray(0, at))
+			/* A body record can arrive before the record carrying its own request line. This is not the
+			 *  sender writing backwards - http.client writes the header block and the body as two SSL_writes
+			 *  on one ordered stream - but the read pump handing the second one to JavaScript first, which
+			 *  the per-record log in this file caught on the wire (383 body bytes sitting in front of a
+			 *  217-byte request line, and the request never answered). So the header is located by its
+			 *  request line rather than by position 0, and whatever came in front of it is handed back as
+			 *  the body it always was. */
+			c.recStarts.push(accLen)
+			let start = 0
+			for (let i = 0; i < c.recStarts.length; i++) {
+				if (startsRequest(c.recStarts[i], merged)) {
+					start = c.recStarts[i]
+					break
+				}
+			}
+			c.head = textOfBytes(merged.subarray(start, at))
 			const want = declaredOf(c.head)
 			// A request with no Content-Length has nothing after the header block; GET and DELETE
 			// arrive like this from a hand-typed peer, so it is complete as it stands.
@@ -2002,9 +2055,14 @@ function onBytes(c: Conn, info: socket.SocketMessageInfo): void {
 			c.body = new ArrayBuffer(c.declared)
 			c.view = new Uint8Array(c.body!)
 			c.acc = new Uint8Array(0)
+			c.recStarts = []
 			note('请求头：' + c.head.split('\r\n')[0] + ' 声明 ' + c.declared.toString()
 				+ '，首包 ' + merged.length.toString() + ' at=' + at.toString()
-				+ ' 原始=[' + textOfBytes(sliceBytes(merged, 0, 72)) + ']')
+				+ (start > 0 ? ' 早到 ' + start.toString() + ' 字节' : '')
+				+ ' 原始=[' + textOfBytes(sliceBytes(merged, start, 72)) + ']')
+			if (start > 0) {
+				takeBody(c, merged.subarray(0, start))
+			}
 			takeBody(c, merged.subarray(at + 4, merged.length))
 		} else {
 			takeBody(c, chunk)
@@ -2547,17 +2605,24 @@ function discPublish(): void {
 function discBrowse(): void {
 	const svc = mdns.createDiscoveryService(discContext(), MDNS_SERVICE_SHORT)
 	svc.on('serviceFound', (info: mdns.LocalServiceInfo): void => {
+		/* A found record only names the service: the SDK's own declaration of `on('serviceFound')` says
+		 *  the TXT, host and port arrive only after resolveLocalService(), so building a row from `info`
+		 *  here yields an empty prefix every time and the channel looks dead while it is hearing answers. */
 		if (discMdnsState != 'ok') {
 			discMdnsState = 'ok'
 			discMdnsDetail = ''
 		}
-		const entries = discEntriesOf(info.serviceAttribute)
-		const prefix = discPrefixOfTxt(entries)
-		if (prefix != '' && info.serviceName != '') {
-			discNames.set(info.serviceName, prefix)
-		}
 		discFound = discFound + 1
-		discDeliverService('got', info.host != null ? info.host!.address : '', info.port ?? 0, entries, prefix)
+		mdns.resolveLocalService(discContext(), info).then((made: mdns.LocalServiceInfo): void => {
+			const entries = discEntriesOf(made.serviceAttribute)
+			const prefix = discPrefixOfTxt(entries)
+			if (prefix != '' && made.serviceName != '') {
+				discNames.set(made.serviceName, prefix)
+			}
+			discDeliverService('got', made.host != null ? made.host!.address : '', made.port ?? 0, entries, prefix)
+		}).catch((e: Error): void => {
+			discNote('mDNS 解析失败：' + errText(e))
+		})
 	})
 	svc.on('serviceLost', (info: mdns.LocalServiceInfo): void => {
 		discLost = discLost + 1
