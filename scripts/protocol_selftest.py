@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from dataclasses import replace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -334,6 +335,77 @@ def phase_stalled_offer(proto: protocol_spec.Protocol, workspace: Path) -> None:
             service.stop()
 
 
+def phase_offer_poll(proto: protocol_spec.Protocol, workspace: Path) -> None:
+    """#96: a poll that cannot read the reply is not the end of the transfer.
+
+    The socket timeout is longer than the decision window on purpose (a peer that holds the
+    connection open answers only once its user has decided), so a stalled read says nothing about
+    whether anybody decided. The manifest keeps one offer_id, and a receiver counts repeats of it as
+    one delivery, so trying again costs a second - giving up costs a person a batch they approved.
+    """
+    corpus = build_corpus(workspace / "poll-corpus")
+    sender = load_or_create(workspace / "poll-sender")
+    receiver = load_or_create(workspace / "poll-receiver")
+    root = workspace / "poll-received"
+    service = ReceiveService(receiver, "PC-Poll", lambda manifest, who, caller: True,
+                             host="127.0.0.1", port=0, root=root)
+    service.start()
+    try:
+        files = plan(corpus, base=workspace / "poll-corpus")
+
+        def dial(name: str, seconds: int) -> PeerConnection:
+            conn = PeerConnection(sender, name, "127.0.0.1", service.port, receiver.fingerprint)
+            if seconds:
+                conn.proto = replace(proto, offer_wait_timeout_s=seconds)
+            conn.hello()
+            conn.pair(service.current_pair_code())
+            return conn
+
+        conn = dial("PC-Sender", 0)
+        real = conn._once
+        left = [2]
+
+        def flaky(method, path, body, headers, pace_ms=0):
+            if method == "POST" and path == "/v1/offer" and left[0] > 0:
+                left[0] -= 1
+                raise ConnectionResetError("peer dropped the connection before the reply")
+            return real(method, path, body, headers, pace_ms)
+
+        conn._once = flaky
+        try:
+            offered = conn.offer(files)
+        finally:
+            conn._once = real
+        check("两次读不通之后这一单还在", bool(offered["state"].get("files")), offered["state"])
+        check("重发的轮询在接收端只算一单", [p.name for p in root.iterdir()] == [conn.offer_id],
+              [p.name for p in root.iterdir()])
+        result = conn.send(files)
+        big = next(f for f in files if f.relpath.endswith("IMG_大文件.bin"))
+        landing = root / conn.offer_id / big.relpath
+        check("那单照样传完并校验通过",
+              all(v["ok"] for v in result["verified"]) and landing.is_file()
+              and hashlib.sha256(landing.read_bytes()).hexdigest() == big.sha256)
+
+        slow = dial("PC-Slow", 2)
+        dead_real = slow._once
+
+        def dead(method, path, body, headers, pace_ms=0):
+            if method == "POST" and path == "/v1/offer":
+                raise ConnectionResetError("peer never answers")
+            return dead_real(method, path, body, headers, pace_ms)
+
+        slow._once = dead
+        started = time.monotonic()
+        try:
+            expect_error("一直读不通到期限才算没人决定", "DECLINED", lambda: slow.offer(files))
+        finally:
+            slow._once = dead_real
+        waited = time.monotonic() - started
+        check("失败要等满整个决定窗口而不是第一下就抛", waited >= 2.0, round(waited, 2))
+    finally:
+        service.stop()
+
+
 def phase_discovery(proto: protocol_spec.Protocol, workspace: Path) -> None:
     """Two symmetric peers finding each other, then promoting a prefix to an anchor."""
     from app.net.discovery import DiscoveryService, Peer
@@ -492,6 +564,7 @@ def main() -> int:
         phase_in_process(proto, workspace)
         phase_restart(proto, workspace)
         phase_stalled_offer(proto, workspace)
+        phase_offer_poll(proto, workspace)
         phase_discovery(proto, workspace)
         phase_reverse_pin(proto, workspace)
     phase_catalogue(proto)

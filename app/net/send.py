@@ -373,7 +373,23 @@ class PeerConnection:
         self._manifest = manifest
         deadline = time.monotonic() + self.proto.offer_wait_timeout_s
         while True:
-            status, payload = self._request("POST", "/v1/offer", json_body=manifest)
+            try:
+                status, payload = self._request("POST", "/v1/offer", json_body=manifest)
+            except (http.client.HTTPException, OSError) as exc:
+                # One poll that fails to read is not the end of this transfer. The manifest carries the
+                # same offer_id every time, and the receiver counts it as one delivery rather than a
+                # second request, so the cost of trying again is one second - while the cost of giving up
+                # is a person watching a batch they already approved disappear. The socket timeout is
+                # deliberately longer than the decision window (a peer that holds the connection open
+                # while its user decides answers only at the end), so a stall here says nothing about
+                # whether anybody decided. Only the window itself says DECLINED.
+                if time.monotonic() >= deadline:
+                    raise protocol_spec.ProtocolError(
+                        "DECLINED", {"reason": "no decision in time", "last_error": str(exc)}
+                    ) from exc
+                log.warning("offer 轮询没读通，一秒后重来：%s", exc)
+                time.sleep(1.0)
+                continue
             if status == 403 and payload.get("code") == "NOT_PAIRED" and self.identity.is_trusted(self.fingerprint):
                 # The peer restarted while somebody was deciding; the pin survives, so re-pair quietly.
                 self.token = ""
