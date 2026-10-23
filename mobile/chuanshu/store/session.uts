@@ -128,10 +128,10 @@ import {
 	lanStatusText
 } from '@/uni_modules/cs-transport'
 // #endif
-// #ifdef APP-IOS
-/** The iPhone keeps the state machine inside the plugin like Android does, so the only thing the page
- *  has to know that Android does not is the second fingerprint: this phone's TLS leaf is RSA-2048, and
- *  §3 says a pair message names it. */
+// #ifdef APP-ANDROID || APP-IOS
+/** Both phones keep the state machine inside the plugin, so the only thing a page has to know there that
+ *  it does not on Harmony is the second fingerprint: these two serve an RSA-2048 TLS leaf rather than
+ *  the Ed25519 key that signs the pair message, and §3 says a pair message names the leaf. */
 import { servedFingerprint } from '@/uni_modules/cs-transport'
 // #endif
 
@@ -915,7 +915,7 @@ function buildOptions(): TransferOptions {
 	// compares these bytes for equality.
 	opts.secret = s.secret.trim()
 	opts.pinPrefix = s.scannedFp
-	// #ifdef APP-HARMONY || APP-IOS
+	// #ifdef APP-HARMONY || APP-ANDROID || APP-IOS
 	// This phone's TLS listener answers under an RSA leaf, not under the Ed25519 identity that
 	// signed the pair message, so §3 says both numbers: the peer pins the first and knows to
 	// expect the second on the socket. '' on the ends whose own key signs its certificate.

@@ -691,6 +691,17 @@ export function receiveStatus(): string {
 	return JSON.stringify(out)
 }
 
+/** The fingerprint of the certificate this phone serves on the socket.
+ *
+ *  It is not `fingerprint()` above: the identity key is the pure-Ed25519 one in Ed25519.kt, which the
+ *  platform cannot turn into a keystore entry, so the listener answers under a separate RSA-2048 leaf.
+ *  Contract §3 makes that a fact on the wire rather than a quirk of one build - a dialling peer declares
+ *  this number inside its signed pair message, and the receiver pins it alongside the socket's own.
+ *  '' means the leaf was never made, which is a broken sender, not a peer without a certificate. */
+export function servedFingerprint(): string {
+	return ServedLeaf.fingerprint()
+}
+
 /* ------------------------------------------------------------------ discovery */
 /** The two LAN paths of spec §2 on this phone: a datagram on 43721 and a DNS-SD service. The rules
  *  those packets are judged by are not here - they live in cs-discovery.uts, the same file the browser

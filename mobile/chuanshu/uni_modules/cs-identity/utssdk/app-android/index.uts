@@ -40,6 +40,18 @@ export function identityProbe(): string {
 	out = out + 'provider BC: ' + (bc == null ? 'absent' : bc!.getName() + ' v' + bc!.getVersion()) + '\n'
 	const dc = Security.getProvider('Conscrypt')
 	out = out + 'provider Conscrypt: ' + (dc == null ? 'absent' : dc!.getName()) + '\n'
+	// 只报这两个名字是不够的：一台设备上「没有 Ed25519」有两种完全不同的原因——要么这个平台根本没带
+	// 提供它的 provider，要么带了但排在 BC 后面、BC 先答了这个算法名。这两种情况要做的决定不一样，
+	// 所以把整张 provider 表连版本号一起打出来。
+	const all = Security.getProviders()
+	let names = ''
+	for (let i: Int = 0; i < all.size; i++) {
+		names = names + all[i].getName() + '/' + all[i].getVersion() + ' '
+	}
+	out = out + 'providers: ' + names + '\n'
+	out = out + tryKeygen('Ed25519', 'BC') + '\n'
+	out = out + tryKeygen('EdDSA', 'BC') + '\n'
+	out = out + tryKeygen('Ed25519', 'AndroidOpenSSL') + '\n'
 
 	try {
 		const gen = KeyPairGenerator.getInstance('Ed25519')
@@ -86,6 +98,19 @@ export function identityProbe(): string {
 		out = out + 'stopped here: ' + e.toString() + '\n'
 	}
 	return out
+}
+
+/** Ask one provider for one algorithm by name, bypassing the fallback order.
+ *  The providers table only says BC is installed; this says whether BC answers the name when it is
+ *  asked directly. BC answering while the unqualified call threw means BC lost the lookup to another
+ *  provider; BC throwing the same way means the jar on this base carries no Ed25519 entry. */
+function tryKeygen(alg: string, prov: string): string {
+	try {
+		return 'ask ' + prov + ' for ' + alg + ': ok, answered by '
+			+ KeyPairGenerator.getInstance(alg, prov).getProvider().getName()
+	} catch (e : any) {
+		return 'ask ' + prov + ' for ' + alg + ': ' + e.toString()
+	}
 }
 
 // --------------------------------------------------------------------------- DER

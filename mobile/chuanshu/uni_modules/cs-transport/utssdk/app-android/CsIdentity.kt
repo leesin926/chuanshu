@@ -5,40 +5,36 @@ import android.util.Base64
 import io.dcloud.uts.UTSAndroid
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.ByteArrayOutputStream
 import java.io.File
-import java.math.BigInteger
-import java.security.KeyFactory
-import java.security.KeyPairGenerator
 import java.security.MessageDigest
-import java.security.PrivateKey
 import java.security.SecureRandom
-import java.security.Signature
-import java.security.cert.CertificateFactory
-import java.security.cert.X509Certificate
-import java.security.spec.PKCS8EncodedKeySpec
-import java.security.spec.X509EncodedKeySpec
-import java.text.SimpleDateFormat
-import java.util.Calendar
-import java.util.Date
-import java.util.Locale
-import java.util.TimeZone
 
 /** The phone's own key, its fingerprint, and the peers it has pinned - all of it kept in filesDir
  *  and all of it reachable only as JSON strings, so the UTS layer never has to know a Kotlin type.
  *
- *  Why this half is Kotlin and not UTS: `Signature.getInstance("Ed25519")` and the SPKI digest are
- *  java.security calls that UTS can make, but the key has to survive an app restart for spec §3's
- *  signature-only re-pair to mean anything, and that file handling reads better here. */
+ *  The key is 32 raw seed bytes, and the arithmetic over it is `Ed25519.kt` rather than
+ *  `java.security`: measured on API 34, this platform's provider table has no Ed25519 anywhere
+ *  (asking the stripped BouncyCastle or the platform Conscrypt by name both answer `no such algorithm`),
+ *  so a `KeyPairGenerator.getInstance("Ed25519")` here is a key that never gets made and a receiver that
+ *  never starts. What the key is *for* has not changed - spec §3's signature over the pair message - and
+ *  `Ed25519.selfTest()` reproduces the desktop library's own vectors byte for byte.
+ *
+ *  The certificate on the socket is a separate, RSA-2048 key (`ServedLeaf`), which is why a pair message
+ *  from this device carries `tls_fingerprint`. */
 object CsIdentity {
 
     private const val HEX = "0123456789abcdef"
 
-    /** PKCS#8 DER of the private key and SubjectPublicKeyInfo DER of the public one, as
-     *  java.security writes them. The SPKI file is what the fingerprint is computed over, so
-     *  keeping both makes the digest reproducible without a KeyFactory round trip. */
-    private const val KEY_FILE = "chuanshu-ed25519.pk8"
+    /** The 32 seed bytes this device signs with. Written next to a copy of the public key in its
+     *  SubjectPublicKeyInfo form, because the fingerprint is a digest of those 44 bytes and keeping
+     *  them means the digest never depends on a key-encoding round trip. */
+    private const val SEED_FILE = "chuanshu-ed25519.seed"
     private const val PUB_FILE = "chuanshu-ed25519.spki"
+
+    /** What a device that ran an older build left behind: the same key, wrapped in PKCS#8 by
+     *  `java.security`. Its last 32 bytes are the seed, so the identity survives the move to
+     *  `Ed25519.kt` and a peer that pinned this phone yesterday still recognises it. */
+    private const val LEGACY_KEY_FILE = "chuanshu-ed25519.pk8"
     private const val ID_FILE = "chuanshu-peer-id.txt"
     private const val TRUST_FILE = "chuanshu-trusted.json"
     private const val PAIRING_FILE = "chuanshu-pairing.json"
@@ -48,7 +44,7 @@ object CsIdentity {
     private const val RECEIVER_TRUST_FILE = "chuanshu-receiver-trust.json"
     private const val RECEIVER_OFFERS_FILE = "chuanshu-receiver-offers.json"
 
-    private class Self(val peerId: String, val key: PrivateKey, val spki: ByteArray)
+    private class Self(val peerId: String, val seed: ByteArray, val spki: ByteArray)
 
     private var cached: Self? = null
 
@@ -65,8 +61,8 @@ object CsIdentity {
 
     private fun filesDir(): File? = UTSAndroid.getAppContext()?.filesDir
 
-    /** The 44 bytes a SunEC/Conscrypt Ed25519 public key encodes to: 12-byte header then the raw
-     *  key. The pair request carries only the last 32 (the PC reads them with
+    /** The 44 bytes an Ed25519 SubjectPublicKeyInfo is: the 12-byte header below then the raw key. The
+     *  pair request carries only the last 32 (the PC reads them with
      *  `Ed25519PublicKey.from_public_bytes`), while the fingerprint is over the whole 44 - the same
      *  two values app/net/identity.py computes. */
     private fun rawOf(spki: ByteArray): ByteArray =
@@ -84,24 +80,31 @@ object CsIdentity {
     private fun loadOrMake(): Self {
         cached?.let { return it }
         val dir = filesDir() ?: throw IllegalStateException("拿不到应用私有目录")
-        val keyFile = File(dir, KEY_FILE)
+        val seedFile = File(dir, SEED_FILE)
+        val legacy = File(dir, LEGACY_KEY_FILE)
         val pubFile = File(dir, PUB_FILE)
         val idFile = File(dir, ID_FILE)
-        if (keyFile.exists() && pubFile.exists()) {
-            val spec = PKCS8EncodedKeySpec(keyFile.readBytes())
-            val key = KeyFactory.getInstance("Ed25519").generatePrivate(spec)
-            val spki = pubFile.readBytes()
-            val peerId = if (idFile.exists()) idFile.readText().trim() else newPeerId()
-            val made = Self(if (peerId.length == 32) peerId else newPeerId(), key, spki)
-            cached = made
-            return made
+        val storedSeed = if (seedFile.exists()) seedFile.readBytes() else null
+        val legacyBytes = if (legacy.exists()) legacy.readBytes() else null
+        // A PKCS#8 Ed25519 private key is 48 bytes and its last 32 are the seed, so an older build's
+        // key can be picked up without ever being parsed.
+        val seed = when {
+            storedSeed != null && storedSeed.size == 32 -> storedSeed
+            legacyBytes != null && legacyBytes.size == 48 -> legacyBytes.copyOfRange(16, 48)
+            else -> ByteArray(32).also { SecureRandom().nextBytes(it) }
         }
-        val pair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
-        val spki = pair.public.encoded
-        keyFile.writeBytes(pair.private.encoded)
-        pubFile.writeBytes(spki)
-        val made = Self(newPeerId(), pair.private, spki)
-        idFile.writeText(made.peerId)
+        val raw = Ed25519.publicKey(seed)
+        // The stored SPKI is only kept when it is still this seed's key; anything else - a half-written
+        // file, a build that made the key somewhere else - is replaced rather than trusted.
+        val storedSpki = if (pubFile.exists()) pubFile.readBytes() else null
+        val keep = storedSpki != null && storedSpki.size == 44 &&
+            storedSpki.copyOfRange(12, 44).contentEquals(raw)
+        val spki = if (keep) storedSpki!! else SPKI_HEAD + raw
+        if (!keep) pubFile.writeBytes(spki)
+        if (storedSeed == null || !storedSeed.contentEquals(seed)) seedFile.writeBytes(seed)
+        val peerId = if (idFile.exists()) idFile.readText().trim() else ""
+        val made = Self(if (peerId.length == 32) peerId else newPeerId(), seed, spki)
+        if (peerId != made.peerId) idFile.writeText(made.peerId)
         cached = made
         return made
     }
@@ -130,12 +133,10 @@ object CsIdentity {
      *  the fourth field appears only when the served leaf is not this key. */
     fun signMessage(message: String): String = try {
         val me = loadOrMake()
-        val signer = Signature.getInstance("Ed25519")
-        signer.initSign(me.key)
-        signer.update(message.toByteArray(Charsets.UTF_8))
         JSONObject()
             .put("public_key", Base64.encodeToString(rawOf(me.spki), Base64.NO_WRAP))
-            .put("signature", Base64.encodeToString(signer.sign(), Base64.NO_WRAP))
+            .put("signature", Base64.encodeToString(
+                Ed25519.sign(me.seed, message.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP))
             .toString()
     } catch (e: Throwable) {
         fail("配对签名失败：" + e)
@@ -277,7 +278,7 @@ object CsIdentity {
 
     // -------------------------------------------------------------- reading another key
 
-    /** The 12 bytes SunEC puts in front of every Ed25519 SubjectPublicKeyInfo: SEQUENCE{ SEQUENCE{
+    /** The 12 bytes in front of every Ed25519 SubjectPublicKeyInfo: SEQUENCE{ SEQUENCE{
      *  OID 1.3.101.112 }, BIT STRING(32) }. A pair request carries only the raw 32 after it, so the
      *  prefix is rebuilt here - the same reconstruction app/net/identity.py:_spki_der does, which is
      *  what makes both ends agree on one digest. */
@@ -310,125 +311,9 @@ object CsIdentity {
      *  the message the caller hands in. This is what lets a pinned peer re-pair with an empty code. */
     fun verifyKey(publicKeyB64: String, message: String, signatureB64: String): Boolean = try {
         val spki = spkiOf(publicKeyB64) ?: return false
-        val pub = KeyFactory.getInstance("Ed25519").generatePublic(X509EncodedKeySpec(spki))
-        val checker = Signature.getInstance("Ed25519")
-        checker.initVerify(pub)
-        checker.update(message.toByteArray(Charsets.UTF_8))
-        checker.verify(Base64.decode(signatureB64, Base64.DEFAULT))
+        Ed25519.verify(rawOf(spki), message.toByteArray(Charsets.UTF_8),
+            Base64.decode(signatureB64, Base64.DEFAULT))
     } catch (e: Throwable) {
         false
-    }
-
-    // -------------------------------------------------------------- our own certificate
-
-    private const val CERT_FILE = "chuanshu-ed25519.crt"
-    private const val OID_ED25519 = "06032b6570"
-    private const val OID_CN = "0603550403"
-
-    /** The key the certificate below signs with. Kept off the UTS boundary on purpose: a PrivateKey
-     *  that reaches UTS is a PrivateKey that can be forgotten about in a later refactor. */
-    fun privateKey(): PrivateKey = loadOrMake().key
-
-    fun spki(): ByteArray = loadOrMake().spki
-
-    private fun der(tag: Int, body: ByteArray): ByteArray {
-        val n = body.size
-        val head = when {
-            n < 0x80 -> byteArrayOf(tag.toByte(), n.toByte())
-            n < 0x100 -> byteArrayOf(tag.toByte(), 0x81.toByte(), n.toByte())
-            else -> byteArrayOf(tag.toByte(), 0x82.toByte(), (n shr 8).toByte(), (n and 0xff).toByte())
-        }
-        return head + body
-    }
-
-    private fun concatAll(parts: Array<out ByteArray>): ByteArray {
-        val sink = ByteArrayOutputStream()
-        for (part in parts) sink.write(part, 0, part.size)
-        return sink.toByteArray()
-    }
-
-    private fun derSeq(vararg parts: ByteArray): ByteArray = der(0x30, concatAll(parts))
-    private fun derSet(vararg parts: ByteArray): ByteArray = der(0x31, concatAll(parts))
-
-    private fun derOid(hex: String): ByteArray {
-        val bytes = ByteArray(hex.length / 2)
-        for (i in bytes.indices) bytes[i] = hex.substring(i * 2, i * 2 + 2).toInt(16).toByte()
-        return bytes
-    }
-
-    private fun derName(cn: String): ByteArray =
-        derSeq(derSet(derSeq(derOid(OID_CN), der(0x0c, cn.toByteArray(Charsets.UTF_8)))))
-
-    private fun derTime(millis: Long): ByteArray {
-        val f = SimpleDateFormat("yyMMddHHmmss'Z'", Locale.US)
-        f.timeZone = TimeZone.getTimeZone("UTC")
-        return der(0x17, f.format(Date(millis)).toByteArray(Charsets.US_ASCII))
-    }
-
-    /** A self-signed certificate around the key this device already had.
-     *
-     *  Hand-built because the only other way to get one on Android is a BouncyCastle dependency this
-     *  machine cannot verify from a mirror, and because the SPKI inside it has to be the exact bytes
-     *  `fingerprint()` hashes: the PC pins that digest, so a certificate whose key differed from the
-     *  one in the pair request would look like an attack on our own protocol. */
-    private fun buildCert(peerId: String, key: PrivateKey, spki: ByteArray): ByteArray {
-        val serial = BigInteger(64, SecureRandom())
-        val now = System.currentTimeMillis()
-        val notAfter = Calendar.getInstance().apply {
-            timeInMillis = now
-            add(Calendar.YEAR, 3650)
-        }.timeInMillis
-        val alg = derSeq(derOid(OID_ED25519))
-        val tbs = derSeq(
-            der(0xa0, der(0x02, BigInteger.valueOf(2).toByteArray())),
-            der(0x02, serial.toByteArray()),
-            alg,
-            derName(peerId),
-            derSeq(derTime(now - 86400000L), derTime(notAfter)),
-            derName(peerId),
-            spki
-        )
-        val signer = Signature.getInstance("Ed25519")
-        signer.initSign(key)
-        signer.update(tbs)
-        // BIT STRING: one leading unused-bits byte, always zero for Ed25519.
-        return derSeq(tbs, alg, der(0x03, byteArrayOf(0) + signer.sign()))
-    }
-
-    private fun parseCert(der: ByteArray): X509Certificate? = try {
-        CertificateFactory.getInstance("X.509")
-            .generateCertificate(java.io.ByteArrayInputStream(der)) as X509Certificate
-    } catch (e: Throwable) {
-        null
-    }
-
-    /** Our certificate, made once and then reused: a peer that pinned us yesterday has to see the same
-     *  bytes tomorrow, and an expired or key-mismatched file is silently rebuilt.
-     *
-     *  Thrown at the caller rather than answered with an empty array: the listener cannot start without
-     *  it, and "keystore has no key entry" is a worse message than the real reason. */
-    @Synchronized
-    fun certDer(): ByteArray {
-        val me = loadOrMake()
-        val want = fingerprintOf(me.spki)
-        val file = filesDir()?.let { File(it, CERT_FILE) } ?: throw IllegalStateException("拿不到应用私有目录")
-        if (file.exists()) {
-            val stored = file.readBytes()
-            val parsed = parseCert(stored)
-            if (parsed != null) {
-                val same = try {
-                    parsed.checkValidity()
-                    want.equals(hexOf(MessageDigest.getInstance("SHA-256").digest(parsed.publicKey.encoded)), true)
-                } catch (e: Throwable) {
-                    false
-                }
-                if (same) return stored
-            }
-        }
-        val made = buildCert(me.peerId, me.key, me.spki)
-        val parsed = parseCert(made) ?: throw IllegalStateException("本机证书没能被系统解析：" + made.size + " 字节")
-        parsed.checkValidity()
-        file.writeBytes(made)
-        return made
     }
 }

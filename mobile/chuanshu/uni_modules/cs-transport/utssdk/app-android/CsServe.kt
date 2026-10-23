@@ -270,14 +270,15 @@ object CsServe {
 
     // -------------------------------------------------------------------- the listener
 
-    /** TLS needs our key and a certificate whose public key is the one both ends have been hashing.
-     *  Parsed through CertificateFactory rather than handed to the keystore as raw DER: a builder-made
-     *  wrapper is what made the desktop side answer "No available authentication scheme". */
+    /** TLS needs the served key and its certificate - not the Ed25519 identity, which is not a
+     *  `java.security` key on this platform and never signs a certificate here. Parsed through
+     *  CertificateFactory rather than handed to the keystore as raw DER: a builder-made wrapper is what
+     *  made the desktop side answer "No available authentication scheme". */
     private fun context(): SSLContext {
-        val der = CsIdentity.certDer()
+        val der = ServedLeaf.certDer()
         val parsed = CertificateFactory.getInstance("X.509")
             .generateCertificate(ByteArrayInputStream(der)) as X509Certificate
-        val key = CsIdentity.privateKey()
+        val key = ServedLeaf.privateKey()
         val ks = KeyStore.getInstance("PKCS12")
         ks.load(null, null)
         ks.setKeyEntry("p", key, CharArray(0), arrayOf<Certificate>(parsed))
