@@ -66,6 +66,14 @@
 		box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
 	}
 
+	/* 首页是 navigationStyle:custom，窗体沉浸到状态栏底下，页面自己不让位就会把大标题压在系统时间上。
+	   --status-bar-height 只有沉浸式时才非零（其余页面有原生导航条，这一格自然是 0），
+	   Web 端没有状态栏，同样落在 0，所以三个端共用这一条。 */
+	.statusbar {
+		width: 100%;
+		height: var(--status-bar-height);
+	}
+
 	/* 设计图里小卡（入口格、设置组）用 16，大内容卡（列表、详情）用 20，不是随手分的。 */
 	.card16 {
 		border-radius: 16px;
