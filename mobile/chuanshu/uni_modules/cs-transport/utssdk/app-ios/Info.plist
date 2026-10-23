@@ -6,8 +6,10 @@
 	     sentence the user reads before the socket opens. Without this key the connect simply fails. -->
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>传书需要和同一局域网里的电脑建立连接，把文件送到对方或从对方接收。</string>
-	<!-- Only used once discovery lands (task #36): the service this phone advertises and browses for.
-	     Declared now so the local-network prompt is asked for the right reason on the first run. -->
+	<!-- The service this phone advertises and browses for (spec §2). iOS 14+ asks for the local network
+	     once per declared type, so a service absent from this list is a service whose publish and search
+	     both fail - and Bonjour is only half of discovery here: the 43721 broadcast needs nothing beyond
+	     the description above. -->
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_chuanshu._tcp</string>

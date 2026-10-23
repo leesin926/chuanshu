@@ -7,7 +7,7 @@
 			<button class="btn" @click="runCert">证书</button>
 			<button class="btn" @click="runTls">TLS 自检</button>
 		</view>
-		<!-- #ifdef APP-ANDROID || APP-HARMONY -->
+		<!-- #ifdef APP-ANDROID || APP-HARMONY || APP-IOS -->
 		<view class="row">
 			<button class="btn" @click="runDiscSelf">发现自检</button>
 			<button class="btn" @click="runDiscStart">发现起来</button>
@@ -64,7 +64,7 @@
 	// #ifdef WEB
 	import { shaSelfTest } from '@/uni_modules/cs-transport'
 	// #endif
-	// #ifdef APP-ANDROID || APP-HARMONY
+	// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
 	import { lanStart, lanStop, lanPeers, lanStatus, lanSelfReport } from '@/store/session.uts'
 	// #endif
 
@@ -134,15 +134,15 @@
 	}
 	// #endif
 
-	// #ifdef APP-ANDROID || APP-HARMONY
+	// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
 	/** Two halves, and only one of them is provable from a button. The 发现自检 list is the roster's own
 	 *  rules against synthetic announces - the same 22 the browser runs; what this phone adds is whether
 	 *  its own NIC will carry a broadcast and resolve a service at all, and that needs the PC across the
 	 *  room. A green list here has never once meant the LAN works.
 	 *
-	 *  Both phones ask the store, not the plugin: on Android the roster lives in the plugin and the store
-	 *  forwards, on Harmony it lives in the store because ArkTS cannot read the shared model inside a
-	 *  plugin. The page has no reason to know which of the two it is talking to. */
+	 *  All three phones ask the store, not the plugin: on Android and iPhone the roster lives in the plugin
+	 *  and the store forwards, on Harmony it lives in the store because ArkTS cannot read the shared model
+	 *  inside a plugin. The page has no reason to know which of the three it is talking to. */
 	function runDiscSelf() {
 		lines.value = lanSelfReport()
 	}

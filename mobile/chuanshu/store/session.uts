@@ -39,10 +39,11 @@ import { receiveWrongCode, demoPcConnect, demoPcSend, demoPcDisconnect, demoPcCo
  *  importing there would collide with those definitions. */
 import { receiveCode, receivePassphrase, receiveRotatePairing, receiveHoldSlot, receiveSeen, receiveSnapshot, receiveDecide } from '@/uni_modules/cs-transport'
 // #endif
-// #ifdef APP-ANDROID
-/** Android keeps its roster inside the plugin, because there UTS does compile against Kotlin and the
- *  sockets run on their own threads; the six names below are the module's own. They are re-exported
- *  under one page-facing spelling so a page asks the same question on every phone. */
+// #ifdef APP-ANDROID || APP-IOS
+/** Both phones keep their roster inside the plugin, because on both UTS does compile against the native
+ *  language and the sockets run on their own threads; the six names below are the module's own. They are
+ *  re-exported under one page-facing spelling so a page asks the same question on every phone - only
+ *  Harmony has to build the same six in this file instead. */
 import { discoverStart, discoverStop, discoverPeers, discoverStatus, discoverVerify, discoverySelfReport } from '@/uni_modules/cs-transport'
 // #endif
 // #ifdef APP-HARMONY
@@ -1433,8 +1434,8 @@ export function initSession() {
 
 /* ------------------------------------------------------------------ 局域网发现 */
 
-// #ifdef APP-ANDROID
-/** Android answers these from the plugin: the roster lives there, next to the two threads that fill it.
+// #ifdef APP-ANDROID || APP-IOS
+/** Both phones answer these from the plugin: the roster lives there, next to the threads that fill it.
  *  The page asks the same six questions on every phone, so the store is the one place they are named. */
 export function lanStart(cb: (ok: boolean, message: string) => void): void {
 	discoverStart(cb)
