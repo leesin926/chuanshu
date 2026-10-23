@@ -1115,7 +1115,7 @@ export function receiveWrongCode(): string {
  *  sends no request for the wire to sweep against, so only this timer can notice it. */
 export function receiveSnapshot(): ReceiveSnapshot {
 	const now = nowSeconds()
-	sweep(recvInbox, now, recvDrop)
+	sweep(recvInbox, now, recvDrop, recvDigestFile)
 	return snapshot(recvInbox, now)
 }
 
@@ -1388,6 +1388,18 @@ export function receiveSelfReport(): string {
 	restartLike(box)
 	const adopted = adoptAll(box, kept, nowSeconds())
 	check('重启后重新接管传输', adopted == 1)
+	// §4 的空闲窗口量的是"最后一次落块"，不是"这台设备上次开机"。台账里没有这两个钟的话，
+	// 每次重启都给一单死掉的传输续上一小时，卡片就能永远写着「还没收到分块」。
+	const ledger = JSON.parse(kept[0]) as UTSJSONObject | null
+	check('续传台账带着落块的时刻', ledger != null && ledger!.getNumber('touched', 0) > 0 && ledger!.getNumber('created', 0) > 0)
+	if (ledger != null) {
+		ledger!.set('touched', nowSeconds() - OFFER_IDLE_S - 5)
+		const agedBox = newInbox()
+		check('过了点的台账照样接管', adoptAll(agedBox, [JSON.stringify(ledger)], nowSeconds()) == 1)
+		const agedNames: string[] = []
+		sweep(agedBox, nowSeconds(), (path: string): void => { agedNames.push(path) }, recvDigestFile)
+		check('重启不再给停摆的传输续命', agedNames.length > 0 && snapshot(agedBox, nowSeconds()).rows.length == 0, agedNames.join('、'))
+	}
 	check('重启后会话失效 NOT_PAIRED', codeOfReply(askOn(box, SIM_PEER_ID, 'GET', '/v1/offer/' + offerId + '/state', '', '旧令牌', new ArrayBuffer(0), '')) == 'NOT_PAIRED')
 	const repair = askPairOn(box, SIM_PEER_ID, '', '', simKey)
 	const repairObj = jsonOf(repair)
@@ -1417,6 +1429,17 @@ export function receiveSelfReport(): string {
 		dest = (verifiedList[0] as UTSJSONObject).getString('path', '')
 	}
 	check('校验通过的文件带回落点', dest.indexOf(SCRATCH_TEXT) >= 0)
+
+	// 这一端不像 PC 一单一个目录：那份停在半路的清单和刚刚传成功的这一份写的是同一个路径。
+	// 回收前者不能删掉后者，所以落点上的字节只要还符合清单里声明的校验和，就不是半个文件。
+	if (ledger != null) {
+		const staleBox = newInbox()
+		adoptAll(staleBox, [JSON.stringify(ledger)], nowSeconds())
+		const staleNames: string[] = []
+		sweep(staleBox, nowSeconds(), (path: string): void => { staleNames.push(path) }, recvDigestFile)
+		const bigName = files[1].relpath
+		check('回收停摆清单不删同名收全的文件', bigName != '' && recvStore.has(bigName) && staleNames.indexOf(bigName) < 0 && snapshot(staleBox, nowSeconds()).rows.length == 0, staleNames.join('、'))
+	}
 
 	// 9. an unfinished delivery is cancelled and the bytes go away.
 	const halfFiles = simFilesFor(SCRATCH_TEXT, SCRATCH_BIG)
@@ -1461,7 +1484,7 @@ export function receiveSelfReport(): string {
 	check('停摆自检：配对换来会话', idleToken != '')
 	check('停摆自检：会话活着时第三方被拒', codeOfReply(askPairOn(idle, '203.0.113.30', idleCode, idleSecret, b64(randomBytes(32)))) == 'PEER_BUSY')
 	const stalled = nowSeconds() + SESSION_IDLE_S + 1
-	const reclaimed = sweep(idle, stalled, recvDrop)
+	const reclaimed = sweep(idle, stalled, recvDrop, recvDigestFile)
 	check('沉默满闲置窗口的会话被收回名额', reclaimed.length == 1 && reclaimed[0] == simFp)
 	check('收回名额时说得出这台对端的名字', snapshot(idle, stalled).lostName == SIM_NAME)
 	check('它自己再发请求吃 NOT_PAIRED', codeOfReply(idleAsk('GET', '/v1/offer/x/state', '', idleToken)) == 'NOT_PAIRED')
@@ -1484,7 +1507,7 @@ export function receiveSelfReport(): string {
 	// 这次收回会把会话一起收走，测到的是 §3 而不是 §4。
 	const offerStallAt = nowSeconds() + OFFER_IDLE_S + 1
 	seenNow(idle, simFp, offerStallAt)
-	sweep(idle, offerStallAt, recvDrop)
+	sweep(idle, offerStallAt, recvDrop, recvDigestFile)
 	check('没人填的传输到点自己下台', codeOfReply(idleAsk('GET', '/v1/offer/' + stallId + '/state', '', idleToken2)) == 'OFFER_UNKNOWN')
 	check('到点后不留半个文件', !recvStore.has(STALL_BIG) && !recvStore.has(STALL_TEXT))
 
@@ -1508,7 +1531,7 @@ export function receiveSelfReport(): string {
 	// 同一个窗口、同一个时钟：唯一差别是这一单写完了。收满的文件必须活下来。
 	const finishStallAt = nowSeconds() + OFFER_IDLE_S + 1
 	seenNow(idle, simFp, finishStallAt)
-	sweep(idle, finishStallAt, recvDrop)
+	sweep(idle, finishStallAt, recvDrop, recvDigestFile)
 	check('收满的文件不会被闲置回收删掉', recvStore.has(STALL_TEXT) && recvStore.has(STALL_BIG))
 	// The ledger that says it is finished must never come back as something to resume - that is the
 	// one shape where the reclaim above would be deleting a person's received file.

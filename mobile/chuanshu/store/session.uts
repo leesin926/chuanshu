@@ -642,7 +642,7 @@ function receiveSeen(fingerprint: string): void {
  *  talking sends no request for the wire to sweep against, so only this timer can notice it. */
 function receiveSnapshot(): ReceiveSnapshot {
 	const now = nowSecs()
-	sweep(recvInbox, now, storeDropFile)
+	sweep(recvInbox, now, storeDropFile, storeDigestFile)
 	return snapshot(recvInbox, now)
 }
 

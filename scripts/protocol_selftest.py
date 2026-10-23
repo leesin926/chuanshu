@@ -25,7 +25,7 @@ sys.path.insert(0, str(ROOT))
 from app.net import errors  # noqa: E402
 from app.net import spec as protocol_spec  # noqa: E402
 from app.net.identity import load_or_create  # noqa: E402
-from app.net.receive import ReceiveService, sanitize_relpath  # noqa: E402
+from app.net.receive import STATE_FILE, ReceiveService, sanitize_relpath  # noqa: E402
 from app.net.send import PairNeeded, PeerConnection, plan  # noqa: E402
 
 REPORT = Path(os.environ.get("CHUANSHU_REPORT", str(ROOT / ".probe" / "protocol_report.txt")))
@@ -288,6 +288,52 @@ def phase_restart(proto: protocol_spec.Protocol, workspace: Path) -> None:
             stop_host(handle2)
 
 
+def phase_stalled_offer(proto: protocol_spec.Protocol, workspace: Path) -> None:
+    """spec §4 counts an idle offer from the last chunk that landed, so that moment is data.
+
+    Re-stamping it when a receiver boots is what keeps a phone's card saying "还没收到分块" about a
+    sender that died an hour ago - every restart buys the offer a fresh window, so the reclaim that
+    the contract allows never arrives.
+    """
+    corpus = build_corpus(workspace / "stall-corpus")
+    sender = load_or_create(workspace / "stall-sender")
+    receiver = load_or_create(workspace / "stall-receiver")
+    root = workspace / "stall-received"
+    service = ReceiveService(receiver, "PC-Stall", lambda manifest, who, caller: True, host="127.0.0.1", port=0, root=root)
+    service.start()
+    stopped = False
+    try:
+        conn = PeerConnection(sender, "PC-Sender", "127.0.0.1", service.port, receiver.fingerprint)
+        conn.hello()
+        conn.pair(service.current_pair_code())
+        files = plan(corpus, base=workspace / "stall-corpus")
+        conn.offer(files)
+        offer_id = conn.offer_id
+        big = next(f for f in files if f.relpath.endswith("IMG_大文件.bin"))
+        conn.push_missing(files, {"files": [{"id": big.id, "missing": [0]}]}, None, 3)
+        service.stop()
+        stopped = True
+
+        document = root / offer_id / STATE_FILE
+        body = json.loads(document.read_text(encoding="utf-8"))
+        check("the ledger writes down when a chunk last landed", "touched" in body and "created" in body, sorted(body))
+        body["touched"] = time.time() - proto.offer_idle_timeout_s - 5
+        document.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
+
+        again = ReceiveService(receiver, "PC-Stall", lambda manifest, who, caller: True, host="127.0.0.1", port=0, root=root)
+        again.start()
+        try:
+            check("a stalled offer is still adoptable after a restart", again.adopt_interrupted_offers() == 1)
+            again.sweep()
+            check("whose window ran out is reclaimed, not renewed", not (root / offer_id / big.relpath).exists())
+            expect_error("and it answers the sender as unknown", "OFFER_UNKNOWN", lambda: again.handle_state(offer_id))
+        finally:
+            again.stop()
+    finally:
+        if not stopped:
+            service.stop()
+
+
 def phase_discovery(proto: protocol_spec.Protocol, workspace: Path) -> None:
     """Two symmetric peers finding each other, then promoting a prefix to an anchor."""
     from app.net.discovery import DiscoveryService, Peer
@@ -445,6 +491,7 @@ def main() -> int:
         workspace = Path(tmp)
         phase_in_process(proto, workspace)
         phase_restart(proto, workspace)
+        phase_stalled_offer(proto, workspace)
         phase_discovery(proto, workspace)
         phase_reverse_pin(proto, workspace)
     phase_catalogue(proto)

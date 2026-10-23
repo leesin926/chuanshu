@@ -661,7 +661,7 @@ export function receiveSeen(fingerprint: string): void {
 export function receiveSnapshot(): ReceiveSnapshot {
 	let snap: ReceiveSnapshot | null = null
 	CsServe.gate(function (): string {
-		sweep(recvInbox, nowSecs(), recvDrop)
+		sweep(recvInbox, nowSecs(), recvDrop, recvDigestFile)
 		snap = snapshot(recvInbox, nowSecs())
 		saveReceiveMemory()
 		return ''

@@ -387,6 +387,28 @@ function nameFor(inbox: Inbox, fingerprint: string): string {
 	return '对端 ' + fingerprint.substring(0, 8) + '…'
 }
 
+/** Give back the bytes a transfer that is going away leaves in this device's receive folder.
+ *
+ *  The PC keeps every offer in its own directory, so deleting an interrupted batch can only touch that
+ *  batch. A phone puts every offer's files at the same path, so the bytes standing at a name are not
+ *  necessarily this offer's: the usual way an offer stalls is that the sender gives up and sends the
+ *  same file again, and that second one finishes. Deleting the path then throws away a file the person
+ *  has, which is worse than the sparse allocation this is meant to clean up. So only what does not hash
+ *  to what this offer was asked to receive is garbage - and a whole file that arrived but never got its
+ *  finalize stays, because no one can tell whose it is. */
+function releaseFiles(offer: ROffer, drop: DropFn, digestFile: DigestFileFn): void {
+	for (let k = 0; k < offer.files.length; k++) {
+		const file = offer.files[k]
+		if (file.verdict == 1) {
+			continue
+		}
+		if (file.sha256 != '' && digestFile(file.relpath) == file.sha256) {
+			continue
+		}
+		drop(file.relpath)
+	}
+}
+
 /** Reclaim what has stopped moving: a silent peer's slot, and an offer nobody is filling.
  *
  *  Cheap and idempotent, because it runs from a request thread and from the card's tick. Both windows
@@ -395,7 +417,7 @@ function nameFor(inbox: Inbox, fingerprint: string): string {
  *
  *  An offer the user has not answered yet is deliberately not swept. It occupies no disk, and closing
  *  a dialog behind a person's back is a different promise from timing out a stalled transfer. */
-export function sweep(inbox: Inbox, now: number, drop: DropFn): string[] {
+export function sweep(inbox: Inbox, now: number, drop: DropFn, digestFile: DigestFileFn): string[] {
 	const lost: string[] = []
 	for (let i = inbox.tokens.length - 1; i >= 0; i--) {
 		const entry = inbox.tokens[i]
@@ -425,9 +447,7 @@ export function sweep(inbox: Inbox, now: number, drop: DropFn): string[] {
 		if (!offer.complete) {
 			// Same thing the sender's own 取消 does: the half-written batch is nobody's file, and
 			// leaving it would keep the space the offer reserved when it was accepted.
-			for (let k = 0; k < offer.files.length; k++) {
-				drop(offer.files[k].relpath)
-			}
+			releaseFiles(offer, drop, digestFile)
 		}
 		inbox.offers.splice(i, 1)
 	}
@@ -914,14 +934,12 @@ function finalizeReply(inbox: Inbox, offerId: string, digestFile: DigestFileFn):
 	return okWith({ offer_id: offerId, verified: verified } as UTSJSONObject)
 }
 
-function abortReply(inbox: Inbox, offerId: string, drop: DropFn): WireReply {
+function abortReply(inbox: Inbox, offerId: string, drop: DropFn, digestFile: DigestFileFn): WireReply {
 	const offer = offerById(inbox, offerId)
 	if (offer == null) {
 		return failWith('OFFER_UNKNOWN', { offer_id: offerId } as UTSJSONObject)
 	}
-	for (let i = 0; i < offer.files.length; i++) {
-		drop(offer.files[i].relpath)
-	}
+	releaseFiles(offer!, drop, digestFile)
 	dropOffer(inbox, offerId)
 	return okWith({ offer_id: offerId, dropped: true } as UTSJSONObject)
 }
@@ -996,7 +1014,7 @@ export function handleReceive(
 	if (req.method == 'POST' && req.path == '/v1/pair') {
 		// A peer that went silent must not be the reason a live one gets PEER_BUSY, so the slot is
 		// swept for silence before it is counted - this is the moment it matters.
-		sweep(inbox, now, drop)
+		sweep(inbox, now, drop, digestFile)
 		return pairReply(inbox, self, now, req.client, req.json, keyFp, verify)
 	}
 	// Everything else is authenticated the same way: no session token, no transfer.
@@ -1007,7 +1025,7 @@ export function handleReceive(
 	// Every authenticated request is a heartbeat: it resets the peer's idle clock, and it is the
 	// cheapest place to sweep - a stalled offer and a silent session both stop moving here.
 	seenNow(inbox, caller, now)
-	sweep(inbox, now, drop)
+	sweep(inbox, now, drop, digestFile)
 	if (req.method == 'POST' && req.path == '/v1/offer') {
 		return offerReply(inbox, now, req.json, caller)
 	}
@@ -1024,7 +1042,7 @@ export function handleReceive(
 			return chunkReply(inbox, now, offerId, parts[5], Math.floor(parseFloat(parts[6])), req.body, req.sha, hexOf, writeAt)
 		}
 		if (req.method == 'DELETE') {
-			return abortReply(inbox, offerId, drop)
+			return abortReply(inbox, offerId, drop, digestFile)
 		}
 	}
 	return failWith('OFFER_UNKNOWN', { path: req.method + ' ' + req.path } as UTSJSONObject)
@@ -1154,6 +1172,11 @@ export function stateJson(inbox: Inbox, offerId: string): string {
 		files: files,
 		received: received,
 		from_name: offer!.fromName,
+		/** §4 counts the idle window from the last chunk that landed, so both clocks have to be in the
+		 *  document. Without them every restart rewinds the window and an offer whose sender died comes
+		 *  back on the card forever, saying "还没收到分块" about a transfer nobody is resuming. */
+		created: offer!.created,
+		touched: offer!.touched,
 		/** Written so a crash between finalize and this document going away cannot hand the next run
 		 *  an unfinished offer - unfinished is the only state the idle reclaim is allowed to delete. */
 		complete: offer!.complete
@@ -1196,10 +1219,13 @@ export function adopt(inbox: Inbox, text: string, now: number): boolean {
 	const offer = new ROffer()
 	offer.offerId = offerId
 	offer.awaiting = false
-	// A re-adopted offer starts its idle window from this moment, not from whenever the manifest first
-	// arrived: the sender is about to resume, and a restart is not a stall.
-	offer.created = now
-	offer.touched = now
+	// The idle window belongs to the transfer, not to this process: read back the clocks the document
+	// carries, so a restart an hour after the sender went silent is a stall rather than a fresh chance.
+	// A document from a build that wrote neither has no honest answer, so it gets this moment.
+	const stamped = body.getNumber('created', 0)
+	const last = body.getNumber('touched', 0)
+	offer.created = stamped > 0 ? stamped : now
+	offer.touched = last > 0 ? last : (stamped > 0 ? stamped : now)
 	offer.fromName = body.getString('from_name', '')
 	const received = body.getJSON('received')
 	for (let i = 0; i < files.length; i++) {

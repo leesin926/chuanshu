@@ -130,6 +130,10 @@ class OfferState:
             "offer_id": self.offer_id,
             "who": self.who,
             "files": self.files,
+            # §4 measures the reclaim from the last chunk that landed, so both clocks have to survive
+            # the write: a restart is not a stall, but a restart an hour after the sender went silent is.
+            "created": self.created,
+            "touched": self.touched,
             # Written so a crash between finalize and the ledger going away cannot hand the next
             # run an unfinished offer - unfinished is what the reclaim is allowed to delete.
             "complete": self.complete,
@@ -156,6 +160,10 @@ class OfferState:
         except (OSError, ValueError, TypeError, KeyError):
             log.exception("offer state unreadable, ignoring: %s", path)
             return None
+        # A document written before these clocks were stored has no honest answer, so it gets this
+        # moment; the next persist() has one.
+        stamped = float(body.get("created") or 0.0)
+        last = float(body.get("touched") or 0.0)
         return cls(
             offer_id=str(body["offer_id"]),
             directory=directory,
@@ -164,6 +172,8 @@ class OfferState:
             received=received,
             who=str(body.get("who", "")),
             complete=bool(body.get("complete", False)),
+            created=stamped or time.time(),
+            touched=last or stamped or time.time(),
         )
 
 
