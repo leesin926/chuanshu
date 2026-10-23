@@ -32,6 +32,10 @@
 ; 简体中文消息文件的两级来源：项目内覆盖副本优先，其次编译器自带。
 #define LocalZh AddBackslash(SourcePath) + "languages\ChineseSimplified.isl"
 #define BundledZh AddBackslash(InnoDir) + "Languages\ChineseSimplified.isl"
+; 有没有中文向导，取决于上面两级来源里能不能找到一个 .isl。[CustomMessages] 里的
+; zh_CN.* 键必须跟着它一起出现：Inno 拒绝为 [Languages] 里没有的语言写消息，
+; 而直接跑 ISCC 做语法检查时 InnoDir 是空的，只有这条路能让它编得过。
+#define HaveZh FileExists(LocalZh) || FileExists(BundledZh)
 ; 免责声明文本，按安装向导语言各自取一份。
 #define LicEn AddBackslash(SourcePath) + "licenses\disclaimer-en.txt"
 #define LicZh AddBackslash(SourcePath) + "licenses\disclaimer-zh_CN.txt"
@@ -116,9 +120,13 @@ Name: "firewall"; Description: "{cm:FirewallTask}"; GroupDescription: "{cm:Addit
 [CustomMessages]
 ; 任务描述与提示按向导语言各一份；键前缀必须和 [Languages] 的 Name 对得上。
 FirewallTask=Let Windows Firewall accept connections from other devices on this LAN (needs admin)
+#if HaveZh
 zh_CN.FirewallTask=允许 Windows 防火墙放行同一局域网内其它设备的连接（需要管理员权限）
+#endif
 FirewallSkipped=The firewall rules were not written. ChuanShu will ask Windows for permission the first time it listens; answering that dialog is easy to get wrong - a denial leaves a block rule behind, and Windows obeys a block rule even when an allow rule for the same program exists. Run these two commands yourself from an elevated prompt (first one clears whatever is already pinned to this exe):
+#if HaveZh
 zh_CN.FirewallSkipped=没有写入防火墙规则。传书第一次监听时 Windows 会弹窗询问，而那个框很容易点错：一旦拒绝过，系统留下的是阻止规则，而 Windows 判定阻止优先——同一个程序就算再加一条允许规则也不会生效。可以稍后在管理员命令提示符里自己执行这两条（第一条先把钉在这个 exe 上的旧入站规则清掉）：
+#endif
 
 [Files]
 ; 整棵 one-folder 树原样复制：ChuanShu.exe + _internal\（含 PySide6、locale\**.mo 与 assets\icons\）。
