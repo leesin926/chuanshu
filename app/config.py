@@ -17,7 +17,7 @@ CLOSE_ASK, CLOSE_TRAY, CLOSE_QUIT = "ask", "tray", "quit"
 DEFAULTS: dict = {
     # "auto" follows the system locale; otherwise a locale code such as "en".
     "language": "auto",
-    # "auto" follows the Windows app theme; otherwise "light" or "dark".
+    # "auto" follows the system theme (registry on Windows, Qt style hints elsewhere).
     "theme": "auto",
     "on_close": CLOSE_ASK,
     "autostart": False,
