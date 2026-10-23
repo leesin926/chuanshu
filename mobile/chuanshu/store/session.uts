@@ -31,6 +31,9 @@ import { pinnedFor, unpinPeer, receiveStart, receiveStop, receiveStatus } from '
 // #ifdef WEB
 import { demoPeer, demoQrUrl, demoExpireToken, setDemoFault, demoRestart, demoUnpin, pinnedFingerprint } from '@/uni_modules/cs-transport'
 import { receiveWrongCode, demoPcConnect, demoPcSend, demoPcDisconnect, demoPcConnected, setSenderFault, setReceiveFault, receiveSelfReport, discoverySelfReport } from '@/uni_modules/cs-transport'
+/** The same roster the three phones merge announcements into. The browser cannot hear the LAN, so what
+ *  it feeds these functions is written by hand further down and labelled as demo data on the card. */
+import { newRoster, applyAnnounce, applyTxt, buildAnnounce, buildTxt, sweepPeers, candidatesOf } from '@/uni_modules/cs-transport/utssdk/cs-discovery.uts'
 // #endif
 // #ifdef APP-ANDROID || APP-IOS || WEB
 /** The receiving half, in the shape this platform can offer it: the browser keeps the inbox in
@@ -202,6 +205,12 @@ export type SessionState = {
 	recvAddrs: string[]
 	recvSelfFp: string
 	// #endif
+	/* 发现名单在四个平台上都画：手机画两条通道听到的，浏览器画同一套规则喂出来的演示数据。 */
+	discButton: string
+	discNote: string
+	discSummary: string
+	discNames: string[]
+	discMeta: string[]
 	// #ifdef WEB
 	pcIn: boolean
 	faultLabel: string
@@ -272,6 +281,16 @@ export const s = reactive({
 	recvAddrs: [] as string[],
 	recvSelfFp: '',
 	// #endif
+	discButton: '找局域网设备',
+	// #ifdef WEB
+	discNote: '浏览器进不了局域网：点一下只会摆两份演示数据，好让这张卡在电脑上也能看得见。',
+	// #endif
+	// #ifndef WEB
+	discNote: '还没开始找：点一下会同时起广播和 mDNS 两条通道。',
+	// #endif
+	discSummary: '',
+	discNames: [] as string[],
+	discMeta: [] as string[],
 	// #ifdef WEB
 	pcIn: false,
 	faultLabel: '正常',
@@ -295,6 +314,20 @@ let activeOptions = new TransferOptions()
 /** What this device's own interfaces said the last time a connect was asked for. The answer decides
  *  whether a handshake is worth spending, and the label showing it is a separate question. */
 let netLevel = ''
+
+/** The discovered candidates, in the four parallel arrays the list is painted from. They live here
+ *  rather than in `s` because a row is a thing to dial, not a thing to read: the page shows name and
+ *  address, and tapping one needs the host, the port and the fingerprint *prefix* it announced under.
+ *  Every platform fills these: the browser has neither a broadcast socket nor a multicast group, so
+ *  what it puts in them comes from the shared roster model fed with demo packets, and it says so. */
+let discHosts: string[] = []
+let discPorts: number[] = []
+let discPrefixes: string[] = []
+/** The prefix of the row this phone is connecting to, and '' for every target that did not come from
+ *  the list. A hand-typed address or a scanned QR bypasses discovery (spec §2), and there is then no
+ *  announcement to check the TLS digest against - nothing to verify, and nothing to refuse. */
+let discPicked = ''
+let discRunning = false
 
 // #ifdef APP-HARMONY
 const recvInbox: Inbox = newInbox()
@@ -947,6 +980,23 @@ function refreshPinned() {
 // #endif
 
 function markConnected(session: PeerSession, message: string) {
+	// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
+	/* The re-check spec §2 asks for: a candidate in the list is only a machine that shouted a fingerprint
+	   prefix, and this is the first moment this phone holds the whole digest, read off the TLS connection
+	   rather than off a packet. A mismatch means whoever answered is not whoever announced, and the
+	   session is dropped rather than reported - the pair code would not have caught an on-LAN machine
+	   that hijacked the announcement and knows the code. */
+	if (discPicked != '') {
+		const wanted = discPicked
+		discPicked = ''
+		if (!lanVerify(wanted, session.peerFingerprint)) {
+			markDisconnected('这台对端在 TLS 上不是它广播的那把密钥，已断开')
+			log('连接被拒：广播里报的前缀是 ' + wanted + '，TLS 上的完整指纹对不上')
+			return
+		}
+		log('已核对：' + wanted + ' 这台机器在 TLS 上就是它自己（' + session.peerFingerprint.substring(0, 16) + '…）')
+	}
+	// #endif
 	activeSession = session
 	s.connected = true
 	s.connectLabel = '已连接'
@@ -1148,6 +1198,11 @@ export function clearTarget() {
 	s.targetLabel = ''
 	s.netLabel = ''
 	netLevel = ''
+	// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
+	// The row this phone was about to dial is gone with the target, and a stale prefix would make the
+	// next hand-typed connect answer to an announcement it never saw.
+	discPicked = ''
+	// #endif
 	syncSendable()
 }
 
@@ -1614,3 +1669,205 @@ export function lanSelfReport(): string {
 	return selfReport()
 }
 // #endif
+
+/* ------------------------------------------------------------------ 发现列表接到连接 */
+/** The shared half of #93: a card on 扫码连接 that lists what the two channels heard and lets a tap fill
+ *  the target the 连接 button already reads.
+ *
+ *  What is deliberately *not* here: a pair code. An announcement carries a name, an address and a
+ *  fingerprint prefix (spec §2) and nothing that authorises a session, so picking a row only fills in
+ *  where to dial - the code and the password still come off the other screen, and the digest is checked
+ *  against the announced prefix in markConnected() once TLS has answered. A list you could connect to by
+ *  tapping alone would be a list of things to trust because somebody shouted about them.
+ *
+ *  The browser has no part in that check and no sockets to hear the LAN with, so it supplies demo rows
+ *  through the same model and says which of its two promises it cannot keep. */
+
+function viaText(one: UTSJSONObject): string {
+	const list = one.getArray('via')
+	if (list == null || list.length == 0) {
+		return '没说到通道'
+	}
+	let text = ''
+	for (let i = 0; i < list.length; i++) {
+		const one2 = (list[i] as string) == 'mdns' ? 'mDNS' : '广播'
+		text = text == '' ? one2 : text + '+' + one2
+	}
+	return text
+}
+
+/** One snapshot of the roster, painted. `rows` are the candidate objects the platform's `discSnapshot()`
+ *  spelled out, in the shape `lanPeers()` returns them on a phone, so the card cannot tell a live
+ *  machine from the browser's demo rows. */
+function paintDisc(rows: UTSJSONObject[], note: string, total: number): void {
+	const names: string[] = []
+	const meta: string[] = []
+	const hosts: string[] = []
+	const ports: number[] = []
+	const prefixes: string[] = []
+	for (let i = 0; i < rows.length; i++) {
+		const one = rows[i]
+		const prefix = one.getString('prefix', '')
+		const name = one.getString('name', '')
+		names.push(name == '' ? '未命名 · ' + prefix.substring(0, 8) : name)
+		meta.push(one.getString('host', '') + ':' + (one.getNumber('port') ?? 0).toString() +
+			'　' + viaText(one) + '　' + (one.getNumber('age') ?? 0).toString() + ' 秒前')
+		hosts.push(one.getString('host', ''))
+		ports.push(one.getNumber('port') ?? 0)
+		prefixes.push(prefix)
+	}
+	// Whole-array assignments again: the view sees a new list, never a half-written one.
+	discHosts = hosts
+	discPorts = ports
+	discPrefixes = prefixes
+	s.discNames = names
+	s.discMeta = meta
+	s.discNote = note
+	s.discSummary = !discRunning
+		? '发现没在跑，下面这份名单是上一次的。'
+		: (total == 0 ? '两条通道都没听到设备。可以改用扫码或手输地址。' : '找到 ' + total.toString() + ' 台，点一台填进下面的连接。')
+}
+
+// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
+/** What the two channels heard, as the plugin's own JSON. */
+function discSnapshot(): string {
+	return lanPeers()
+}
+
+function discStartChannels(cb: (ok: boolean, message: string) => void): void {
+	lanStart(cb)
+}
+
+function discStopChannels(cb: (ok: boolean, message: string) => void): void {
+	lanStop(cb)
+}
+// #endif
+
+// #ifdef WEB
+/** A browser can join no multicast group and send no limited broadcast, so there is nothing here for
+ *  the two channels to hear and this card can only ever show demo rows. They go through the same roster
+ *  the phones paint from - `applyAnnounce` and `applyTxt` with two canned packets, re-offered on every
+ *  read the way a live machine re-announces every three seconds - so the expiry, the via-merge and the
+ *  sort a reviewer sees in the browser are the real rules. What is invented is only the traffic, and the
+ *  note says so. */
+let discDemo = newRoster('0000000000000000')
+let discDemoNote = ''
+
+function discSnapshot(): string {
+	const now = Math.floor(Date.now() / 1000)
+	if (discRunning) {
+		applyAnnounce(discDemo, buildAnnounce('demo-4f2a', TRANSPORT_PORT, '客厅的笔记本', 'c5410bb27d9e3f86', now), '192.168.1.31', now)
+		applyTxt(discDemo, buildTxt('书房的那台 PC', '9f2c1d77a4b8e013', now), '192.168.1.12', TRANSPORT_PORT, now)
+	}
+	sweepPeers(discDemo, now)
+	const out = new UTSJSONObject()
+	const rows: UTSJSONObject[] = []
+	const list = candidatesOf(discDemo)
+	for (let i = 0; i < list.length; i++) {
+		const one = list[i]
+		const row = new UTSJSONObject()
+		row['prefix'] = one.prefix
+		row['host'] = one.host
+		row['port'] = one.port
+		row['peer_id'] = one.peerId
+		row['name'] = one.name
+		row['version'] = one.version
+		row['fingerprint'] = one.fingerprint
+		row['via'] = one.via
+		row['age'] = now - one.seen
+		rows.push(row)
+	}
+	out['peers'] = rows
+	out['total'] = list.length
+	out['running'] = discRunning
+	out['note'] = discDemoNote
+	return JSON.stringify(out)
+}
+
+function discStartChannels(cb: (ok: boolean, message: string) => void): void {
+	discDemo = newRoster('0000000000000000')
+	discDemoNote = '浏览器没有广播套接字，也进不了 mDNS：这两台是演示数据，连上去的还是那个模拟对端。'
+	cb(true, '两条通道在浏览器里都起不来，名单改成演示数据')
+}
+
+function discStopChannels(cb: (ok: boolean, message: string) => void): void {
+	discDemoNote = '演示名单已经清掉：浏览器本来也听不见真的局域网。'
+	cb(true, '浏览器没有可停的通道')
+}
+// #endif
+
+/** The roster, painted. Called once when the page shows and then once a second while it is open: a
+ *  candidate expires 15 seconds after the last packet, so a list refreshed less often than that is a
+ *  list of machines that are no longer there. */
+export function refreshDiscovery(): void {
+	const made = JSON.parse(discSnapshot()) as UTSJSONObject | null
+	if (made == null) {
+		return
+	}
+	const rows = made!.getArray<UTSJSONObject>('peers')
+	paintDisc(rows == null ? [] : rows, made!.getString('note', ''), made!.getNumber('total') ?? 0)
+}
+
+/** Start or stop both channels with one button, because the user has no reason to know there are two.
+ *  The answer comes back on the page's own thread - a socket callback on a phone, synchronously in the
+ *  browser - so the labels are written in the callback rather than after the call. */
+export function toggleDiscovery(): void {
+	if (discRunning) {
+		discStopChannels(function (ok: boolean, message: string): void {
+			discRunning = false
+			s.discButton = '找局域网设备'
+			s.discNote = message
+			refreshDiscovery()
+		})
+		return
+	}
+	s.discNote = '正在起广播端口 43721 和 mDNS……'
+	discStartChannels(function (ok: boolean, message: string): void {
+		discRunning = ok
+		s.discButton = ok ? '停止找设备' : '找局域网设备'
+		refreshDiscovery()
+		if (!ok) {
+			log('发现起不来：' + message)
+		}
+	})
+}
+
+/** What this platform can promise about the digest once the connection is up. The browser's peer is a
+ *  mock with no TLS handshake behind it, so it must not claim the §2 re-check it cannot run. */
+function discPromise(): string {
+	// #ifdef WEB
+	return '　浏览器里的对端本来就是模拟的，这一步核对不到'
+	// #endif
+	// #ifndef WEB
+	return '，连上后按 TLS 上的完整指纹核对'
+	// #endif
+}
+
+/** A row is a place to dial, not a reason to trust. The port comes from the announcement because the
+ *  desktop's TLS listener may not be on 43720 - the same reason the phone's own announcement carries the
+ *  port it actually opened. */
+export function pickPeer(at: number): void {
+	if (at < 0 || at >= discHosts.length) {
+		return
+	}
+	if (s.connecting || s.connected) {
+		log('先断开当前连接，再换一台对端')
+		return
+	}
+	const host = discHosts[at]
+	const port = discPorts[at]
+	discPicked = discPrefixes[at]
+	s.host = host
+	s.port = port.toString()
+	s.scannedFp = ''
+	s.targetLabel = '来自局域网发现：' + host + ':' + port.toString() +
+		'　前缀 ' + discPicked + discPromise()
+	s.showAdvanced = false
+	refreshPinned()
+	lanCheck(host, function (level: string, text: string): void {
+		showNet(level, text)
+	})
+	syncSendable()
+	log('已选中 ' + s.discNames[at] + '（' + host + ':' + port.toString() +
+		'），照着它屏幕上的配对码和密码点连接')
+}

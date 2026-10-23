@@ -19,6 +19,33 @@
 			<!-- #endif -->
 		</view>
 
+		<!-- 设计图这一页没有名单，因为画图那会儿还没有发现层：浏览器、PC 两端的名单都是后来加的。
+		     这块插在取景框和连接卡之间，读的顺序就是"先找见，再连上"；画着的那几张卡一张没动。
+		     浏览器进不了局域网，同一张卡在那边喂的是演示数据，卡片自己会说出来。 -->
+		<view class="card mt16">
+			<view class="head">
+				<text class="h">局域网设备</text>
+				<text class="badge" v-if="s.discNames.length > 0">{{ s.discNames.length.toString() }} 台</text>
+			</view>
+			<view class="row mt8">
+				<button class="mini" @click="disc">{{ s.discButton }}</button>
+			</view>
+			<text class="note mt8" v-if="s.discSummary != ''">{{ s.discSummary }}</text>
+			<text class="sub" v-if="s.discNote != ''">{{ s.discNote }}</text>
+			<view class="filerow" v-for="(n, i) in s.discNames" :key="i" @click="pick(i)">
+				<view class="rowmain">
+					<text class="fname">{{ n }}</text>
+					<text class="fsize">{{ s.discMeta[i] }}</text>
+				</view>
+			</view>
+			<!-- #ifndef WEB -->
+			<text class="note mt8">点一台只把地址填进下面那张卡：广播和 mDNS 里报的是名字、地址和指纹前缀，没有配对码。连上以后会拿 TLS 上读到的完整指纹跟它自己广播的前缀对一次，对不上这条连接直接断掉。</text>
+			<!-- #endif -->
+			<!-- #ifdef WEB -->
+			<text class="note mt8">点一台只把地址填进下面那张卡。浏览器进不了那两个组，这两行是照协议里那两种公告手写的演示数据，连上去的还是那个模拟对端。</text>
+			<!-- #endif -->
+		</view>
+
 		<view class="card mt16">
 			<view class="head">
 				<text class="h">连接到对端</text>
@@ -72,11 +99,25 @@
 
 <script setup lang="uts">
 	import { s, initSession, refreshReceive, copyPairing, onPaste, onConnect, onDisconnect, clearTarget, togglePaste, toggleAdvanced, unpin } from '@/store/session.uts'
+	import { refreshDiscovery, toggleDiscovery, pickPeer } from '@/store/session.uts'
 	// #ifndef WEB
 	import { onScan } from '@/store/session.uts'
 	// #endif
 
 	initSession()
+
+	/* 名单只在页面看得见的时候重画：一台设备从最后一次广播起 15 秒才过期，页面已经收起来了还继续
+	   每秒去插件里取一次名单，付的是白付的成本。跟着接收面板那条 self-rescheduling 的写法走。 */
+	let discAlive = false
+	function discTick(): void {
+		if (!discAlive) {
+			return
+		}
+		setTimeout(function (): void {
+			discTick()
+		}, 1000)
+		refreshDiscovery()
+	}
 
 	const scanHint = computed((): string => {
 		// #ifdef WEB
@@ -89,6 +130,12 @@
 
 	onShow(() => {
 		refreshReceive()
+		discAlive = true
+		discTick()
+	})
+
+	onHide(() => {
+		discAlive = false
 	})
 
 	/* 模板只能点本页自己的函数：只被模板引用的 store 动作会被摇树丢掉，Kotlin 那头报“找不到名称 invoke”。 */
@@ -97,6 +144,14 @@
 		onScan()
 	}
 	// #endif
+
+	function disc() {
+		toggleDiscovery()
+	}
+
+	function pick(at: number) {
+		pickPeer(at)
+	}
 
 	function paste() {
 		onPaste()
