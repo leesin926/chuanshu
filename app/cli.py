@@ -294,8 +294,10 @@ def _serve(identity, settings: Settings, decide, root: Path, port, out: Terminal
 
     On Windows the probe is the only way to find that out: SO_REUSEADDR lets a second
     process bind a port that is already being listened on, so both would print the same
-    number while the first one answers every connection. POSIX answers with EADDRINUSE
-    and takes the fallback branch below instead.
+    number while the first one answers every connection. POSIX refuses that bind outright,
+    yet in practice it answers through the same probe too - measured under WSL against both
+    a 传书 and a bare socket holding the port. The branch below is what a POSIX bind beats
+    the probe to, and it is there so that race costs a port change rather than a crash.
     """
     def build(number: int):
         service = ReceiveService(

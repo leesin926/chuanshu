@@ -137,21 +137,37 @@ PALETTES = {p.name: p for p in (LIGHT, DARK)}
 
 
 def system_prefers_dark() -> bool:
-    """Windows: HKCU Themes\\Personalize\\AppsUseLightTheme == 0 means dark."""
+    """What the desktop thinks about light versus dark.
+
+    Windows: HKCU Themes\\Personalize\\AppsUseLightTheme == 0 means dark. Read from the
+    registry rather than Qt because that key is what the Windows shell and our own
+    frameless chrome follow, and the value is available before a QApplication exists.
+
+    Linux and macOS: Qt's own style hint, which follows the GNOME/KDE colour scheme. It
+    needs a running application instance, so a call before QApplication is built - or a
+    desktop with no opinion - gets light, the colour the mockups are drawn in.
+    """
     import sys
 
-    if sys.platform != "win32":
-        return False
-    import winreg
+    if sys.platform == "win32":
+        import winreg
 
-    try:
-        with winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
-        ) as key:
-            value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
-        return int(value) == 0
-    except OSError:
+        try:
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+            ) as key:
+                value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+            return int(value) == 0
+        except OSError:
+            return False
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QGuiApplication
+
+    instance = QGuiApplication.instance()
+    if instance is None:
         return False
+    return instance.styleHints().colorScheme() == Qt.ColorScheme.Dark
 
 
 def resolve(preference: str) -> str:

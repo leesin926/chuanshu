@@ -53,7 +53,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QInputDia
 from cryptography import x509  # noqa: E402
 
 from app import autostart  # noqa: E402
-from app.config import CLOSE_QUIT, Settings  # noqa: E402
+from app.config import CLOSE_QUIT, CLOSE_TRAY, Settings  # noqa: E402
 from app.logging_setup import setup_logging  # noqa: E402
 from app.net import spec as protocol_spec  # noqa: E402
 from app.net.discovery import DiscoveryService, Peer  # noqa: E402
@@ -61,7 +61,7 @@ from app.net.identity import Identity, client_context, fingerprint_of, load_or_c
 from app.net.receive import STATE_FILE, ReceiveService  # noqa: E402
 from app.net.send import PeerConnection, plan  # noqa: E402
 from app.paths import receive_root, user_data_dir  # noqa: E402
-from app.ui import theme  # noqa: E402
+from app.ui import theme, tray  # noqa: E402
 from app.ui.language_manager import LanguageManager  # noqa: E402
 from app.ui.main_window import NAV_ITEMS, PAGE_SETTINGS, MainWindow  # noqa: E402
 from app.ui.transfer import PAGE_FILES, PAGE_HISTORY, PAGE_RECEIVE, PAGE_SEND, PAGE_TRANSFER  # noqa: E402
@@ -1195,6 +1195,19 @@ def phase_settings(app: QApplication, window: MainWindow) -> None:
     check("the close choice is remembered", settings.get("on_close") == CLOSE_QUIT, settings.get("on_close"))
     # Running from source cannot register autostart, so the switch has to say so by being greyed.
     check("autostart is only offered where it works", d.autostart_switch.isEnabled() == autostart.is_supported(), d.autostart_switch.isEnabled())
+    # Every tray promise the UI makes is gated on one question, and QT_QPA_PLATFORM=offscreen
+    # answers it the way GNOME without an AppIndicator host does: no. So these assertions run
+    # against the degraded branch on this machine rather than against a hypothetical one.
+    has_tray = tray.available()
+    check("the 留在托盘 choice only appears with a tray",
+          (d.close_box.findData(CLOSE_TRAY) != -1) == has_tray,
+          f"tray={has_tray} choices={[d.close_box.itemData(i) for i in range(d.close_box.count())]}")
+    check("and Ctrl+H is greyed out with nowhere to hide", window.action_tray.isEnabled() == has_tray,
+          window.action_tray.isEnabled())
+    if not has_tray:  # with a tray this would really hide the window out from under the checks below
+        window.hide_to_tray()
+        app.processEvents()
+        check("hiding without a tray leaves the window reachable", window.isVisible(), window.isVisible())
 
     # The two switches the mockup draws but no earlier build had: each one has to be a promise
     # the sender or the tray actually keeps, not a light that comes on.

@@ -14,6 +14,16 @@ from app.i18n import _
 log = logging.getLogger(__name__)
 
 
+def available() -> bool:
+    """Whether this desktop has a status notifier the window can hide into.
+
+    GNOME without the AppIndicator extension - and any offscreen session - answers False. The
+    tray is then not a cosmetic fallback: a window hidden into it has no way back, so every
+    promise that depends on it (隐藏到托盘, 最小化到托盘, the remembered close choice) is gated here.
+    """
+    return QSystemTrayIcon.isSystemTrayAvailable()
+
+
 class TrayIcon(QSystemTrayIcon):
     restore_requested = Signal()
     quit_requested = Signal()
@@ -44,12 +54,12 @@ class TrayIcon(QSystemTrayIcon):
         self.autostart_toggled.emit(checked)
 
     def sync_autostart(self, enabled: bool, checked: bool) -> None:
-        """Reflect the real registry state; a rejected change must not stay ticked."""
+        """Reflect the real registration state; a rejected change must not stay ticked."""
         self.action_autostart.setChecked(enabled)
         if enabled != checked and not is_supported():
             self.showMessage(
                 _("无法开启开机自动启动"),
-                _("仅打包后的 Windows 版本可以注册开机自启。\n当前命令：{cmd}").format(cmd=launch_command()),
+                _("只有打包后的版本能注册开机自启。\n当前命令：{cmd}").format(cmd=launch_command()),
                 QSystemTrayIcon.Warning,
                 6000,
             )

@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
-    QSystemTrayIcon,
     QMenu,
     QPushButton,
     QVBoxLayout,
@@ -30,7 +29,7 @@ from app.ui.language_manager import LanguageManager
 from app.ui.settings_dialog import SettingsPage
 from app.ui.title_bar import EdgeResizeFilter, TitleBar, apply_rounded_corners
 from app.ui.transfer import TransferPanel
-from app.ui.tray import TrayIcon
+from app.ui.tray import TrayIcon, available as tray_available
 
 log = logging.getLogger(__name__)
 
@@ -289,12 +288,16 @@ class MainWindow(QMainWindow):
         self.tray.quit_requested.connect(self.quit_app)
         self.tray.autostart_toggled.connect(self.on_autostart_toggled)
         self.tray.retranslate(self.brand())
-        # The registry is the truth about autostart, not the last saved preference.
+        # The registration is the truth about autostart, not the last saved preference.
         self.tray.action_autostart.setChecked(autostart.is_enabled())
-        if QSystemTrayIcon.isSystemTrayAvailable():
+        if tray_available():
             self.tray.show()
         else:
             log.warning("system tray unavailable, run-in-background is disabled")
+            # Greyed rather than fatal: the menu item is the only place a user would look for
+            # this, and hide_to_tray() refuses on the same condition so the shortcut cannot
+            # strand the window behind a tray that does not exist.
+            self.action_tray.setEnabled(False)
 
     def brand(self) -> str:
         """The product name in the language currently on screen."""
@@ -383,9 +386,13 @@ class MainWindow(QMainWindow):
         self.activateWindow()
 
     def hide_to_tray(self) -> None:
+        if not tray_available():
+            # The transport keeps running either way, so refusing to hide costs nothing the
+            # user is relying on - and hiding would cost them the only way back.
+            log.info("no tray on this desktop, staying visible instead of hiding")
+            return
         self.hide()
-        if QSystemTrayIcon.isSystemTrayAvailable():
-            self.tray.notify_background(self.brand())
+        self.tray.notify_background(self.brand())
 
     def open_settings(self) -> None:
         """The gear button and the rail's 设置, which land on the same page.
@@ -413,6 +420,12 @@ class MainWindow(QMainWindow):
     def request_close(self) -> None:
         """Close button / Alt+F4 entry point: ask, or honour the remembered choice."""
         choice = self.settings.get("on_close", CLOSE_ASK)
+        if choice == CLOSE_TRAY and not tray_available():
+            # Remembered on a desktop that had a tray, and the tray is gone (GNOME lost its
+            # AppIndicator extension, the session is headless): asking beats hiding forever.
+            log.info("close choice is tray but no tray is available, asking instead")
+            self._ask_close()
+            return
         if choice == CLOSE_TRAY:
             self.hide_to_tray()
             return
@@ -425,12 +438,18 @@ class MainWindow(QMainWindow):
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Question)
         box.setWindowTitle(_("关闭{app}").format(app=self.brand()))
-        box.setText(_("窗口关闭后，希望退出程序还是留在托盘后台运行？"))
+        has_tray = tray_available()
+        box.setText(
+            _("窗口关闭后，希望退出程序还是留在托盘后台运行？")
+            if has_tray
+            else _("这个桌面没有可用的托盘图标，关闭窗口就是退出程序。")
+        )
         box.setStandardButtons(QMessageBox.NoButton)
         # Carry the decision on the button: PySide6 may hand out a different wrapper
         # for the same native button, so `clickedButton() is to_tray` is not reliable.
-        to_tray = box.addButton(_("最小化到托盘"), QMessageBox.ActionRole)
-        to_tray.setProperty("choice", CLOSE_TRAY)
+        if has_tray:
+            to_tray = box.addButton(_("最小化到托盘"), QMessageBox.ActionRole)
+            to_tray.setProperty("choice", CLOSE_TRAY)
         quit_ = box.addButton(_("退出程序"), QMessageBox.AcceptRole)
         quit_.setProperty("choice", CLOSE_QUIT)
         quit_.setDefault(True)

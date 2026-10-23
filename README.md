@@ -8,7 +8,7 @@
 
 | | 位置 | 内容 |
 |---|---|---|
-| PC 端 | 本仓库（远端名 `chuanshu-pc`） | PySide6 桌面端，Windows 已出包；Linux 是目标平台，路径与非 Windows 分支已在 `paths.py`，托盘/自启/无边框外壳与出包还没适配（macOS 未排期） |
+| PC 端 | 本仓库（远端名 `chuanshu-pc`） | PySide6 桌面端，Windows 已出包；Linux 是第二个目标平台：headless 半边（路径、身份权限、自启、端口、双向传输）已在 WSL 实测，GUI 与出包还没验证（见"Linux 侧"）；macOS 未排期 |
 | 手机端 | `chuanshu-mobile` | uni-app x，出 Android 与鸿蒙两个平台。iOS 2026-10-24 起终止：没有 Mac 就没法出可签名的包，`app-ios` 那两半边代码留在树里不再推进 |
 | 协议契约 | 两边各存一份 `protocol/` | `protocol.json` 是唯一真相源，手机端放在 `shared/protocol/` 并带来源摘要戳 |
 
@@ -26,11 +26,11 @@
 app/
   meta.py            应用名 / 版本 / 发布者（唯一改这里即可发新版）
   paths.py           源码运行 与 冻结(打包) 运行 的路径解析
-  config.py          settings.json 读写，存放于 %APPDATA%\ChuanShu\ChuanShu
+  config.py          settings.json 读写，目录由 paths.user_data_dir() 给（Windows %APPDATA%、Linux $XDG_DATA_HOME）
   i18n.py            Qt-free gettext 核心：_()/_n()/N()、current()/available()/resolve()/use()
-  logging_setup.py   滚动日志，存放于 %APPDATA%\ChuanShu\ChuanShu\logs\app.log
+  logging_setup.py   滚动日志，在数据目录下的 logs/app.log
   crash.py           全局异常捕获 + SafeApplication（Qt 槽函数异常不退出）
-  autostart.py       开机自启（HKCU ...\CurrentVersion\Run，仅打包后可用）
+  autostart.py       开机自启：Windows 写 HKCU ...\CurrentVersion\Run，Linux 写 ~/.config/autostart/<名>.desktop，两边都只在打包后可用
   icons.py           读取 assets/icons/icons.json → QIcon/QPixmap（按角色取字形与尺寸，带缓存）
   main.py            GUI 入口
   cli.py             命令行入口（`python -m app.cli`）：self/receive/send/peers/pins/unpair/pair-code，
@@ -42,10 +42,10 @@ app/
   ui/theme.py        深浅两套 Palette 与由它生成的 QSS
   ui/transfer.py     传输面板：接收开关、配对码+二维码、设备名单（含手输地址）、暂存与发送、
                      来件确认弹框；所有线程回调都转成 Qt 信号再上 GUI
-  ui/tray.py         系统托盘菜单（打开主界面 / 开机自启 / 退出）
+  ui/tray.py         系统托盘菜单（打开主界面 / 开机自启 / 退出）；`available()` 说这台桌面有没有托盘
 app/net/
   spec.py            读取 protocol/protocol.json：端点、错误码→HTTP、二维码字段顺序
-  identity.py        Ed25519 自签证书、SPKI 指纹固定、已配对设备表（identity/ 目录）
+  identity.py        Ed25519 自签证书、SPKI 指纹固定、已配对设备表（identity/ 目录，POSIX 上这几个文件 0600）
   receive.py         接收端 HTTPS 服务：配对、offer、分块落盘、路径清洗、崩溃后认领未完成 offer
   send.py            发送端：plan→offer→分块→finalize，token 失效时用已信任的 key 静默重配对
   discovery.py       局域网发现：mDNS 注册/浏览 + UDP 广播 43721；广播只带指纹前缀，
@@ -56,11 +56,14 @@ protocol/
   spec.md            语义与理由：为什么这么定，两端必须一致实现什么
 scripts/
   protocol_selftest.py  M0 验收：配对→多文件含目录→杀进程重启→续传→finalize→两条发现通道，
-                        51 条断言（报告写在 .probe/protocol_report.txt）
-  ui_selftest.py        M1 验收：驱动真实窗口，132 条断言（含设置窗口、8 种语言下缩到最小
-                        尺寸不裁切）。见"界面这层的验证"
-  cli_selftest.py       命令行验收：起两个 CLI 进程（各自一个身份目录）互配、双向传 3MB 并逐字节
-                        对 sha256，顺带断言 import app.cli 不带进 Qt，12 条。见"命令行（headless）"
+                        64 处断言（报告写在 .probe/protocol_report.txt）
+  ui_selftest.py        M1 验收：驱动真实窗口，190 处断言、跑下来 389 条（部分按 8 种语言重复；
+                        含设置窗口、缩到最小尺寸不裁切、没有托盘的桌面不承诺托盘）。见"界面这层的验证"
+  cli_selftest.py       命令行验收（Windows 这台）：起两个 CLI 进程（各自一个身份目录）互配、双向传
+                        3MB 并逐字节对 sha256，顺带断言 import app.cli 不带进 Qt，12 处
+  linux_selftest.py     命令行验收（Linux 那台，WSL 里跑）：XDG 路径、身份文件 0600 与旧私钥回收、
+                        XDG 自启写读删、端口被占改用临时端口、双向传、没装 zeroconf 时 mDNS 通道
+                        自己报 unavailable、--lang，25 处。见"Linux 侧"。见"Linux 侧"
   freeze_smoke.py       起打包好的 exe：等窗口、截图、查日志有无 ERROR，然后只结束自己起的进程
   i18n_sync.py          翻译守卫：按 locale/ 目录扫描，zh_CN 空条目自动镜像 msgid；其余任何
                         语言只要还有空条目或 fuzzy 就直接构建失败（LANGUAGE_NAMES 承诺了却没
@@ -205,12 +208,16 @@ pins        列已固定的指纹      unpair 忘掉一台（前缀唯一即可�
 - **Windows 查不出端口被占，只能问出来**：`ThreadingHTTPServer` 带 `SO_REUSEADDR`，而 Windows 允许
   第二个进程 bind 一个已经有人在听的端口——两边都打印 `监听：43720`，真正应答的只有先绑上那个，
   于是给"第二个接收端"的文件全发进了第一个。`_serve()` 因此在 bind 前往 127.0.0.1 打一发 `/v1/hello`
-  （`listener_on()`），有人应答就改用临时端口并把占着的那台名字说出来；POSIX 上 bind 自己会
-  `EADDRINUSE`，走下面那个 except 分支，行为一致。
+  （`listener_on()`），有人应答就改用临时端口并把占着的那台名字说出来。POSIX 上 bind 确实会直接
+  `EADDRINUSE`，但 WSL 实测两个 CLI 进程、以及一个只 accept 不回话的野 socket，都在 bind 之前就被
+  `listener_on()` 认出来了（后者报 `不是传书`），所以那个 except 分支守的是探测与 bind 之间的竞态，
+  不是 Linux 的日常路径。
 
 `scripts/cli_selftest.py` 是这条链路的验收：两个 CLI 进程（各自一个 APPDATA 身份目录）互配、双向传
 3MB、逐字节对 sha256、再查 `pins`/`self`/`peers`，并断言 `import app.cli` 不带进 Qt。第二条腿固定用
 43912 而不是契约端口，因为第一条腿那个进程还在 43720 上听——这正是 `listener_on()` 要挡的那件事。
+Linux 那半边是 `scripts/linux_selftest.py`，在 WSL Ubuntu-24.04（Python 3.12，没装 PySide6）里跑，
+scratch `HOME`/`XDG_*` 指到 `/tmp`，25 条全绿。
 
 ## 窗口外观（无边框 + 托盘）
 
@@ -218,9 +225,9 @@ pins        列已固定的指纹      unpair 忘掉一台（前缀唯一即可�
 
 | 键 | 取值 | 作用 |
 | --- | --- | --- |
-| `theme` | `auto` / `light` / `dark` | `auto` 跟随 Windows `AppsUseLightTheme` |
-| `on_close` | `ask` / `tray` / `quit` | 点关闭时问什么；`ask` 每次弹框，勾选"记住我的选择"后写成 `tray`/`quit` |
-| `autostart` | bool | 仅记录意图，真实状态以注册表为准 |
+| `theme` | `auto` / `light` / `dark` | `auto` 跟随系统：Windows 读 `AppsUseLightTheme`，其余平台读 Qt 的 `styleHints().colorScheme()` |
+| `on_close` | `ask` / `tray` / `quit` | 点关闭时问什么；`ask` 每次弹框，勾选"记住我的选择"后写成 `tray`/`quit`。这台桌面没有托盘时 `tray` 这一项根本不出现在下拉里 |
+| `autostart` | bool | 仅记录意图，真实状态以注册表值 / `~/.config/autostart` 那个文件为准 |
 | `window` | `{width,height}` | 上次退出的尺寸；旧值比布局下限还小时按下限打开 |
 
 几个实现上的取舍，改动前先看这里：
@@ -241,7 +248,9 @@ pins        列已固定的指纹      unpair 忘掉一台（前缀唯一即可�
   1031 ≤ 工作区底边 1031，不会盖住任务栏，所以不需要手动按 `availableGeometry` 摆位置。
   `is_maximized` 是 `changeEvent` 里同步的普通属性，标题栏图标和边缘滤镜都读它。
 - **圆角只在 Win11 生效**：`DwmSetWindowAttribute(DWMWA_WINDOW_CORNER_PREFERENCE=33,
-  DWMWCP_ROUND=2)`，build < 22000 直接 no-op（无边框窗口在 Win10 上是直角）。
+  DWMWCP_ROUND=2)`，build < 22000 直接 no-op（无边框窗口在 Win10 上是直角），Linux 上也是 no-op——
+  窗口管理器给不给圆角不由这里决定。`ctypes.wintypes` 在 Linux 上 import 就炸，所以这个模块不 import
+  它，`ctypes.windll` 也只在这个函数里出现。
 - **图标全部由配置驱动**：字形是 `assets/icons/*.svg` 里的独立文件（写 `currentColor`，
   单独打开也是合法 SVG），`assets/icons/icons.json` 决定"哪个按钮用哪个字形、多大"，
   带变体：`"theme": {"default":"sun","dark":"moon"}`、`"max": {"default":"maximize","maximized":"restore"}`。
@@ -258,7 +267,14 @@ pins        列已固定的指纹      unpair 忘掉一台（前缀唯一即可�
 - **无边框窗口仍要 `setWindowTitle()`**：任务栏、Alt+Tab 和无障碍名称都用它，
   自绘标题栏只是把系统那条标题栏画成了自己的。
 - **开机自启只在打包版可用**：源码运行没有单一 exe 可注册，`is_supported()` 会返回
-  False，托盘复选框自动回弹并弹通知说明原因。
+  False，托盘复选框自动回弹并弹通知说明原因。Windows 写 HKCU 的 Run 值，Linux 按 XDG 写
+  `~/.config/autostart/ChuanShu.desktop`——文件存在就是开启，所以"关闭"是删掉它，读回时还要
+  比对 `Exec=` 是不是现在这个可执行文件，搬家后的旧条目不算已注册。
+- **没有托盘的桌面不许承诺托盘**：`ui/tray.py::available()` 就是 `QSystemTrayIcon.isSystemTrayAvailable()`，
+  在 `QT_QPA_PLATFORM=offscreen` 和没有 StatusNotifier 宿主的 GNOME 上都是 False。所有依赖它的东西
+  一起降级——设置里"关闭窗口时"少了 `tray` 这一项（存过的 `tray` 会退回显示成"每次询问"，因为
+  `findData` 找不到就取 0）、`Ctrl+H` 变灰、`hide_to_tray()` 直接不隐藏、关闭询问改成"关闭窗口就是退出
+  程序"。把窗口藏进一个不存在的托盘，等于把一个还在收文件的面板弄丢。
 
 ## 设置窗口（`ui/settings_dialog.py`）
 
@@ -287,6 +303,34 @@ pins        列已固定的指纹      unpair 忘掉一台（前缀唯一即可�
   所以光看截图外不一定发现得了。`retranslate()` 里要重算。
 - **窗口同样不写 `setMinimumSize()`**：理由和主窗口一样（见"传输面板"那节最后一条），
   实测最小尺寸随语言从 620x393（中文）变到 872x393（英文）。
+
+## Linux 侧
+
+PC 端现在是两个产物：Windows（已出包）与 Linux（目标）。命令行两边共用同一套 `app/net/`，
+差异全在"贴系统的那一层"，一处一个分支，没有 `if linux` 散落各处：
+
+| 差异 | Windows | Linux |
+| --- | --- | --- |
+| 数据目录 | `%APPDATA%\ORG\APP` | `$XDG_DATA_HOME`（缺则 `~/.local/share`）`/ORG/APP`，见 `paths.user_data_dir()` |
+| 身份文件权限 | 跟随 ACL 继承 | `identity/` 下每个文件 0600：`_atomic()` 用 `os.open(...,0o600)` 建临时文件再 rename；`load_or_create()` 读到旧的 0644 私钥当场 `chmod` 回来并写日志 |
+| 开机自启 | HKCU `...\CurrentVersion\Run` | `$XDG_CONFIG_HOME/autostart/ChuanShu.desktop` |
+| 主题 `auto` | 读 `AppsUseLightTheme` | 读 `styleHints().colorScheme()`（`theme.system_prefers_dark()`） |
+| 托盘 | 总是有 | `QSystemTrayIcon.isSystemTrayAvailable()` 可能为 False，界面整体降级（见上一节最后一条） |
+| 窗口圆角 | Win11 DWM 属性 | no-op；`ctypes.wintypes` 不 import，`apply_rounded_corners()` 第一行就返回 |
+| 端口被占 | bind 不报错，只能探测 | bind 报 `EADDRINUSE`，但实测同样是探测先认出来 |
+
+**测到了什么层级**：`scripts/linux_selftest.py` 在 WSL Ubuntu-24.04（Python 3.12.3、
+cryptography 41.0.7、**没有 PySide6、没有 zeroconf**）跑，scratch `HOME`/`XDG_*` 指到 `/tmp`，
+25 条断言全绿。这一台恰好把两件事变成了实证而不是推理：`import app.cli` 不带 Qt 是因为这里
+根本装不了 Qt；mDNS 通道报 `unavailable`、UDP 广播 `ok`，正是 `discovery.py` 那条"每条通道单独
+上报"的分支。GUI 那半边（主题自动、无边框外壳、无托盘降级）只过了 `ui_selftest.py` 的
+offscreen 路径——offscreen 在 Windows 上就是"没有托盘"，所以降级逻辑被真跑了一遍，但字体度量
+与合成器行为在这里证明不了（见"界面这层的验证"第一条）。
+
+**还没做的**（#105）：出包路线没定（AppImage / deb / tar.gz 三选一），`app.spec` 还是 Windows
+写法、也没有把 CLI 放进冻结产物的入口；WSL 里跑 GUI 要先 `pip install PySide6`，那是往这台机器上
+装东西，等点头再做；Wayland 下 `startSystemMove()` 能不能拖动无边框窗口、X11 下的边缘缩放、
+以及入站端口的防火墙等价物（`firewalld`/`ufw`，对应 #87）都还没在真桌面验证过。
 
 ## 打包
 
@@ -407,5 +451,9 @@ owns 三个监听口（`netstat`：TCP 43720、UDP 43721、每个网卡各一个
 - 打包时 `assets/icons/` 必须进 `_internal`：`app.spec` 用 `paths.icons_dir()` 同一套相对路径收集，
   漏了的话窗口在启动构造标题栏时就抛 `IconConfigError`（这是故意的：配置缺失不该静默降级）
 - `app/ui/tray.py` 的 `context_menu`：别改名回 `menu`，那会盖掉 `QSystemTrayIcon.menu()`
+- 平台差异只有四个落点：路径问 `paths.user_data_dir()` / `autostart_desktop_path()`，开机自启问
+  `autostart.is_supported()`，有没有托盘问 `tray.available()`，深色跟随问 `theme.system_prefers_dark()`。
+  别在 UI 里再写 `sys.platform`——加第三个系统时只该动这四处，`ui_selftest.py` 里那条
+  "没有托盘就不承诺托盘"的断言也只在 `tray.available()` 上挂钩子
 - 若要便携单文件 exe：把 `app.spec` 的 `EXE(...)` 改成 onefile（去掉 `COLLECT`，
   把 `a.binaries, a.datas` 直接传给 `EXE`）

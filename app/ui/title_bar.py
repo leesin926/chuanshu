@@ -11,7 +11,6 @@ Everything the OS title bar used to give us has to be rebuilt here:
 from __future__ import annotations
 
 import ctypes
-from ctypes import wintypes
 import sys
 
 from PySide6.QtCore import QObject, QEvent, QPoint, QSize, Qt, Signal
@@ -47,13 +46,18 @@ DWMWCP_ROUND = 2
 
 def apply_rounded_corners(hwnd: int) -> None:
     """Ask DWM for rounded corners. No-op on Windows 10 and older, where the attribute
-    does not exist; DWM keeps square frameless windows there."""
+    does not exist; DWM keeps square frameless windows there.
+
+    ``ctypes.windll`` and ``ctypes.wintypes`` only exist on Windows - the second one fails to
+    import on Linux, so it stays out of the module header and this function is the only place
+    that needs a HWND.
+    """
     if sys.platform != "win32" or sys.getwindowsversion().build < 22000:
         return
     preference = ctypes.c_int(DWMWCP_ROUND)
     try:
         ctypes.windll.dwmapi.DwmSetWindowAttribute(
-            wintypes.HWND(int(hwnd)),
+            ctypes.c_void_p(int(hwnd)),
             ctypes.c_int(DWMWA_WINDOW_CORNER_PREFERENCE),
             ctypes.byref(preference),
             ctypes.c_uint(ctypes.sizeof(preference)),

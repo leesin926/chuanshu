@@ -67,3 +67,13 @@ def user_data_dir() -> Path:
 
 def logs_dir() -> Path:
     return user_data_dir() / "logs"
+
+
+def autostart_desktop_path() -> Path:
+    """The XDG autostart entry on Linux: ``$XDG_CONFIG_HOME`` or ``~/.config``, per spec.
+
+    Windows has no equivalent file - it uses a registry value - so this is only asked for
+    from the Linux branch of app/autostart.py.
+    """
+    base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return base / "autostart" / f"{APP_NAME}.desktop"

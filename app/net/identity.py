@@ -16,6 +16,7 @@ import datetime as dt
 import hashlib
 import json
 import logging
+import os
 import secrets
 import ssl
 from pathlib import Path
@@ -221,8 +222,17 @@ class Identity:
 
 
 def _atomic(path: Path, text: str) -> None:
+    """Write through a temp file so a crash cannot leave a half-written JSON or PEM.
+
+    On POSIX the temp file is created 0600 instead of the umask's default: everything here
+    is identity material, and one of those files is an unencrypted private key that a 0644
+    would hand to every other account on the machine. Windows keeps its ACL inheritance.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
+    if os.name == "posix":
+        fd = os.open(tmp, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+        os.close(fd)
     tmp.write_text(text, encoding="utf-8")
     tmp.replace(path)
 
@@ -242,11 +252,30 @@ def _self_signed(peer_id: str, key: ed25519.Ed25519PrivateKey) -> x509.Certifica
     )
 
 
+def _harden_key_file(path: Path) -> None:
+    """Bring a key written before this rule existed back to owner-only.
+
+    The 0600 in ``_atomic`` only protects files created from now on; a machine that already
+    ran an older build has a group- and world-readable private key sitting in it, and quietly
+    leaving that alone would mean the fix only applies to fresh installs.
+    """
+    if os.name != "posix":
+        return
+    try:
+        mode = path.stat().st_mode
+        if mode & 0o077:
+            path.chmod(0o600)
+            log.info("tightened %s from %o to 600", path.name, mode & 0o777)
+    except OSError as error:  # A read-only home or a foreign owner is not worth crashing over.
+        log.warning("could not tighten %s: %s", path.name, error)
+
+
 def load_or_create(directory: Path | None = None) -> Identity:
     directory = directory or identity_dir()
     directory.mkdir(parents=True, exist_ok=True)
     key_path, cert_path = directory / _KEY, directory / _CERT
     if key_path.is_file() and cert_path.is_file():
+        _harden_key_file(key_path)
         key = serialization.load_pem_private_key(key_path.read_bytes(), password=None)
         cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
         peer_id = str(cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value)

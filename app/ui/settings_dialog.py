@@ -42,7 +42,7 @@ from PySide6.QtWidgets import (
 )
 
 from app import autostart
-from app.ui import theme
+from app.ui import theme, tray
 from app.config import CLOSE_ASK, CLOSE_QUIT, CLOSE_TRAY, Settings
 from app.i18n import N, _
 from app.meta import COPYRIGHT, VERSION
@@ -74,7 +74,9 @@ ROW_VALUE_WIDTH = 220
 ROW_BLOCK_WIDTH = 500
 
 THEME_CHOICES = (("auto", N("跟随系统")), ("light", N("浅色")), ("dark", N("深色")))
-CLOSE_CHOICES = ((CLOSE_ASK, N("每次询问")), (CLOSE_TRAY, N("最小化到托盘")), (CLOSE_QUIT, N("直接退出")))
+#: The label for each close behaviour. 最小化到托盘 is only offered on a desktop that has a
+#: tray to come back from - see tray.available().
+CLOSE_CHOICE_LABELS = {CLOSE_ASK: N("每次询问"), CLOSE_TRAY: N("最小化到托盘"), CLOSE_QUIT: N("直接退出")}
 
 
 class SwitchButton(QAbstractButton):
@@ -394,7 +396,12 @@ class SettingsPage(QWidget):
         # by side want more width than the sheet can borrow, because the stack is pinned to its
         # widest page: a combo asks the same question in the width of the one answer it holds.
         self.close_box = QComboBox(self)
-        for value, msgid in CLOSE_CHOICES:
+        for value in (CLOSE_ASK, CLOSE_TRAY, CLOSE_QUIT):
+            if value == CLOSE_TRAY and not tray.available():
+                # A desktop with no tray has nowhere to come back from, so 最小化到托盘 is not
+                # offered at all rather than offered and then refused. A remembered choice of it
+                # falls back to 每次询问 here, and to the ask-dialog in request_close().
+                continue
             self.close_box.addItem("", value)
         self.close_box.currentIndexChanged.connect(self._apply_close_index)
         self._row(N("关闭窗口时"), N("点窗口右上角的叉之后怎么办"), self.close_box)
@@ -652,8 +659,8 @@ class SettingsPage(QWidget):
         self.name_edit.setPlaceholderText(self.panel.device_name)
         self.name_edit.setToolTip(_("这台设备对别人显示的名字"))
         self.language_box.setToolTip(_("只改这个程序的界面文字"))
-        for i, (_value, msgid) in enumerate(CLOSE_CHOICES):
-            self.close_box.setItemText(i, _(msgid))
+        for i in range(self.close_box.count()):
+            self.close_box.setItemText(i, _(CLOSE_CHOICE_LABELS[str(self.close_box.itemData(i))]))
         # A suffix is part of the field's text, not a label beside it, so it has to be replayed
         # like the rest or the number keeps a unit nobody reading this language was offered.
         self.limit_spin.setSuffix(_(" MB/s"))
@@ -661,9 +668,9 @@ class SettingsPage(QWidget):
         self.limit_switch.setToolTip(_("限制本机发出的文件速度；收文件不受影响"))
         self.notify_switch.setToolTip(_("文件落地后在托盘冒一条消息，窗口最小化时也看得到"))
         self.autostart_switch.setToolTip(
-            _("只有打包好的 Windows 版本能改开机自启。")
+            _("只有打包好的版本能改开机自启。")
             if not self.autostart_switch.isEnabled()
-            else _("登录 Windows 后自动运行，并留在托盘")
+            else _("登录后自动运行，并留在托盘")
         )
         self.browse_button.setToolTip(_("换一个存放收到文件的文件夹"))
         self.reset_dir_button.setToolTip(_("回到应用数据目录下的 received"))
