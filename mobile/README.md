@@ -1,7 +1,8 @@
 # 传书 ChuanShu — 手机端（uni-app x）
 
-一套代码出 Android / iOS / HarmonyOS Next。协议契约的 vendored 副本、它的校验器，以及一个已经
-能用 HBuilderX CLI 编译的 uni-app x 工程（`chuanshu/`）都在仓库里。
+一套代码出 Android 与 HarmonyOS Next。iOS 自 2026-10-24 起终止：没有 Mac 就出不了可签名的包，
+`utssdk/app-ios/` 那两半边代码留在树里不再推进（协议契约的 vendored 副本、它的校验器，以及一个已经
+能用 HBuilderX CLI 编译的 uni-app x 工程（`chuanshu/`）都在仓库里）。
 
 **证据口径**：本仓库对手机端的一切"已验证"说法只到 *Kotlin 编译通过* 这一层。UTS→Kotlin→dex
 在没有真机的情况下可以本地跑完，运行时行为（Android 的 provider 是否暴露 Ed25519、平台解析器是
@@ -64,11 +65,11 @@ python scripts/check_protocol.py
 | 端 | 必须做 | 卡在哪 |
 |---|---|---|
 | Android | 接收中起前台服务（`dataTransfer` 类型）、13+ 通知权限、局域网权限 | 服务被杀 = 连接被掐 |
-| iOS | Info.plist 里 `NSLocalNetworkUsageDescription` + `NSBonjourServices` 声明 `_chuanshu._tcp` | **退后台后监听 socket 不再接受新连接**，协议层绕不过 |
+| ~~iOS~~ | **2026-10-24 终止**：出包要 Mac 与签名，这台机器没有。剩下两条事实记在这儿，别当待办 | Info.plist 里 `NSLocalNetworkUsageDescription` + `NSBonjourServices` 声明 `_chuanshu._tcp`；**退后台后监听 socket 不再接受新连接**，协议层绕不过 |
 | HarmonyOS Next | uni-app x 走 ArkTS 通道；mDNS 用 `@kit.NetworkKit` 的 `mdns` | 卓易通这类 APK 兼容层发不了 UDP 广播，发现只剩扫码 |
 
-iOS/鸿蒙的后台限制属于产品事实，处理方式是在"接收中"界面直说"请保持传书在前台"，而不是让用户
-以为还在收。这是 `spec.md` §6 的口径，两端一致。
+鸿蒙（和被终止的 iOS）的后台限制属于产品事实，处理方式是在"接收中"界面直说"请保持传书在前台"，而不是
+让用户以为还在收。这是 `spec.md` §6 的口径，Android 与鸿蒙一致。
 
 ## 探针在真机上要回答什么
 
@@ -91,11 +92,11 @@ iOS/鸿蒙的后台限制属于产品事实，处理方式是在"接收中"界�
 
 ## 待办（按依赖排序）
 
-1. ~~HBuilderX 建 uni-app x 工程~~（已建，Android 目标；iOS/鸿蒙等平台确定后再开）
-2. UTS 侧实现身份与 TLS 指纹固定：Android 用 `java.security`（探针已覆盖），iOS 用 CryptoKit /
-   Security framework，鸿蒙用 `@kit.CryptoArchitectureKit`。这是唯一需要三套原生桥接的地方，
-   其余都在 UTS 层。
-3. 接收端服务：Android 前台服务、iOS/鸿蒙仅前台可用，UI 状态按 §6 显示。
+1. ~~HBuilderX 建 uni-app x 工程~~（已建，Android 与鸿蒙两个目标都开着）
+2. UTS 侧实现身份与 TLS 指纹固定：Android 用 `java.security`（探针已覆盖），鸿蒙用
+   `@kit.CryptoArchitectureKit`。这是唯一需要两套原生桥接的地方，其余都在 UTS 层（iOS 用
+   CryptoKit 那条随 iOS 一起终止）。
+3. 接收端服务：Android 前台服务、鸿蒙仅前台可用，UI 状态按 §6 显示。
 4. 发现：mDNS 优先、UDP 广播补充、扫码/手输兜底（顺序不可颠倒，也不能只留 mDNS）。
 5. 与 PC 端做真机互传回归：中文目录、多文件、中途杀进程续传、错误码中英文文案。
 
