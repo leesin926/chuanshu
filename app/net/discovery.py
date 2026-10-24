@@ -94,12 +94,18 @@ def verify_peer(proto: protocol_spec.Protocol, peer: Peer) -> Peer:
     """
     conn = http.client.HTTPSConnection(peer.host, peer.port, context=client_context(), timeout=5.0)
     try:
+        # connect() first, and read the certificate off that socket before any reply is consumed.
+        # A peer that answers /v1/hello with Connection: close - the phones do - makes http.client
+        # hang up the socket while read() finishes, and by then conn.sock is None: the address that
+        # was reachable would report as unpinnable. Reading before the reply is also the honest order,
+        # since the prefix check is what decides whether to believe anything this machine says.
+        conn.connect()
+        digest = read_fingerprint(conn.sock, peer.prefix)
         conn.request("GET", "/v1/hello")
         response = conn.getresponse()
         body = json.loads(response.read().decode("utf-8"))
         if response.status != 200:
             raise protocol_spec.ProtocolError(str(body.get("code") or "UNSUPPORTED_PROTOCOL"), body)
-        digest = read_fingerprint(conn.sock, peer.prefix)
     finally:
         conn.close()
     if not proto.supports(int(body.get("protocol_version") or 0)):
