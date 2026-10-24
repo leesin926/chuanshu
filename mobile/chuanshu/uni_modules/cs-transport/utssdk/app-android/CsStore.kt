@@ -117,6 +117,15 @@ object CsStore {
         }
     }
 
+    /** Whether a file this phone already received is still in the receive root. digestFile() answers
+     *  the same question as a side effect of hashing, which is the wrong cost for a card that asks once
+     *  a second; and '' there means either "gone" or "unreadable", and the card needs to know which. */
+    fun exists(relpath: String): Boolean {
+        val base = root() ?: return false
+        val file = cleanPath(base, relpath) ?: return false
+        return file.exists()
+    }
+
     /** Delete a file a transfer no longer owns, then the directories it leaves behind - an aborted
      *  offer must not stay as a folder full of nothing. */
     fun drop(relpath: String) {

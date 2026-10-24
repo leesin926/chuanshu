@@ -77,7 +77,10 @@ import {
 	trustJson,
 	adoptTrust,
 	stateAll,
-	adoptAll
+	adoptAll,
+	arrivalsAll,
+	adoptArrivals,
+	markLanded
 } from '@/uni_modules/cs-transport/utssdk/cs-receive.uts'
 import {
 	serveBind,
@@ -88,6 +91,7 @@ import {
 	storeWriteAt,
 	storeDigestFile,
 	storeDropFile,
+	storeFileExists,
 	digestBytes,
 	fingerprintOfKey,
 	verifySignature,
@@ -99,7 +103,9 @@ import {
 	loadTrustedPeers,
 	saveTrustedPeers,
 	loadOfferStates,
-	saveOfferStates
+	saveOfferStates,
+	loadArrivalStates,
+	saveArrivalStates
 } from '@/uni_modules/cs-transport'
 /** The discovery model, by its own path for the same reason the receive machine above is: this is the
  *  one platform where the plugin cannot read it. A phone that merged candidates by its own rules would
@@ -338,6 +344,7 @@ let recvSelf: LocalPeer | null = null
 /** The two documents as they were when last written, so a refresh that changed nothing writes nothing. */
 let lastTrustText = ''
 let lastOfferText = ''
+let lastArrivalText = ''
 // #endif
 
 /* ------------------------------------------------------------------ small helpers
@@ -496,13 +503,16 @@ function syncPairing(): void {
 	savePairing(pairingJson(recvInbox, nowSecs()))
 }
 
-/** The receiver's other two memories: which peers may send here, and which offers this inbox already
- *  took. restartLike() says out loud that the trust store is not supposed to leave memory - on a
- *  browser it does not, because the process is the page - but a phone that is closed and reopened
- *  loses it, and then the peer that pinned its key is refused and a person is asked to type a code
- *  whose entire job is to be typed once. The offer list is the same story one level down: the bytes
- *  stay on disk, so a restart that forgets the records shows an empty 收到的文件 over a full folder.
- *  Read once, before the listener opens; written by saveReceiveMemory() whenever either changes. */
+/** The receiver's three memories: which peers may send here, which offers this inbox already took, and
+ *  which files actually landed. restartLike() says out loud that the trust store is not supposed to
+ *  leave memory - on a browser it does not, because the process is the page - but a phone that is
+ *  closed and reopened loses it, and then the peer that pinned its key is refused and a person is
+ *  asked to type a code whose entire job is to be typed once. The offer list is the same story one
+ *  level down, and it is only half the story: a finished offer is deliberately left out of the resume
+ *  ledger, because a document of a transfer that cannot be resumed invites the next run to treat it as
+ *  one. So the arrivals have their own file - that is what lets a card titled 收到的文件 outlive the
+ *  process that filled it, which is the least the same words on the PC mean.
+ *  Read once, before the listener opens; written by saveReceiveMemory() whenever any of them changes. */
 function syncReceiveMemory(): void {
 	const peers = loadTrustedPeers()
 	if (peers != '') {
@@ -512,11 +522,16 @@ function syncReceiveMemory(): void {
 	if (offers != '') {
 		adoptAll(recvInbox, offers.split('\n'), nowSecs())
 	}
+	const landed = loadArrivalStates()
+	if (landed != '') {
+		adoptArrivals(recvInbox, landed.split('\n'))
+	}
 	lastTrustText = trustJson(recvInbox)
 	lastOfferText = stateAll(recvInbox).join('\n')
+	lastArrivalText = arrivalsAll(recvInbox).join('\n')
 }
 
-/** Cheap by design: both documents are rewritten only when their own serialisation moved, so the
+/** Cheap by design: all three documents are rewritten only when their own serialisation moved, so the
  *  one-second refresh that watches a transfer costs nothing while nothing is being written. */
 function saveReceiveMemory(): void {
 	const peers = trustJson(recvInbox)
@@ -528,6 +543,13 @@ function saveReceiveMemory(): void {
 	if (offers != lastOfferText) {
 		lastOfferText = offers
 		saveOfferStates(offers)
+	}
+	const landed = arrivalsAll(recvInbox).join('\n')
+	if (landed != lastArrivalText) {
+		lastArrivalText = landed
+		if (landed != '') {
+			saveArrivalStates(landed)
+		}
 	}
 }
 
@@ -643,7 +665,10 @@ function receiveSeen(fingerprint: string): void {
 function receiveSnapshot(): ReceiveSnapshot {
 	const now = nowSecs()
 	sweep(recvInbox, now, storeDropFile, storeDigestFile)
-	return snapshot(recvInbox, now)
+	const made = snapshot(recvInbox, now)
+	// The ledger says a file landed; this is the only thing that says whether it is still here.
+	markLanded(made.rows, storeFileExists)
+	return made
 }
 
 /** The user's answer. Nothing is written back on the connection that asked: this platform has already
@@ -684,6 +709,9 @@ export function refreshReceive() {
 	const b: string[] = []
 	const c: string[] = []
 	const d: string[] = []
+	/** How many of the arrival records the receive root no longer holds; the count line has to say
+	 *  which number it is quoting. */
+	let goneFiles = 0
 	for (let i = 0; i < snap.rows.length; i++) {
 		const row = snap.rows[i]
 		a.push(row.relpath)
@@ -693,8 +721,16 @@ export function refreshReceive() {
 		if (row.awaiting) {
 			label = '等你决定'
 		} else if (row.verdict == 1) {
-			label = '已校验' + (row.dest == '' ? '' : '，落到 ' + row.dest)
-			style = 'stateOk'
+			/* 台账记得文件，磁盘才是它还在不在的地方。人可以从接收目录里删掉一个收过的文件，那一行
+			   不能跟着一起消失——列表悄悄少一项，人只能猜是应用忘了还是自己删的；也不能继续说「落到」，
+			   那是一句会让人去点开一个不存在的东西的话。PC 的 arrivals.json 同一件事说成（已经不在了）。 */
+			label = row.gone
+				? '已校验过，这个文件已经不在了（原落在 ' + row.dest + '）'
+				: '已校验' + (row.dest == '' ? '' : '，落到 ' + row.dest)
+			style = row.gone ? 'stateWait' : 'stateOk'
+			if (row.gone) {
+				goneFiles = goneFiles + 1
+			}
 		} else if (row.verdict == 2) {
 			label = '整文件校验没过' + (row.missingAt > 0 ? '（还缺 ' + row.missingAt.toString() + ' 块）' : '')
 			style = 'stateBad'
@@ -719,7 +755,9 @@ export function refreshReceive() {
 	s.recvMeta = b
 	s.recvStates = c
 	s.recvStateClass = d
-	s.recvSummary = '已验证 ' + snap.verifiedFiles.toString() + ' 个 · 没通过 ' + snap.rejectedFiles.toString() + ' 个 · 固定对端 ' + snap.peers.toString() + ' 台'
+	s.recvSummary = '已验证 ' + (snap.verifiedFiles - goneFiles).toString() + ' 个'
+		+ (goneFiles > 0 ? '（' + goneFiles.toString() + ' 个已经不在了）' : '')
+		+ ' · 没通过 ' + snap.rejectedFiles.toString() + ' 个 · 固定对端 ' + snap.peers.toString() + ' 台'
 	/* 接收内核收回的是本机拨出去那条会话的名额，而发送那一头的连接还挂在页面上。不跟着断一次，
 	   两张卡片就会一件说没对端、一件说已连接；断了也不算丢人——密钥还在，点一次连接就自己配回来。 */
 	if (s.connected && snap.lostName != '' && snap.lostName == s.peerName) {
@@ -753,6 +791,10 @@ export function refreshReceive() {
 /** 列表行的右列只放一个词（已收到 / 传输中 / 没通过），整句留给传输详情页。
  *  这不是审美问题：右列写整句会把 .rowmain 挤到零宽，文件名和大小直接消失（模拟器实测）。 */
 export function shortState(text: string): string {
+	if (text.indexOf('已经不在了') > 0) {
+		// 已校验过 is true of this row and 「已收到」 would send a person to a file that is not there.
+		return '已不在'
+	}
 	if (text.indexOf('已校验') == 0) {
 		return '已收到'
 	}

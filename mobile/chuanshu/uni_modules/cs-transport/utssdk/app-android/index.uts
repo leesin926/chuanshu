@@ -10,11 +10,11 @@ import {
 	channelNote, buildAnnounce, buildTxt, prefixOf, markVerified, VIA_UDP, selfReport
 } from '../cs-discovery.uts'
 import {
-	HexFn, KeyFpFn, VerifyFn, PrepareFn, WriteFn, DigestFileFn, DropFn,
+	HexFn, KeyFpFn, VerifyFn, PrepareFn, WriteFn, DigestFileFn, DropFn, ExistsFn,
 	LocalPeer, Req, Inbox, ReceiveSnapshot,
 	newInbox, currentPairCode, handleReceive, holdSlotFor, passphraseOf, pairingJson,
 	adoptPairing, adoptPin, adoptTrust, adoptAll, resolveOffer, rotatePairing, seenNow, settleOffer,
-	snapshot, stateAll, sweep, trustJson
+	snapshot, stateAll, sweep, trustJson, arrivalsAll, adoptArrivals, markLanded
 } from '../cs-receive.uts'
 
 /** The page reaches the protocol constants and helpers through this entry, not only through a deep path:
@@ -366,15 +366,19 @@ let recvSelf: LocalPeer | null = null
 let recvStartNote = '还没开始监听'
 let lastTrustText = ''
 let lastOfferText = ''
+let lastArrivalText = ''
 /** Whether the two files below have been read in this process. The page's one-second card refresh
  *  saves, and on a cold start it can fire before the listener has been opened - so without this the
  *  empty inbox is serialised over the trust file it has not read yet, and the phone forgets its pinned
  *  peers and its received list on the restart that was supposed to prove it remembers them (task #86). */
 let recvMemoryRead = false
 
-/** Cheap by design: both documents are rewritten only when their own serialisation moved, so the
+/** Cheap by design: all three documents are rewritten only when their own serialisation moved, so the
  *  one-second refresh that watches a transfer costs nothing while nothing is being written. The state
- *  machine itself is in memory and the files only ever hold what it says out loud (task #86). */
+ *  machine itself is in memory and the files only ever hold what it says out loud (task #86).
+ *  The third one is the arrival record - what a finished offer delivered. The resume ledger leaves
+ *  complete offers out on purpose, so without this list 收到的文件 describes this process instead of
+ *  this phone, which is the half of task #110 the offers never carried. */
 function saveReceiveMemory(): void {
 	syncReceiveMemory()
 	const peers = trustJson(recvInbox)
@@ -386,6 +390,13 @@ function saveReceiveMemory(): void {
 	if (offers != lastOfferText) {
 		lastOfferText = offers
 		CsIdentity.saveOfferStates(offers)
+	}
+	const landed = arrivalsAll(recvInbox).join('\n')
+	if (landed != lastArrivalText) {
+		lastArrivalText = landed
+		if (landed != '') {
+			CsIdentity.saveArrivalStates(landed)
+		}
 	}
 }
 
@@ -405,8 +416,13 @@ function syncReceiveMemory(): void {
 	if (offers != '') {
 		adoptAll(recvInbox, offers.split('\n'), CsServe.nowSeconds())
 	}
+	const landed = CsIdentity.loadArrivalStates()
+	if (landed != '') {
+		adoptArrivals(recvInbox, landed.split('\n'))
+	}
 	lastTrustText = trustJson(recvInbox)
 	lastOfferText = stateAll(recvInbox).join('\n')
+	lastArrivalText = arrivalsAll(recvInbox).join('\n')
 }
 
 /** The id a POST /v1/offer carries, read before the state machine is asked to register it: the guard
@@ -456,6 +472,12 @@ const recvDigestFile: DigestFileFn = (relpath: string): string => {
 
 const recvDrop: DropFn = (relpath: string): void => {
 	CsStore.drop(relpath)
+}
+
+/** The arrival ledger says a file landed; the receive root is the only thing that says whether it is
+ *  still there. The card asks once a second, so this is an stat and not a re-hash. */
+const recvExists: ExistsFn = (relpath: string): boolean => {
+	return CsStore.exists(relpath)
 }
 
 function replyJson(status: number, body: string): string {
@@ -641,6 +663,9 @@ export function receiveSnapshot(): ReceiveSnapshot {
 	CsServe.gate(function (): string {
 		sweep(recvInbox, CsServe.nowSeconds(), recvDrop, recvDigestFile)
 		snap = snapshot(recvInbox, CsServe.nowSeconds())
+		if (snap != null) {
+			markLanded(snap!.rows, recvExists)
+		}
 		saveReceiveMemory()
 		return ''
 	})

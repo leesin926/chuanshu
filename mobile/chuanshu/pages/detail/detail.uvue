@@ -57,7 +57,7 @@
 				<button class="primary col1" @click="accept">接受</button>
 				<button class="mini" @click="refuse">拒绝</button>
 			</view>
-			<text class="sub mt8" v-if="s.recvNames.length == 0">还没有收到文件。</text>
+			<text class="sub mt8" v-if="s.recvNames.length == 0">还没有收到校验通过的文件。</text>
 			<view class="filerow" v-for="(n, i) in s.recvNames" :key="i">
 				<image class="icoRow tilegap" :src="recvIcon(s.recvStateClass[i])"></image>
 				<view class="rowmain">

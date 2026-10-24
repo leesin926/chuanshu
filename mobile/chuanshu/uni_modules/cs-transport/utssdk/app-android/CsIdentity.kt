@@ -38,11 +38,15 @@ object CsIdentity {
     private const val ID_FILE = "chuanshu-peer-id.txt"
     private const val TRUST_FILE = "chuanshu-trusted.json"
     private const val PAIRING_FILE = "chuanshu-pairing.json"
-    // The receiver's own two memories, kept apart from TRUST_FILE on purpose: the one above pins a
-    // peer by the address it was met at (this phone dialled out), the one below says which peers may
-    // knock on this phone's door. Same digest in both, different promises.
+    // The receiver's own memories, kept apart from TRUST_FILE on purpose: the one above pins a
+    // peer by the address it was met at (this phone dialled out), the ones below say which peers may
+    // knock on this phone's door, what is mid-flight, and what already landed. Same digest in the
+    // first two, different promises.
     private const val RECEIVER_TRUST_FILE = "chuanshu-receiver-trust.json"
     private const val RECEIVER_OFFERS_FILE = "chuanshu-receiver-offers.json"
+    // A finished offer is left out of the resume ledger on purpose, so the receipts need their own file
+    // or 收到的文件 only ever remembers this process (task #110).
+    private const val RECEIVER_ARRIVALS_FILE = "chuanshu-receiver-arrivals.json"
 
     private class Self(val peerId: String, val seed: ByteArray, val spki: ByteArray)
 
@@ -225,6 +229,10 @@ object CsIdentity {
     fun loadOfferStates(): String = readText(RECEIVER_OFFERS_FILE)
 
     fun saveOfferStates(text: String): Boolean = writeText(RECEIVER_OFFERS_FILE, text)
+
+    fun loadArrivalStates(): String = readText(RECEIVER_ARRIVALS_FILE)
+
+    fun saveArrivalStates(text: String): Boolean = writeText(RECEIVER_ARRIVALS_FILE, text)
 
     /** Pin a peer by the fingerprint its TLS certificate presented, tagged with the address it was
      *  met at. peer_id is metadata only, exactly like the PC side: the digest is the anchor. */

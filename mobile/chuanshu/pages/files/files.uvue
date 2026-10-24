@@ -120,7 +120,7 @@
 
 	const emptyText = computed((): string => {
 		if (s.recvNames.length == 0) {
-			return '还没有收到文件。对端要用上面那组配对码连上本机，才能把文件发进来。'
+			return '还没有收到校验通过的文件。对端要用上面那组配对码连上本机，才能把文件发进来。'
 		}
 		return '按现在的搜索词和分类筛出来是空的。'
 	})

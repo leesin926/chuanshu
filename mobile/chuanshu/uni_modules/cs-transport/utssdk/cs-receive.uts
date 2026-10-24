@@ -54,6 +54,9 @@ export type PrepareFn = (relpath: string, size: number) => string
 export type WriteFn = (relpath: string, offset: number, buf: ArrayBuffer) => string
 export type DigestFileFn = (relpath: string) => string
 export type DropFn = (relpath: string) => void
+/** Whether a file this device received is still where it was put. The card uses it to say so instead
+ *  of quietly dropping the row, which is what the PC's arrival record does with `Path.exists()`. */
+export type ExistsFn = (relpath: string) => boolean
 
 /** What this device says about itself in /v1/hello and in a pair reply. */
 export class LocalPeer {
@@ -118,6 +121,20 @@ class ROffer {
 	complete: boolean = false
 }
 
+/** One file that landed and was verified, kept for as long as the receive root keeps it. This is the
+ *  phone's arrival record - what app/ui/transfer.py writes to arrivals.json - and it exists because a
+ *  completed offer is deliberately absent from the resume ledger: a document of a transfer that cannot
+ *  be resumed only invites the next run to treat it as one. Without this list the card titled
+ *  收到的文件 describes this process rather than this device. */
+class RArrival {
+	relpath: string = ''
+	size: number = 0
+	dest: string = ''
+	fromName: string = ''
+	/** When the finalize that verified it ran, in the same seconds the offers use. */
+	at: number = 0
+}
+
 class Trust {
 	fingerprint: string = ''
 	peerId: string = ''
@@ -157,6 +174,9 @@ export class SettledOffer {
 
 export class Inbox {
 	offers: ROffer[] = []
+	/** What this device received and verified, oldest first. It sits beside the offers and not inside
+	 *  them because an offer goes away once it is finished and the file it delivered stays. */
+	arrivals: RArrival[] = []
 	tokens: TokenEntry[] = []
 	nonces: NonceEntry[] = []
 	fails: FailEntry[] = []
@@ -203,6 +223,13 @@ export class FileRow {
 	 *  offer id and finish - but `还没收到分块` describing a peer that has gone reads as a transfer that
 	 *  is about to move, and a person decides differently on that sentence than on the true one. */
 	senderGone: boolean = false
+	/** This row is an arrival record rather than an offer still in memory: the bytes were verified, the
+	 *  offer is finished, and only the card's host can say whether the file is still where it was put. */
+	landed: boolean = false
+	/** A landed row whose file is no longer in the receive root. Set by markLanded, which is the only
+	 *  place the shared machine learns about the disk - the card must say so rather than drop the row,
+	 *  because a list that forgets files the user deleted is a list that cannot be trusted. */
+	gone: boolean = false
 }
 
 export class ReceiveSnapshot {
@@ -923,6 +950,51 @@ function stateReply(inbox: Inbox, offerId: string): WireReply {
 	return okWith(payloadOf(offer))
 }
 
+/* ------------------------------------------------------------------ the arrival record */
+
+/** How far back 收到的文件 reaches. The PC caps its arrivals.json at 500 for the same reason: a list
+ *  that only grows is a file that eventually cannot be read on a phone. */
+const ARRIVALS_KEPT: number = 500
+
+/** Whether these bytes are already written down, so the card gets one row for them and not two. */
+function hasArrival(inbox: Inbox, relpath: string): boolean {
+	if (relpath == '') {
+		return false
+	}
+	for (let k = 0; k < inbox.arrivals.length; k++) {
+		if (inbox.arrivals[k].relpath == relpath) {
+			return true
+		}
+	}
+	return false
+}
+
+/** Write down what a finished offer delivered, so the card can still answer the question after the
+ *  offer itself is gone. Keyed by destination: a sender that re-finalizes on a resumed connection
+ *  does not receive a second row, and the first arrival keeps its date. */
+function recordArrivals(inbox: Inbox, offer: ROffer): void {
+	for (let i = 0; i < offer.files.length; i++) {
+		const file = offer.files[i]
+		if (file.verdict != 1 || file.relpath == '' || hasArrival(inbox, file.relpath)) {
+			continue
+		}
+		const arrival = new RArrival()
+		arrival.relpath = file.relpath
+		arrival.size = file.size
+		arrival.dest = file.dest
+		arrival.fromName = offer.fromName
+		arrival.at = offer.touched
+		inbox.arrivals.push(arrival)
+	}
+	if (inbox.arrivals.length > ARRIVALS_KEPT) {
+		const kept: RArrival[] = []
+		for (let i = inbox.arrivals.length - ARRIVALS_KEPT; i < inbox.arrivals.length; i++) {
+			kept.push(inbox.arrivals[i])
+		}
+		inbox.arrivals = kept
+	}
+}
+
 /** POST /v1/offer/{id}/finalize: missing chunks are one answer, a wrong whole-file digest another. */
 function finalizeReply(inbox: Inbox, offerId: string, digestFile: DigestFileFn): WireReply {
 	const offer = offerById(inbox, offerId)
@@ -959,6 +1031,7 @@ function finalizeReply(inbox: Inbox, offerId: string, digestFile: DigestFileFn):
 		// steps still tells the next run the truth, and unfinished is the only state the reclaim of
 		// spec §4 is allowed to delete.
 		offer!.complete = true
+		recordArrivals(inbox, offer!)
 	}
 	return okWith({ offer_id: offerId, verified: verified } as UTSJSONObject)
 }
@@ -1139,6 +1212,13 @@ export function snapshot(inbox: Inbox, now: number): ReceiveSnapshot {
 		const gone = !offer.awaiting && now - offer.touched >= SESSION_IDLE_S
 		for (let k = 0; k < offer.files.length; k++) {
 			const file = offer.files[k]
+			if (file.verdict == 1 && hasArrival(inbox, file.relpath)) {
+				// A finished offer has an arrival record for each file it delivered, and that record is
+				// the row below. Counting the same bytes twice would inflate 已验证 while the offer is
+				// still in memory. A file verified inside an offer that did not finish has no record -
+				// its row stays the live one, or the card would lose a file that passed.
+				continue
+			}
 			const row = new FileRow()
 			row.offerId = offer.offerId
 			row.fromName = offer.fromName
@@ -1161,7 +1241,33 @@ export function snapshot(inbox: Inbox, now: number): ReceiveSnapshot {
 			}
 		}
 	}
+	// The arrival record comes last: 传输页 reads rows[0] as the thing in progress, and a file that
+	// already settled must not take that seat. Within the record the order is the order they landed.
+	for (let i = 0; i < inbox.arrivals.length; i++) {
+		const a = inbox.arrivals[i]
+		const row = new FileRow()
+		row.fromName = a.fromName
+		row.relpath = a.relpath
+		row.size = a.size
+		row.dest = a.dest
+		row.verdict = 1
+		row.landed = true
+		out.rows.push(row)
+		out.verifiedFiles = out.verifiedFiles + 1
+	}
 	return out
+}
+
+/** Say which of the landed rows the disk still agrees with. The state machine never touches a
+ *  filesystem, so each platform runs this over its own receive root; a row it marks is the card's
+ *  business from then on. */
+export function markLanded(rows: FileRow[], exists: ExistsFn): void {
+	for (let i = 0; i < rows.length; i++) {
+		const row = rows[i]
+		if (row.landed && !exists(row.relpath)) {
+			row.gone = true
+		}
+	}
 }
 
 /* ------------------------------------------------------------------ interrupted offers */
@@ -1302,10 +1408,70 @@ export function adoptAll(inbox: Inbox, list: string[], now: number): number {
 	return count
 }
 
+/* ------------------------------------------------- the arrival record, read and written back */
+
+/** One line per arrival, in the shape adoptArrivals reads back. */
+export function arrivalsAll(inbox: Inbox): string[] {
+	const out: string[] = []
+	for (let i = 0; i < inbox.arrivals.length; i++) {
+		const a = inbox.arrivals[i]
+		out.push(JSON.stringify({
+			relpath: a.relpath,
+			size: a.size,
+			dest: a.dest,
+			from: a.fromName,
+			at: a.at
+		} as UTSJSONObject))
+	}
+	return out
+}
+
+/** Merge, not replace: a host that writes this file from two places (the card tick and an accept)
+ *  must not lose the half the other one recorded. A record whose file the user deleted stays - the
+ *  card says so rather than dropping the row, which is what the PC's （已经不在了） does. */
+export function adoptArrivals(inbox: Inbox, list: string[]): number {
+	let count = 0
+	for (let i = 0; i < list.length; i++) {
+		const line = list[i].trim()
+		if (line == '') {
+			continue
+		}
+		const body = parseJson(line)
+		if (body == null) {
+			continue
+		}
+		const relpath = body!.getString('relpath', '')
+		if (relpath == '') {
+			continue
+		}
+		let known = false
+		for (let k = 0; k < inbox.arrivals.length; k++) {
+			if (inbox.arrivals[k].relpath == relpath) {
+				known = true
+			}
+		}
+		if (known) {
+			continue
+		}
+		const arrival = new RArrival()
+		arrival.relpath = relpath
+		arrival.size = body!.getNumber('size', 0)
+		arrival.dest = body!.getString('dest', '')
+		arrival.fromName = body!.getString('from', '')
+		arrival.at = body!.getNumber('at', 0)
+		inbox.arrivals.push(arrival)
+		count = count + 1
+	}
+	return count
+}
+
 /** A process restart: sessions and pending transfers leave memory, the trust store does not. That
  *  asymmetry is the design - the peer re-pairs from its pinned key, so the user notices nothing.
  *  The pairing material survives too when the build is a static-code one: forgetting it would mint
- *  a fresh code behind a QR somebody already printed. */
+ *  a fresh code behind a QR somebody already printed.
+ *  The arrival record survives for the same reason as the trust store, and this function is only ever
+ *  run by the browser harness: a phone reads its own files back instead, and there the receipts are a
+ *  file beside the bytes they describe. */
 export function restartLike(inbox: Inbox): void {
 	inbox.tokens = []
 	inbox.nonces = []

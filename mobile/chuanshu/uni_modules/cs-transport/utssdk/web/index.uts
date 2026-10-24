@@ -49,9 +49,12 @@ import {
 	WireReply,
 	WriteFn,
 	adoptAll,
+	adoptArrivals,
+	arrivalsAll,
 	currentPairCode,
 	handleReceive,
 	holdSlotFor,
+	markLanded,
 	newInbox,
 	passphraseOf,
 	restartLike,
@@ -1440,6 +1443,31 @@ export function receiveSelfReport(): string {
 		const bigName = files[1].relpath
 		check('回收停摆清单不删同名收全的文件', bigName != '' && recvStore.has(bigName) && staleNames.indexOf(bigName) < 0 && snapshot(staleBox, nowSeconds()).rows.length == 0, staleNames.join('、'))
 	}
+
+	// 8b. 「收到的文件」这张卡的标题问的是这台设备收过什么，不是这个进程收过什么。一单传完，续传
+	// 台账就把它去掉了（一份写着不可能续传的清单只会让下一次开机把它当那一单），所以收过的字节
+	// 需要自己的那份记录——PC 早就有 arrivals.json，手机一直没有。开机是一个新 inbox，读回这份
+	// 记录就是手机做的事；浏览器没有磁盘，收件箱是那个 Map，所以它同样能回答文件还在不在。
+	const receipts = arrivalsAll(box)
+	check('传完的文件进了收到清单', receipts.length == 2)
+	const bootBox = newInbox()
+	check('开机读回收到清单', adoptArrivals(bootBox, receipts) == 2)
+	const bootSnap = snapshot(bootBox, nowSeconds())
+	markLanded(bootSnap.rows, (path: string): boolean => { return recvStore.has(path) })
+	check('重启后卡片仍列这两个文件', bootSnap.verifiedFiles == 2 && bootSnap.rows.length == 2
+		&& !bootSnap.rows[0].gone && !bootSnap.rows[1].gone)
+	// 人可以自己从接收目录里删掉一个收过的文件。那一行不能跟着消失——列表悄悄少一项只能让人猜——
+	// 也不能继续说「落到」，那是一句会让人去点开一个不存在的东西的话。
+	recvStore.delete(files[0].relpath)
+	const goneSnap = snapshot(bootBox, nowSeconds())
+	markLanded(goneSnap.rows, (path: string): boolean => { return recvStore.has(path) })
+	let goneNow = 0
+	for (let i = 0; i < goneSnap.rows.length; i++) {
+		if (goneSnap.rows[i].gone) {
+			goneNow = goneNow + 1
+		}
+	}
+	check('被删掉的还在清单上并说自己不在了', goneSnap.rows.length == 2 && goneNow == 1)
 
 	// 9. an unfinished delivery is cancelled and the bytes go away.
 	const halfFiles = simFilesFor(SCRATCH_TEXT, SCRATCH_BIG)

@@ -44,6 +44,9 @@ const PAIR_FILE = 'chuanshu-pairing.json'
  *  ends, because on a phone the app ending is the process ending. */
 const RX_TRUST_FILE = 'chuanshu-receiver-trust.json'
 const RX_STATE_FILE = 'chuanshu-receiver-offers.json'
+/** The files that passed, kept apart from the offers because an offer is a transaction that closes and
+ *  a receipt is a fact that stays. See #110: 收到的文件 has to survive the app ending. */
+const RX_ARRIVALS_FILE = 'chuanshu-receiver-arrivals.json'
 const TRACE_FILE = 'chuanshu-serve.log'
 /** DER for SubjectPublicKeyInfo{ ed25519 OID, 32-byte key }. The pair message carries only the raw 32
  *  bytes, so this is what has to go back in front of them before the digest is taken. */
@@ -1129,6 +1132,16 @@ export function loadOfferStates(): string {
 
 export function saveOfferStates(text: string): void {
 	writeBytesOfFile(RX_STATE_FILE, bytesOf(text))
+}
+
+/** The same shape as the offer ledger - one record per line - because the state machine hands over
+ *  a list rather than one document here too. */
+export function loadArrivalStates(): string {
+	return readTextFile(RX_ARRIVALS_FILE)
+}
+
+export function saveArrivalStates(text: string): void {
+	writeBytesOfFile(RX_ARRIVALS_FILE, bytesOf(text))
 }
 
 /* --------------------------------------------------------------------------- same-network */
@@ -2511,6 +2524,20 @@ export function storeDigestFile(relpath: string): string {
 
 export function storeDropFile(relpath: string): void {
 	storeDrop(relpath)
+}
+
+/** Whether a file this device already received is still in the receive root. The arrival ledger says
+ *  it landed; only the disk says whether it is still there, and the card has to read the disk. */
+export function storeFileExists(relpath: string): boolean {
+	const where = recvPath(relpath)
+	if (where == '') {
+		return false
+	}
+	try {
+		return fs.accessSync(where)
+	} catch (e) {
+		return false
+	}
 }
 
 /** The chunk's digest, taken over the exact bytes that arrived. Synchronous because the state machine
