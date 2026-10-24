@@ -941,6 +941,22 @@ const callWire = (
 	request(method, activeOptions.host, activeOptions.port, path, jsonBody, token, s.scannedFp, body, sha, escape, cb)
 }
 
+/** The address the 「同一网络」 sentence under the button was answered for. The answer is about one
+ *  machine, and the 地址 field can be edited into a sentence about another one, so the check that
+ *  produced it is remembered with it. */
+let netWhere = ''
+
+function checkNet(host: string, after: (level: string) => void): void {
+	netWhere = host
+	lanCheck(host, function (level: string, text: string): void {
+		showNet(level, text)
+		after(level)
+	})
+}
+
+/** A check whose only job is the sentence it draws. */
+const noOp: (level: string) => void = (level: string): void => {}
+
 // #ifdef WEB
 /** The browser's trust store is the demo peer's, so it has one answer for every address. */
 function refreshPinned() {
@@ -955,11 +971,55 @@ function refreshPinned() {
 // #endif
 
 // #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
+/** The two lines that answer "what does this phone already trust about that address". They are one
+ *  sentence and a hint, and they only mean something for the address they were read for - so the
+ *  address is remembered next to them, and a hand-edited 地址 is detected rather than relabelled blind. */
+let pinnedWhere = ''
+
+function labelPinned(where: string, fp: string): void {
+	pinnedWhere = where
+	s.pinnedFp = fp
+	s.pinnedLabel = fp == ''
+		? where + ' 还没有固定过：首次配对时固定它的证书指纹'
+		: '已固定 ' + where + ' 的指纹 ' + fp.substring(0, 16) + '…'
+	s.codeHint = fp == ''
+		? PAIR_CODE_DIGITS.toString() + ' 位配对码'
+		: '配对码（已固定过，留空即可用密钥重连）'
+	// Once a peer is pinned, its key alone is enough to reconnect - the code and the password
+	// only stand between us and a stranger, so leaving either out is not an error here.
+	s.passHint = fp == ''
+		? PASSPHRASE_CHARS.toString() + ' 位配对密码'
+		: '配对密码（已固定过，留空即可）'
+}
+
+/** The card is opened on a discovered row and the address is then edited by hand. Until the next read
+ *  the two sentences under the button talk about the machine that used to be in the field - and a
+ *  「还没有固定过」 next to an enabled 解除固定, or 「不在同一网络」 about an address that is no longer
+ *  there, is a card that contradicts itself. The page asks once a second, the same beat the roster
+ *  is redrawn on. */
+export function syncTargetCard(): void {
+	const where = s.host.trim()
+	if (where != pinnedWhere) {
+		refreshPinned()
+	}
+	if (where != netWhere) {
+		if (where == '') {
+			// An address typed away to nothing has no answer to give, and the page that opens with an
+			// empty card shows no sentence about the network - so take the stale one back out.
+			netWhere = ''
+			showNet('', '')
+		} else {
+			checkNet(where, noOp)
+		}
+	}
+}
+
 /** On the phone the pin is per address, and reading it is a round trip to the keystore, so this
  *  is a callback rather than a value: the labels only change once the answer arrives. */
 function refreshPinned() {
 	const where = s.host.trim()
 	if (where == '') {
+		pinnedWhere = where
 		s.pinnedFp = ''
 		s.pinnedLabel = '尚未固定对端：首次配对时固定'
 		s.codeHint = PAIR_CODE_DIGITS.toString() + ' 位配对码'
@@ -967,18 +1027,7 @@ function refreshPinned() {
 		return
 	}
 	pinnedFor(where, buildOptions().port, function (fp: string): void {
-		s.pinnedFp = fp
-		s.pinnedLabel = fp == ''
-			? where + ' 还没有固定过：首次配对时固定它的证书指纹'
-			: '已固定 ' + where + ' 的指纹 ' + fp.substring(0, 16) + '…'
-		s.codeHint = fp == ''
-			? PAIR_CODE_DIGITS.toString() + ' 位配对码'
-			: '配对码（已固定过，留空即可用密钥重连）'
-		// Once a peer is pinned, its key alone is enough to reconnect - the code and the password
-		// only stand between us and a stranger, so leaving either out is not an error here.
-		s.passHint = fp == ''
-			? PASSPHRASE_CHARS.toString() + ' 位配对密码'
-			: '配对密码（已固定过，留空即可）'
+		labelPinned(where, fp)
 	})
 }
 // #endif
@@ -1022,6 +1071,9 @@ function markDisconnected(message: string) {
 	s.sessionLabel = message
 	s.peerName = ''
 	receiveHoldSlot('')
+	// The line about what this phone already trusts has to describe the address that was just refused,
+	// and it is read from the pin store - otherwise a refusal prints next to 「还没有固定过」.
+	refreshPinned()
 	syncSendable()
 }
 
@@ -1072,10 +1124,9 @@ function checkCodeAndNetwork() {
 		log('配对密码：' + passWhy)
 		return
 	}
-	lanCheck(activeOptions.host, function (level: string, text: string): void {
-		showNet(level, text)
+	checkNet(activeOptions.host, function (level: string): void {
 		if (level == 'bad') {
-			log('没有连接：' + text)
+			log('没有连接：' + s.netLabel)
 			return
 		}
 		startConnect()
@@ -1094,7 +1145,7 @@ export function onConnect() {
 	// handshake: the peer stays pinned across a restart, and 留空重连 has to work for it then too.
 	// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
 	pinnedFor(activeOptions.host, activeOptions.port, function (fp: string): void {
-		s.pinnedFp = fp
+		labelPinned(activeOptions.host, fp)
 		checkCodeAndNetwork()
 	})
 	// #endif
@@ -1167,9 +1218,7 @@ export function applyConnectText(text: string): boolean {
 	log(target.secret == ''
 		? '已读入配对信息，核对配对码后点连接'
 		: '已读入配对信息（含密码），核对后点连接')
-	lanCheck(target.host, function (level: string, text: string): void {
-		showNet(level, text)
-	})
+	checkNet(target.host, noOp)
 	syncSendable()
 	return true
 }
@@ -1849,6 +1898,9 @@ function discStopChannels(cb: (ok: boolean, message: string) => void): void {
  *  candidate expires 15 seconds after the last packet, so a list refreshed less often than that is a
  *  list of machines that are no longer there. */
 export function refreshDiscovery(): void {
+	// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
+	syncTargetCard()
+	// #endif
 	const made = JSON.parse(discSnapshot()) as UTSJSONObject | null
 	if (made == null) {
 		return
@@ -1916,9 +1968,7 @@ export function pickPeer(at: number): void {
 		'　前缀 ' + discPicked + discPromise()
 	s.showAdvanced = false
 	refreshPinned()
-	lanCheck(host, function (level: string, text: string): void {
-		showNet(level, text)
-	})
+	checkNet(host, noOp)
 	syncSendable()
 	log('已选中 ' + s.discNames[at] + '（' + host + ':' + port.toString() +
 		'），照着它屏幕上的配对码和密码点连接')
