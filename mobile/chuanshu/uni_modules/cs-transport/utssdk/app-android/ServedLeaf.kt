@@ -1,6 +1,7 @@
 package uts.sdk.modules.csTransport
 
 import android.os.Build
+import android.util.Log
 import io.dcloud.uts.UTSAndroid
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -15,6 +16,8 @@ import java.security.SecureRandom
 import java.security.Signature
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
+import java.security.interfaces.RSAPrivateKey
+import java.security.interfaces.RSAPublicKey
 import java.security.spec.PKCS8EncodedKeySpec
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -39,6 +42,10 @@ object ServedLeaf {
     private const val CERT_FILE = "chuanshu-tls-rsa.crt"
     private const val PRI_FILE = "chuanshu-tls-rsa.pk8"
     private const val SPKI_FILE = "chuanshu-tls-rsa.spki"
+
+    /** Why a stored leaf was thrown away. Without this the rebuild is silent, and a peer that pinned
+     *  this phone finds out on its own restart that the number it saved does not describe it any more. */
+    private const val TAG = "cs-leaf"
 
     /** 1.2.840.113549.1.1.11 with the RSA parameters, as the DER bytes of the OID plus a NULL. */
     private val ALG_RSA_SHA256: ByteArray =
@@ -88,6 +95,11 @@ object ServedLeaf {
     private fun derName(cn: String): ByteArray =
         derSeq(derSet(derSeq(derOid(OID_CN), der(0x0c, cn.toByteArray(Charsets.UTF_8)))))
 
+    /** UTCTime carries a two-digit year, and RFC 5280 reads 00-69 as 2000-2069 and 70-99 as 1970-1999.
+     *  A notAfter outside that window is therefore not a far-future date at all: measured on this
+     *  emulator, "+3650 years" came back as `Certificate expired at ... 1976`, which made the stored
+     *  leaf look spent and rebuilt it - and a rebuilt leaf means a new SPKI digest, so every peer that
+     *  pinned this phone silently lost its pin on the phone's next restart. */
     private fun derTime(millis: Long): ByteArray {
         val f = SimpleDateFormat("yyMMddHHmmss'Z'", Locale.US)
         f.timeZone = TimeZone.getTimeZone("UTC")
@@ -114,7 +126,7 @@ object ServedLeaf {
         val now = System.currentTimeMillis()
         val notAfter = Calendar.getInstance().apply {
             timeInMillis = now
-            add(Calendar.YEAR, 3650)
+            add(Calendar.YEAR, 20)
         }.timeInMillis
         val tbs = derSeq(
             der(0xa0, der(0x02, BigInteger.valueOf(2).toByteArray())),
@@ -138,18 +150,35 @@ object ServedLeaf {
         val pri = File(dir, PRI_FILE)
         val spkiFile = File(dir, SPKI_FILE)
         if (!certFile.exists() || !pri.exists() || !spkiFile.exists()) return null
-        return try {
-            val der = certFile.readBytes()
-            val spkiBytes = spkiFile.readBytes()
-            val parsed = parseCert(der) ?: return null
-            parsed.checkValidity()
-            if (!parsed.publicKey.encoded.contentEquals(spkiBytes)) return null
-            val key = KeyFactory.getInstance("RSA")
-                .generatePrivate(PKCS8EncodedKeySpec(pri.readBytes()))
-            Leaf(key, spkiBytes, der, hexOf(MessageDigest.getInstance("SHA-256").digest(spkiBytes)))
-        } catch (e: Throwable) {
-            null
+        val der = certFile.readBytes()
+        val spkiBytes = spkiFile.readBytes()
+        val parsed = parseCert(der)
+        if (parsed == null) {
+            Log.w(TAG, "stored cert does not parse: " + der.size + " bytes")
+            return null
         }
+        try {
+            parsed.checkValidity()
+        } catch (e: Throwable) {
+            Log.w(TAG, "stored cert rejected by the clock: $e")
+            return null
+        }
+        val key = try {
+            KeyFactory.getInstance("RSA").generatePrivate(PKCS8EncodedKeySpec(pri.readBytes()))
+        } catch (e: Throwable) {
+            Log.w(TAG, "stored key does not parse: $e")
+            return null
+        }
+        // Not a byte comparison of the two encodings: the socket presents the certificate, so the bytes a
+        // peer digests are the ones embedded in it, and a platform that re-encodes an RSA public key on
+        // parse (AlgorithmIdentifier NULL parameters in or out) would otherwise throw away a leaf that is
+        // exactly the one it has always served - and every peer's pin would break on a restart.
+        val pub = parsed.publicKey
+        if (pub !is RSAPublicKey || key !is RSAPrivateKey || pub.modulus != key.modulus) {
+            Log.w(TAG, "stored cert and key are not a pair")
+            return null
+        }
+        return Leaf(key, spkiBytes, der, hexOf(MessageDigest.getInstance("SHA-256").digest(spkiBytes)))
     }
 
     /** The leaf, made once and then reused: a peer that pinned this address has to see the same bytes

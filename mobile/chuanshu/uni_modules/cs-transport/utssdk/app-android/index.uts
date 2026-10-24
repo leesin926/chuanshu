@@ -366,11 +366,17 @@ let recvSelf: LocalPeer | null = null
 let recvStartNote = '还没开始监听'
 let lastTrustText = ''
 let lastOfferText = ''
+/** Whether the two files below have been read in this process. The page's one-second card refresh
+ *  saves, and on a cold start it can fire before the listener has been opened - so without this the
+ *  empty inbox is serialised over the trust file it has not read yet, and the phone forgets its pinned
+ *  peers and its received list on the restart that was supposed to prove it remembers them (task #86). */
+let recvMemoryRead = false
 
 /** Cheap by design: both documents are rewritten only when their own serialisation moved, so the
  *  one-second refresh that watches a transfer costs nothing while nothing is being written. The state
  *  machine itself is in memory and the files only ever hold what it says out loud (task #86). */
 function saveReceiveMemory(): void {
+	syncReceiveMemory()
 	const peers = trustJson(recvInbox)
 	if (peers != lastTrustText) {
 		lastTrustText = peers
@@ -387,6 +393,10 @@ function saveReceiveMemory(): void {
  *  and adoptAll() is what tells the two apart - it re-registers a part-written transfer so the next
  *  chunk continues instead of the file starting over. */
 function syncReceiveMemory(): void {
+	if (recvMemoryRead) {
+		return
+	}
+	recvMemoryRead = true
 	const peers = CsIdentity.loadTrustPeers()
 	if (peers != '') {
 		adoptTrust(recvInbox, peers)
