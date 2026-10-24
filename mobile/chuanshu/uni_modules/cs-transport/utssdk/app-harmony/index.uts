@@ -750,7 +750,11 @@ function servedPair(): ServedPair {
 			tlv(0x02, intBody(randomBytes(8))),
 			ALG_RSA_SHA256,
 			cnName(peerIdOf()),
-			seqOf([utcTime(now - 86400000), utcTime(now + 365 * 86400000)]),
+			// Twenty years, not one: this leaf is written down and the read-back path above never looks at
+			// the dates, so a short expiry would survive as a pin every peer has already fixed - the socket
+			// keeps answering, the handshake keeps failing, and nothing re-mints. UTCTime carries two year
+			// digits, so "far enough" also has to stay below 2070.
+			seqOf([utcTime(now - 86400000), utcTime(now + 20 * 365 * 86400000)]),
 			cnName(peerIdOf()),
 			enc
 		])
