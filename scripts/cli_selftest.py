@@ -70,10 +70,11 @@ def env_of(role: str) -> dict:
     return dict(os.environ, APPDATA=str(SCRATCH / role), PYTHONIOENCODING="utf-8")
 
 
-def start(role: str, extra: list[str]) -> subprocess.Popen:
+def start(role: str, extra: list[str], stdin_closed: bool = False) -> subprocess.Popen:
     cmd = [sys.executable, "-X", "utf8", "-m", "app.cli", *extra]
     return subprocess.Popen(cmd, cwd=str(ROOT), env=env_of(role), stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True, encoding="utf-8", bufsize=1)
+                            stderr=subprocess.STDOUT, text=True, encoding="utf-8", bufsize=1,
+                            stdin=subprocess.DEVNULL if stdin_closed else None)
 
 
 def read_until(proc: subprocess.Popen, pattern: str, seconds: float = 25.0) -> str:
@@ -111,7 +112,8 @@ def cli(role: str, extra: list[str]) -> subprocess.CompletedProcess:
 
 
 def stop(proc: subprocess.Popen) -> None:
-    proc.kill()
+    if proc.poll() is None:  # a --seconds run may have already walked out on its own
+        proc.kill()
     rest, _ = proc.communicate(timeout=10)
     for line in (rest or "").splitlines():
         print(f"    [serve] {line}")
@@ -239,6 +241,27 @@ def main() -> int:
     if back:
         check("the reverse bytes hash the same", hashlib.sha256(back[0].read_bytes()).hexdigest() == digest)
 
+    # --- leg 3: a receiver that nobody answers must refuse, not park the sender
+    # The prompt's own deadline (offer_wait_timeout_s - 5 = 55 s) is measured on a phone in
+    # .probe/h_h3_pc.py; what belongs in a gate that has to stay quick is the other half of the
+    # same branch - a run with nothing behind stdin. Before #112 the prompt was a bare input()
+    # with no clock, so this is the assertion that fails if the refusal ever goes back to waiting
+    # forever: the sender must come home inside its own window, not at the end of it.
+    shutil.rmtree(SCRATCH / "R" / "in3", ignore_errors=True)
+    r3 = start("R", ["receive", "--root", str(SCRATCH / "R" / "in3"), "--port", "43913",
+                     "--seconds", "60", "--no-discover"], stdin_closed=True)
+    port3, _, _ = banner(read_until(r3, r"按 Ctrl-C|听 \d+"))
+    t0 = time.monotonic()
+    out3 = send("S", [f"127.0.0.1:{port3}", str(SAMPLE), "--base", str(SCRATCH)])
+    took = time.monotonic() - t0
+    refused = read_until(r3, r"先拒了|已拒绝", 20)
+    check("the unanswered offer was refused out loud", "先拒了" in refused, refused.strip()[-160:])
+    check("and the sender was not held past the answer", out3.returncode != 0 and took < 45,
+          f"rc={out3.returncode} {took:.1f}s {(out3.stdout or out3.stderr)[-160:]}")
+    check("nothing landed in the refused root",
+          not list((SCRATCH / "R" / "in3").rglob("sample.bin")),
+          [str(p) for p in (SCRATCH / "R" / "in3").rglob("sample.bin")])
+
     # --- the read-only commands describe what those two legs left behind
     pins_r = cli("R", ["pins"])
     check("R lists the peer it pinned", "S" in pins_r.stdout or "DESKTOP" in pins_r.stdout, pins_r.stdout.strip())
@@ -251,6 +274,7 @@ def main() -> int:
 
     stop(r1)
     stop(r2)
+    stop(r3)
     print("RESULT " + ("ALL PASS" if not failures else f"FAILURES: {failures}"))
     return 0 if not failures else 1
 

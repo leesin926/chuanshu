@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import queue
 import socket
 import sys
 import threading
@@ -111,6 +112,68 @@ class Terminal:
             sys.stdout.write("\r" + " " * 78 + "\r")
             sys.stdout.flush()
             self._painted = False
+
+    def prompt(self, text: str) -> None:
+        self._erase()
+        sys.stdout.write(text)
+        sys.stdout.flush()
+
+    def close_prompt(self) -> None:
+        """End the prompt line once an answer is in hand.
+
+        A terminal echoes the Enter that produced the answer, so the cursor is already down;
+        a pipe shows nothing at all, and without this the result line runs on into the prompt.
+        """
+        if not self._live:
+            self.say("")
+
+
+#: What ``_stdin_lines`` hands back when nothing will ever arrive on stdin again.
+_NO_STDIN = object()
+#: ... and what a timed-out wait hands back, so a refusal can say which of the two it was.
+_NO_ANSWER = object()
+
+
+def _stdin_lines() -> "queue.Queue":
+    """A thread that owns stdin, so a prompt can stop listening without stranding the read.
+
+    input() cannot be abandoned: a prompt that gives up while input() still holds the
+    terminal's read would have the next offer answered by a keystroke meant for the previous
+    one. Lines produced here are therefore consumed by whoever asks, and dropped when they
+    arrive after their own offer was already refused.
+    """
+    lines: "queue.Queue" = queue.Queue()
+    if sys.stdin is None:  # a windowless build has no console to read from at all
+        lines.put(_NO_STDIN)
+        return lines
+
+    def pump() -> None:
+        while True:
+            try:
+                line = sys.stdin.readline()
+            except (OSError, ValueError):
+                line = ""
+            if line == "":
+                lines.put(_NO_STDIN)
+                return
+            lines.put(line)
+
+    threading.Thread(target=pump, daemon=True, name="chuanshu-stdin").start()
+    return lines
+
+
+def _someone_at_the_keyboard() -> bool:
+    """Whether lines on stdin come from a person rather than a script.
+
+    Only a person can type into a prompt that has already closed, so that is the case where a
+    leftover line gets thrown away. A pipe is different: `printf '\\n' | chuan-shu receive`
+    pre-answers the next offer on purpose, and discarding it would break the one scripted way
+    to accept without --yes.
+    """
+    try:
+        return sys.stdin is not None and sys.stdin.isatty()
+    except (OSError, ValueError):
+        return False
 
 
 #: Flags that belong to the run rather than to one command. Declared on a parent so they
@@ -227,6 +290,8 @@ def cmd_receive(args: argparse.Namespace, out: Terminal) -> int:
     root = Path(args.root).expanduser() if args.root else receive_root()
     root.mkdir(parents=True, exist_ok=True)
     ask = threading.Lock()
+    answers = _stdin_lines()
+    keyboard = _someone_at_the_keyboard()
 
     def decide(manifest: dict, who: str, caller: str):
         """Answer POST /v1/offer from the terminal.
@@ -246,15 +311,35 @@ def cmd_receive(args: argparse.Namespace, out: Terminal) -> int:
             return True
         deadline = max(int(proto.offer_wait_timeout_s) - _PROMPT_MARGIN_S, 1)
         with ask:
+            # A line typed while this side was busy is not an answer to this offer, and taking
+            # it would silently accept a request nobody looked at.
+            if keyboard:
+                while not answers.empty():
+                    stale = answers.get_nowait()
+                    if stale is _NO_STDIN:
+                        # Not a leftover keystroke but the fact that stdin has run out, and on
+                        # Windows a redirected-to-null stdin still answers isatty(). Dropping it
+                        # here would turn an instant refusal into a wait for the clock.
+                        answers.put(stale)
+                        break
             out.say(f"落到：{root}")
+            # Waiting here is honest only up to the deadline: the sender stops counting at
+            # offer_wait_timeout_s whether or not this terminal ever answers, and a socket kept
+            # open past that is a peer parked by our own prompt.
+            out.prompt(f"回车接收 / r 拒绝 / 输入一个目录收进那里（{deadline} 秒内回答）：")
             try:
-                # input() from the server thread is the whole UI here:回车 takes it, a path
-                # moves this one offer, and anything else is a refusal. A run whose stdin has
-                # nothing on the other end raises EOFError, and no answer is a refusal too.
-                answer = input(f"回车接收 / r 拒绝 / 输入一个目录收进那里（{deadline} 秒内回答）：").strip()
-            except EOFError:
-                answer = "r"
+                answer = answers.get(timeout=deadline)
+            except queue.Empty:
+                answer = _NO_ANSWER
+            out.close_prompt()
+            if answer is _NO_ANSWER:
+                out.say(f"{deadline} 秒内没有人回答，这单先拒了。")
+                return False
+            if answer is _NO_STDIN:
+                answers.put(_NO_STDIN)
                 out.say("（stdin 里没有回答，这单先拒了。要自动收请用 --yes。）")
+                return False
+            answer = answer.strip()
         if answer.lower() in ("r", "n", "no", "reject"):
             out.say("已拒绝，对方会收到 DECLINED。")
             return False
