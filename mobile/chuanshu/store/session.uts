@@ -979,6 +979,15 @@ let pinnedWhere = ''
 function labelPinned(where: string, fp: string): void {
 	pinnedWhere = where
 	s.pinnedFp = fp
+	// An address that was typed away to nothing has no sentence to make about itself, and the callers
+	// read this field straight - a bare " 还没有固定过" is the same self-contradicting card as a
+	// 「已固定」 about the machine that used to be in the box.
+	if (where == '') {
+		s.pinnedLabel = '尚未固定对端：首次配对时固定'
+		s.codeHint = PAIR_CODE_DIGITS.toString() + ' 位配对码'
+		s.passHint = PASSPHRASE_CHARS.toString() + ' 位配对密码'
+		return
+	}
 	s.pinnedLabel = fp == ''
 		? where + ' 还没有固定过：首次配对时固定它的证书指纹'
 		: '已固定 ' + where + ' 的指纹 ' + fp.substring(0, 16) + '…'
@@ -1019,11 +1028,7 @@ export function syncTargetCard(): void {
 function refreshPinned() {
 	const where = s.host.trim()
 	if (where == '') {
-		pinnedWhere = where
-		s.pinnedFp = ''
-		s.pinnedLabel = '尚未固定对端：首次配对时固定'
-		s.codeHint = PAIR_CODE_DIGITS.toString() + ' 位配对码'
-		s.passHint = PASSPHRASE_CHARS.toString() + ' 位配对密码'
+		labelPinned('', '')
 		return
 	}
 	pinnedFor(where, buildOptions().port, function (fp: string): void {
