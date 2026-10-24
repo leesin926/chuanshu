@@ -389,6 +389,12 @@ export function errorText(code: string): string {
 	if (code == 'PEER_BUSY') {
 		return '对方正在处理另一个传输'
 	}
+	// Not a wire code from the peer but one of the transport's own, named the same way on both
+	// phones: Android says it when the platform cannot resolve the host, and Harmony now asks the
+	// resolver before it blames the handshake.
+	if (code == 'HOST_UNKNOWN') {
+		return '这个名字解析不出来'
+	}
 	return '协议错误：' + code
 }
 

@@ -1445,6 +1445,29 @@ function sendRecords(
 	})
 }
 
+type NamedCb = () => void
+
+/** Does this host name anything at all? Asked only by a connect that already failed.
+ *
+ *  The platform gives the same message for a name it cannot resolve and for a TLS handshake it did not
+ *  like, and its error code is a per-API-level table rather than a per-cause one, so the question goes
+ *  to the resolver instead of to a lookup we would have to guess at. The lookup sits on the failure
+ *  branch on purpose: a request that connected has no business waiting for DNS, and a chunk PUT least
+ *  of all. If the resolver answers later than the request's own timer, the timer's line has already
+ *  been handed back and this verdict is dropped - a second opinion about a socket the caller gave up
+ *  on is worse than none. */
+function probeName(host: string, named: NamedCb, unnamed: NamedCb): void {
+	connection.getAddressesByName(host).then((addrs: connection.NetAddress[]): void => {
+		if (addrs.length > 0) {
+			named()
+			return
+		}
+		unnamed()
+	}).catch((e: Error): void => {
+		unnamed()
+	})
+}
+
 /** One request over one connection.
  *
  *  The order is the whole design: bind, connect without the platform's own certificate validation, read
@@ -1694,7 +1717,22 @@ function httpRun(
 		if (finished) {
 			return
 		}
-		fail('IO', stage + '：' + errText(e))
+		const why = stage + '：' + errText(e)
+		// The connect step is the one place where the platform's own words are not enough: an
+		// unresolvable host arrives as 「SSL is null」, which reads like a complaint about the peer's
+		// certificate and sends the user to the other machine instead of to the address they typed.
+		// The code is kept in the line for the other branch, because a handshake that really failed
+		// is the one case where it does say something, and it is the only field the cast loses.
+		if (stage.indexOf('连接 ') == 0) {
+			const code = numFieldOf(JSON.stringify(e), 'code')
+			probeName(host, (): void => {
+				fail('IO', why + (code >= 0 ? '（平台错误码 ' + code.toString() + '）' : ''))
+			}, (): void => {
+				fail('HOST_UNKNOWN', why + '：这个名字解析不出来')
+			})
+			return
+		}
+		fail('IO', why)
 	})
 }
 
