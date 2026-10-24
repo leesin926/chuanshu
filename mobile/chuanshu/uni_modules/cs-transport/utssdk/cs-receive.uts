@@ -24,6 +24,7 @@ import {
 	PASSPHRASE_CHARS,
 	SESSION_IDLE_S,
 	OFFER_IDLE_S,
+	OFFER_WAIT_S,
 	chunkCount,
 	chunkSizeAt,
 	isFullFingerprint,
@@ -107,8 +108,10 @@ class ROffer {
 	fromFingerprint: string = ''
 	awaiting: boolean = true
 	created: number = 0
-	/** When a chunk last landed. The idle window of spec §4 counts from here, not from `created`:
-	 *  a transfer that keeps writing is never idle, however long it takes. */
+	/** The last evidence that this transfer is still being pursued: a chunk that landed, or - while
+	 *  nobody has decided yet - the sender re-delivering the same manifest. Both windows of spec §4 count
+	 *  from here, not from `created`: a transfer that keeps moving is never idle, and an offer the sender
+	 *  stopped asking about is gone however new its first delivery looks. */
 	touched: number = 0
 	/** Set by a finalize that found every file whole. It is the difference between an offer that can
 	 *  still be resumed - and one whose bytes must survive the next restart. */
@@ -195,6 +198,11 @@ export class FileRow {
 	have: number = 0
 	count: number = 0
 	missingAt: number = 0
+	/** True once this offer has been silent for a full session window of spec §3 with nobody having
+	 *  decided to stop it. The bytes are still the sender's to deliver - it can come back on the same
+	 *  offer id and finish - but `还没收到分块` describing a peer that has gone reads as a transfer that
+	 *  is about to move, and a person decides differently on that sentence than on the true one. */
+	senderGone: boolean = false
 }
 
 export class ReceiveSnapshot {
@@ -415,8 +423,13 @@ function releaseFiles(offer: ROffer, drop: DropFn, digestFile: DigestFileFn): vo
  *  are floors from the contract, and a peer whose clock runs out is not lost: it re-pairs without a
  *  code (spec §3), and a finished transfer keeps every byte it verified.
  *
- *  An offer the user has not answered yet is deliberately not swept. It occupies no disk, and closing
- *  a dialog behind a person's back is a different promise from timing out a stalled transfer. */
+ *  An offer the user has not answered is closed on one clock only - the sender's own asking. §4 gives
+ *  the sender `offer_wait_timeout_s` to get a decision and it re-delivers the manifest every second
+ *  inside that window, so "nobody has asked about this in a full window" is the only reading of §4 that
+ *  cannot be undone by the next request. Inside the window nothing here touches it: closing a live
+ *  dialog behind a person is a different promise from timing out a stalled transfer. Past it the
+ *  manifest has nobody left to write it, so a 接受 tap would be a decision about a transfer that cannot
+ *  happen, and the one offer slot it holds would keep refusing the next sender. */
 export function sweep(inbox: Inbox, now: number, drop: DropFn, digestFile: DigestFileFn): string[] {
 	const lost: string[] = []
 	for (let i = inbox.tokens.length - 1; i >= 0; i--) {
@@ -441,7 +454,16 @@ export function sweep(inbox: Inbox, now: number, drop: DropFn, digestFile: Diges
 	}
 	for (let i = inbox.offers.length - 1; i >= 0; i--) {
 		const offer = inbox.offers[i]
-		if (offer.awaiting || now - offer.touched < OFFER_IDLE_S) {
+		if (offer.awaiting) {
+			if (now - offer.touched < OFFER_WAIT_S) {
+				continue
+			}
+			// Never accepted, so nothing was allocated and there is no half-written batch to release -
+			// this is the one offer the card is allowed to stop showing on its own.
+			inbox.offers.splice(i, 1)
+			continue
+		}
+		if (now - offer.touched < OFFER_IDLE_S) {
 			continue
 		}
 		if (!offer.complete) {
@@ -799,8 +821,15 @@ function offerReply(inbox: Inbox, now: number, json: string, caller: string): Wi
 	const known = offerById(inbox, offerId)
 	if (known != null) {
 		// A sender that lost its reply re-sends the whole manifest. If the user has not decided yet
-		// the answer is still "wait", not a second dialog for the same delivery.
-		return known.awaiting ? pendingReply() : okWith(payloadOf(known))
+		// the answer is still "wait", not a second dialog for the same delivery. Every one of those
+		// re-deliveries is proof the sender is still asking, so the window of §4 moves with it - the
+		// last poll is the one that used to arrive exactly as a window counted from `created` closed,
+		// which re-registered the same offer and started the clock again behind a card nobody answers.
+		if (known.awaiting) {
+			known.touched = now
+			return pendingReply()
+		}
+		return okWith(payloadOf(known))
 	}
 	const settled = settledOf(inbox, offerId)
 	if (settled != null) {
@@ -1105,6 +1134,9 @@ export function snapshot(inbox: Inbox, now: number): ReceiveSnapshot {
 			out.pendingOfferIds.push(offer.offerId)
 			out.pendingFrom.push(offer.fromName)
 		}
+		// The same clock spec §3 uses to take a session slot back, read here so a row can say what the
+		// offer really is: still being filled, or waiting on a peer that has already left the network.
+		const gone = !offer.awaiting && now - offer.touched >= SESSION_IDLE_S
 		for (let k = 0; k < offer.files.length; k++) {
 			const file = offer.files[k]
 			const row = new FileRow()
@@ -1119,6 +1151,7 @@ export function snapshot(inbox: Inbox, now: number): ReceiveSnapshot {
 			row.have = file.chunks.size
 			row.count = chunkCount(file.size)
 			row.missingAt = file.missingAt
+			row.senderGone = gone && file.verdict != 1
 			out.rows.push(row)
 			if (file.verdict == 1) {
 				out.verifiedFiles = out.verifiedFiles + 1
@@ -1172,8 +1205,8 @@ export function stateJson(inbox: Inbox, offerId: string): string {
 		files: files,
 		received: received,
 		from_name: offer!.fromName,
-		/** §4 counts the idle window from the last chunk that landed, so both clocks have to be in the
-		 *  document. Without them every restart rewinds the window and an offer whose sender died comes
+		/** §4 counts both windows from the last evidence the transfer is alive, so both clocks have to be
+		 *  in the document. Without them every restart rewinds the window and an offer whose sender died comes
 		 *  back on the card forever, saying "还没收到分块" about a transfer nobody is resuming. */
 		created: offer!.created,
 		touched: offer!.touched,

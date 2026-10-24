@@ -698,6 +698,11 @@ export function refreshReceive() {
 		} else if (row.verdict == 2) {
 			label = '整文件校验没过' + (row.missingAt > 0 ? '（还缺 ' + row.missingAt.toString() + ' 块）' : '')
 			style = 'stateBad'
+		} else if (row.senderGone) {
+			/* 这句话不能省成「还没收到分块」：那个说法描述的是一件马上会动的事，而 §3 的会话窗口已经过完，
+			   对方早就不在这张网里了。人看到「还在等分块」会等下去，看到「对方断了」会去叫它重连——
+			   单子还在，它带同一个 offer id 回来就能接着传，所以这里不说失败，只说没有动静。 */
+			label = '已接受，但对方已经 ' + Math.floor(SESSION_IDLE_S / 60).toString() + ' 分钟没有动静（它重新连上这一单还能接着传）'
 		} else if (row.have <= 0) {
 			label = '已接受，还没收到分块'
 		} else if (row.have < row.count) {
@@ -759,6 +764,9 @@ export function shortState(text: string): string {
 	}
 	if (text.indexOf('等你决定') == 0) {
 		return '等你决定'
+	}
+	if (text.indexOf('已接受，但对方已经') == 0) {
+		return '对方断了'
 	}
 	if (text.indexOf('失败') == 0 || text.indexOf('没过') > 0) {
 		return '没通过'

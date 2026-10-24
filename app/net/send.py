@@ -384,6 +384,7 @@ class PeerConnection:
                 # while its user decides answers only at the end), so a stall here says nothing about
                 # whether anybody decided. Only the window itself says DECLINED.
                 if time.monotonic() >= deadline:
+                    self._withdraw("no decision in time")
                     raise protocol_spec.ProtocolError(
                         "DECLINED", {"reason": "no decision in time", "last_error": str(exc)}
                     ) from exc
@@ -401,8 +402,23 @@ class PeerConnection:
                 log.info("offer %s accepted (%d files)", self.offer_id[:8], len(files))
                 return {"manifest": manifest, "state": payload}
             if time.monotonic() >= deadline:
+                self._withdraw("no decision in time")
                 raise protocol_spec.ProtocolError("DECLINED", {"reason": "no decision in time"})
             time.sleep(1.0)
+
+    def _withdraw(self, why: str) -> None:
+        """Tell the peer to drop the offer this machine is walking away from.
+
+        §4's window closing is the sender's own fact, and the peer cannot derive it: an offer nobody
+        decided holds that end's single offer slot, and one somebody decided holds the space reserved
+        for its files, until its own idle floor passes. Saying so is the same withdrawal the 取消 button
+        already sends (``app/ui/transfer.py``), and a peer that has already forgotten the id simply
+        answers OFFER_UNKNOWN - which is why a failure here is only a log line.
+        """
+        try:
+            self.abort()
+        except (http.client.HTTPException, OSError, protocol_spec.ProtocolError) as exc:
+            log.warning("could not withdraw the offer (%s): %s", why, exc)
 
     def state(self) -> dict:
         return self._call("GET", f"/v1/offer/{self.offer_id}/state")

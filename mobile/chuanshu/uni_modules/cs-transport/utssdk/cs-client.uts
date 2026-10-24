@@ -484,7 +484,19 @@ export function sendFiles(
 						for (let i = 0; i < opts.relpaths.length; i++) {
 							fileEvent(opts.relpaths[i], '被拒绝', 0, 0)
 						}
-						finish(false, errorText('DECLINED') + '：' + waited.toString() + ' 秒内对方没有作答')
+						const why = errorText('DECLINED') + '：' + waited.toString() + ' 秒内对方没有作答'
+						/** §4's window closing is this end's fact, and the peer cannot derive it: the last thing
+						 *  it got was a manifest nobody had answered. Say so before reporting it, because an
+						 *  offer nobody decided holds that end's single offer slot - without this sentence the
+						 *  next transfer is turned away until that end's own window passes, counting from the
+						 *  last manifest this end re-sent. A peer that already reclaimed it answers
+						 *  OFFER_UNKNOWN, which is why a refusal here is only a line in the log. */
+						authed('DELETE', '/v1/offer/' + offerId, '', new ArrayBuffer(0), '', '', false, function (status: number, body: string) {
+							if (status != 200) {
+								write('对方没有收下这句撤回：' + (codeOf(body) != '' ? codeOf(body) : status.toString()))
+							}
+							finish(false, why)
+						})
 						return
 					}
 					waited = waited + 1
