@@ -166,6 +166,9 @@ function cnName(cn: string): ByteArray {
 }
 
 function utcTime(millis: number): ByteArray {
+	// UTCTime carries a two-digit year, and RFC 5280 resolves 00-69 to 20xx and 70-99 to 19xx, so an
+	// expiry written past 2069 reads back as a date in the past. On the emulator "+3650 years" came back
+	// as `Certificate expired at ... 1976`; keep whatever calls this inside that window.
 	const f = new SimpleDateFormat("yyMMddHHmmss'Z'", Locale.US)
 	f.setTimeZone(TimeZone.getTimeZone('UTC'))
 	return tlv(0x17, f.format(new Date(millis.toLong())).toByteArray(Charsets.US_ASCII))
@@ -226,7 +229,7 @@ export function buildNodeKey(peerId: string): NodeKey {
 	const spki = kp.getPublic().getEncoded()
 	const serial = new BigInteger(64, new SecureRandom())
 	const now = System.currentTimeMillis()
-	const tbs = tbsOf(peerId, spki, serial, now - 86400000, yearLater(now, 3650))
+	const tbs = tbsOf(peerId, spki, serial, now - 86400000, yearLater(now, 20))
 	const signer = Signature.getInstance('Ed25519')
 	signer.initSign(kp.getPrivate())
 	signer.update(tbs)
