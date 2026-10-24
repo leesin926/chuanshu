@@ -1367,6 +1367,9 @@ class TransferPanel(QWidget):
         self._paint_firewall()
         self.receive_dir_title.setText(_("保存到"))
         self.receive_dir_field.setText(str(receive_root()))
+        # The field scrolls to the end, which is the end that names the folder; the front of a long
+        # path is then off screen with nothing marking it. The tooltip carries the whole thing.
+        self.receive_dir_field.setToolTip(str(receive_root()))
         self.refresh_pair_button.setText(_("更换配对码和密码"))
         self.refresh_pair_button.setToolTip(
             _("换一组新的固定配对码和密码，二维码跟着变。已经连上的设备不受影响。")

@@ -61,7 +61,7 @@ protocol/
 scripts/
   protocol_selftest.py  M0 验收：配对→多文件含目录→杀进程重启→续传→finalize→两条发现通道，
                         71 处断言、跑下来 78 条（报告写在 .probe/protocol_report.txt）
-  ui_selftest.py        M1 验收：驱动真实窗口，200 处断言、跑下来 399 条（部分按 8 种语言重复；
+  ui_selftest.py        M1 验收：驱动真实窗口，203 处断言、跑下来 403 条（部分按 8 种语言重复；
                         含设置窗口、缩到最小尺寸不裁切、没有托盘的桌面不承诺托盘、入站那句防火墙结论）。见"界面这层的验证"
   cli_selftest.py       命令行验收（Windows 这台）：起两个 CLI 进程（各自一个身份目录）互配、双向传
                         3MB 并逐字节对 sha256，顺带断言 import app.cli 不带进 Qt；再加一节 firewall：
@@ -380,21 +380,29 @@ cryptography 41.0.7、**没有 PySide6、没有 zeroconf**）跑，scratch `HOME
 27 条断言全绿。这一台恰好把两件事变成了实证而不是推理：`import app.cli` 不带 Qt 是因为这里
 根本装不了 Qt；mDNS 通道报 `unavailable`、UDP 广播 `ok`，正是 `discovery.py` 那条"每条通道单独
 上报"的分支；`firewall-cmd` 与 `ufw` 这里**两个都没装**（`command -v` 都是空），所以 `firewall`
-落到 `unknown`/退出码 1，而不是替用户说一句"放行着"。GUI 那半边（主题自动、无边框外壳、无托盘降级）只过了 `ui_selftest.py` 的
-offscreen 路径——offscreen 在 Windows 上就是"没有托盘"，所以降级逻辑被真跑了一遍，但字体度量
-与合成器行为在这里证明不了（见"界面这层的验证"第一条）。
+落到 `unknown`/退出码 1，而不是替用户说一句"放行着"。GUI 那半边（主题自动、无边框外壳、无托盘降级）过了
+`ui_selftest.py` 的 offscreen 路径——offscreen 在 Windows 上就是"没有托盘"，所以降级逻辑被真跑了一遍——
+但字体度量与合成器行为在 offscreen 上证明不了（见"界面这层的验证"第一条），所以冻结产物又被拉到 WSLg 的
+**真显示**上跑了一遍（下一段）：那才是导轨宽度这类几何结论的来源。
 
-**还没做的**（#105）：`./build-linux.sh`（PyInstaller → `dist/ChuanShu/` 两个产物 → tar.gz）这条路线
-在这台机器上**没真跑过 PyInstaller**——WSL 里没有它，装它要往这台机器上装东西，等点头再做；AppImage /
-deb 仍然没定，脚本先只承诺 tar.gz。已经跑过的是脚本自己那半边（`.probe/linux_build_probe.sh`，一次性
-探针，不进仓库）：它照脚本认的 `PY=` 塞一个桩，只把 `-m PyInstaller` 与翻译那三步换掉，其余照原样跑，
-于是 `--exe-only` 与完整打包两条分支、`dist/ChuanShu-0.1.0-linux-x64.tar.gz` 这个文件名、"一个目录两个
-可执行"的包内布局，以及**解压回来还在 +x**（两个桩脚本真被 `./ChuanShu` 起来了）都是实跑的结论；产物是
-桩，所以这条只算"脚本写得对"，不算"Linux 包出来了"。真桌面的 GUI 也卡在同一条：
-主题自动、Wayland 下 `startSystemMove()` 能不能拖动无边框窗口、X11 的边缘缩放、托盘在桌面环境里到底
-有没有（AppIndicator），都得有 PySide6 才谈得上。入站防火墙那半边同理：这台机器给的是真 `unknown`
-（上一条），而**装着火墙的那台**答出来什么还只对着备好的 `firewall-cmd`/`ufw` 文本验过，在
-`cli_selftest.py` 的 `firewall_checks` 里。
+**真跑过 PyInstaller 的那半边**（#105）：`./build-linux.sh` 在 WSL Ubuntu-24.04 里出了三次产物，
+最后一次就是仓库里那个 `dist/ChuanShu-0.1.0-linux-x64.tar.gz`（70,075,331 字节，一个目录两个可执行）。
+在这之前还有一次纯脚本层的实跑（`.probe/linux_build_probe.sh`，一次性探针，不进仓库）：把 `-m PyInstaller`
+与翻译三步换成桩，其余照原样，于是 `--exe-only` 那条分支（真构建没走它）与"解压回来还在 +x"是那次拿到的结论。
+装的东西：`python3-venv`/`python3-pip`、PySide6 6.12.0 跑起来要的 Qt 运行库（`libxcb-*`、`libxkbcommon`
+那一串）、`fonts-noto-cjk`（没有它截出来是一屏豆腐块）、`xdotool`+`maim`（拍窗口用）。PySide6 6.12.0
+与 PyInstaller 6.22.3 装在 `~/.venvs/cs`，**构建目录在 ext4（`~/csbuild`）而不是 `/mnt/e`**：往 9p 挂载上
+写 one-folder 会挂在收集那一步。产物怎么验的看 `.probe/linux_smoke.sh`——它是 `freeze_smoke.py` 的 Linux
+对应物：解压到临时目录、`XDG_*` 指到 scratch（绝不碰真的身份），跑冻结 CLI 的四条腿（`self`、
+`self --lang en`、`receive` 真起 43917 且横幅把端口和入站那半句都说出来了、`firewall` 的结论与退出码对得上），
+然后**在 WSLg 的真显示上把冻结的窗口拉起来**，`xdotool` 按 pid 找到窗口、`maim` 拍下来、再读它自己的
+`app.log`：10 条腿全绿，窗口 1080x761，日志无 ERROR/Traceback。真桌面证明掉的是 offscreen 永远证明不了的那类：
+字体度量（同一个 12px，`advance("DESKTOP-58TSA70")` offscreen 180 / 真机 113，左导轨的宽度就是按它算的）、
+四个页面各自真渲染一遍长什么样、以及 #87 那行入站结论在桌面降级下说的是人话（这台机器没 firewalld 也没 ufw，
+所以窗口上那句是"读不到，所以不构成保证"）。**仍然没跑的**：Wayland 下 `startSystemMove()` 能不能拖动无边框窗口
+（WSLg 给的是 X11 转发，这条要真 Wayland 会话）、X11 边缘缩放、托盘在桌面环境里到底有没有（AppIndicator），
+以及 AppImage / deb 这个投递形式还没定——脚本只承诺 tar.gz。装着火墙的那台答出来什么，仍只对着备好的
+`firewall-cmd`/`ufw` 文本验过，在 `cli_selftest.py` 的 `firewall_checks` 里。
 
 ## 打包
 
@@ -408,9 +416,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Task all
 3. `ISCC installer\setup.iss` → `dist\installer\ChuanShu-Setup-0.1.0-x64.exe`
 
 Linux 那一侧重复同样的三步，只是产物是 tar.gz：`./build-linux.sh`（`--exe-only` 只出可执行文件不打包，
-`PY=python3.12` 换解释器）。它需要 `requirements.txt` + `requirements-dev.txt` 都装上；脚本自己那两条
-分支在 WSL 里真跑过（PyInstaller 与翻译三步换成桩），**没跑过的就是 PyInstaller 那一步本身**（见"Linux
-侧"最后一段）。
+`PY=python3.12` 换解释器）。它需要 `requirements.txt` + `requirements-dev.txt` 都装上。这条在 WSL 里真跑出过
+产物，`.probe/linux_build_real.sh` 是那次的输入（先把仓库从 `/mnt/e` 拷到 ext4，再用带 PySide6+PyInstaller 的
+venv 跑），跑法与产物见"Linux 侧"最后一段。
 
 Inno Setup 的定位顺序：`$env:ISCC` → 卸载注册表里的 `InstallLocation`（本机 7.1.0 装在 D 盘且不在
 PATH）→ 常见安装目录 → PATH。
@@ -475,10 +483,10 @@ owns 三个监听口（`netstat`：TCP 43720、UDP 43721、每个网卡各一个
 界面这层的验证分三条路，各自能证明的东西不同：
 
 - **`scripts/ui_selftest.py`：进程内跑完整传输 + 设置窗口**（`QT_QPA_PLATFORM=offscreen`，
-  200 处 `check(`，一轮跑完打印 399 行 PASS；`windows` 平台同样全过）。
+  203 处 `check(`，一轮跑完打印 403 行 PASS；`windows` 平台同样全过）。
   它把 `APPDATA`/`XDG_DATA_HOME` 指到临时目录**再** import `app.*`，所以自测用的是自己的
-  身份、自己的已配对表和自己的接收目录，碰不到真实那套。覆盖：打开时不监听（没端口、没二维码、
-  按钮写着"开始接收"）→ 点一下才有端口/二维码/配对码且按钮翻成"停止接收"→ 再点回去三样都收走、
+  身份、自己的已配对表和自己的接收目录，碰不到真实那套。覆盖：打开就已经在监听（端口、二维码、
+  配对码三样都在，两条发现通道也一起起了；界面上没有"开始接收"这个开关，所以也没有点了没反应那一说）→
   真 `PeerConnection` 推进来的 offer 弹框（标题、文件名、保存路径、点的按钮）、拒绝路径拿到
   `DECLINED`、选中文件→点发送→输配对码→对面落盘逐字节一致、陌生设备要码而熟人不再问、
   手输地址连一个从不广播的机器（含地址填错要报错、不留半行）、切语言、退出释放端口。
@@ -486,6 +494,11 @@ owns 三个监听口（`netstat`：TCP 43720、UDP 43721、每个网卡各一个
   被阻止时那句话里带上它挡在哪个端口上、提示词里给出`fix_commands()`那几条、5 秒重绘不丢掉结论、
   停止监听就把结论撤走。这里不读真机防火墙（那台机器的配置不是被测代码的事实），`firewall.inspect`
   被换成备好的状态；读真规则的那条门是 `cli_selftest.py`。
+  导航栏收尾那颗账号章单独一节：栏宽按目录里最长的那条词条给，机器名另有一个上限——到顶就用
+  省略号缩写，绝不硬裁掉尾巴（Linux 真桌面上"DESKTOP-58TSA70"少掉的那个 0 就是这么来的），
+  整条名字留在提示词和无障碍名里；改名后栏上跟着变；"保存到"那格滚到的是路径的尾，整条路径挂在提示词里。
+  这一段量的是真字形，offscreen 量不出来（同一台机器同一字号，offscreen 报 180px、真桌面 113px），
+  所以三条结论都在真桌面上复看过。
   设置窗口那半段：齿轮点开出的是同一个实例、开着时接收服务没被关掉、四个菜单行各显示自己那页、
   传输页逐字引用契约里的数字、在这里改的名字传到面板上也跟着变、接收目录换了端口不重开、
   "恢复默认"指回应用目录、外观和关闭行为单选生效、撤销设备后 key 从名单里消失、

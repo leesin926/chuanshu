@@ -413,6 +413,23 @@ def phase_rail(app: QApplication, window: MainWindow) -> None:
               f"{panel.current_page()} | {[b.isChecked() for b in window.nav_buttons.values()]}")
     window.show_page(0)
     app.processEvents()
+    # The account chip is the rail's one caption that comes from the machine instead of a
+    # catalog, so it has exactly two acceptable endings: the whole name, or a real ellipsis over a
+    # genuine prefix. A tail dropped by a clip is the failure the first Linux desktop showed -
+    # "DESKTOP-58TSA70" rendered as "DESKTOP-58TSA7" with nothing on screen saying so.
+    real_name = panel.device_name
+    for probe in (real_name, "Selftest-With-A-Very-Long-Device-Name-For-Elision"):
+        panel.device_name = probe
+        window.retranslate()
+        app.processEvents()
+        shown = window.nav_user.text()
+        check(f"the chip keeps the name {probe!r} whole or marks the cut",
+              shown == probe
+              or (shown.endswith("…") and probe.startswith(shown[:-1]) and probe in window.nav_user.toolTip()),
+              f"{shown!r} | rail {window.nav.width()}px")
+    panel.device_name = real_name
+    window.retranslate()
+    app.processEvents()
     check("the drop box is the first thing the page says", "拖拽文件到此处" in panel.drop_big.text(), panel.drop_big.text())
     check("the dashboard sends nowhere until 发送 is opened", panel.stack.currentIndex() == PAGE_TRANSFER,
           panel.stack.currentIndex())
@@ -516,6 +533,13 @@ def phase_idle(app: QApplication, window: MainWindow, proto: protocol_spec.Proto
     check("own name carries an inline edit", panel.name_label.text() == f"本机：{panel.device_name}" and panel.rename_button.text() == "编辑",
           f"{panel.name_label.text()} | {panel.rename_button.text()}")
     check("send disabled with nothing staged", not panel.send_button.isEnabled())
+    # The path field scrolls to the end, which is the end that names the folder, so the front of a
+    # long path sits off screen with nothing marking it; the whole path has to stay reachable
+    # without resizing the window.
+    check("the save-to field keeps the whole path in its tooltip",
+          panel.receive_dir_field.text() == str(receive_root())
+          and panel.receive_dir_field.toolTip() == str(receive_root()),
+          f"{panel.receive_dir_field.text()} | {panel.receive_dir_field.toolTip()}")
 
     # The sending card promises paired devices only, and the code belongs to it on the page.
     check("the peer card promises only paired devices", panel.peer_card_title.text() == "已连接设备",
@@ -1229,6 +1253,12 @@ def phase_settings(app: QApplication, window: MainWindow) -> None:
     check("and is saved", settings.get("device_name") == "Selftest-Renamed", settings.get("device_name"))
     check("the inline editor keeps the same name", panel.set_device_name("Selftest-Inline") and d.name_edit.text() == "Selftest-Inline",
           d.name_edit.text())
+    # The rail's chip is machine-owned text, so it has to follow a rename the way every page does;
+    # it used to keep the name the window was built with until the next language switch. The head is
+    # checked rather than the whole string because a long name may legitimately be elided here.
+    chip = window.nav_user.text().rstrip("…")
+    check("and the rail chip follows it", "Selftest-Inline".startswith(chip) and chip.startswith("Selftest")
+          and "Selftest-Inline" in window.nav_user.toolTip(), window.nav_user.text())
 
     target_dir = SCRATCH / "selftest-recv"
     d._set_receive_dir(str(target_dir))

@@ -112,6 +112,10 @@ class MainWindow(QMainWindow):
         self._build_popups()
         self._build_tray()
         self.panel.arrived.connect(self._notify_arrival)
+        # The chip is the rail's one piece of machine-owned text, and a rename reaches it only
+        # through retranslate(); without this the rail keeps showing the name the machine used to
+        # have while every page has already moved on.
+        self.panel.device_name_changed.connect(lambda _name: self.retranslate())
 
         self.languages.changed.connect(self.retranslate)
         # No fixed floor here on purpose. An explicit minimum overrides the layout's own,
@@ -214,7 +218,27 @@ class MainWindow(QMainWindow):
     def _fit_nav(self) -> None:
         """Give the rail the width its widest caption needs; no language may lose a tail."""
         need = max(button.sizeHint().width() for button in self.nav_buttons.values())
-        self.nav.setFixedWidth(max(180, need + 34))
+        # The rail's captions come out of a catalog and get their width above; the account chip's
+        # text comes out of the machine, so it is bounded instead: a long hostname widens the rail
+        # up to a ceiling, and past that the chip spells out that it is abbreviating. Left to Qt a
+        # QPushButton just clips with no mark - the first real Linux desktop read "DESKTOP-58TSA7"
+        # for a machine named "DESKTOP-58TSA70". The tooltip and accessible name, written by
+        # retranslate(), always carry the whole name.
+        name = self.panel.device_name
+        # Measured from the whole name, never from what a previous pass left in the button: an
+        # elided tail would read as a smaller demand and shrink the rail again on the next call.
+        self.nav_user.setText(name)
+        fm = self.nav_user.fontMetrics()
+        # Everything the chip needs around the words - padding, the face icon, their spacing - is
+        # what its own size hint asks for beyond the advance width of those words.
+        chrome = max(0, self.nav_user.sizeHint().width() - fm.horizontalAdvance(name))
+        pad = 36  # the rail's own left and right margins
+        # The two pixels are Qt's: elidedText() abbreviates when the advance width equals the room
+        # it was given, so a rail fitted to the letter would still show the ellipsis.
+        room = fm.horizontalAdvance(name) + 2
+        width = max(180, need + 34, min(248, room + chrome + pad))
+        self.nav.setFixedWidth(width)
+        self.nav_user.setText(fm.elidedText(name, Qt.ElideRight, max(24, width - pad - chrome)))
 
     def show_page(self, page: int) -> None:
         """One place that knows a rail position is a stack index."""
@@ -516,14 +540,14 @@ class MainWindow(QMainWindow):
         user_tip = _("本机：{name}").format(name=self.panel.device_name)
         self.nav_user.setToolTip(user_tip)
         self.nav_user.setAccessibleName(user_tip)
-        self.nav_user.setText(self.panel.device_name)
+        # The chip's own text is written by _fit_nav() at the end of this method, because that is
+        # the only place it can be measured against the font the theme pass has just polished.
         for key, msgid, _glyph, _page in NAV_ITEMS:
             caption = _(msgid)
             button = self.nav_buttons[key]
             button.setText(caption)
             button.setAccessibleName(caption)
             button.setToolTip(caption)
-        self._fit_nav()
         if self.settings_page is not None:
             self.settings_page.retranslate()
         for action in self.language_group.actions():
@@ -535,6 +559,7 @@ class MainWindow(QMainWindow):
         # every widget: a page asked for its minimum before that still answers with the previous
         # language's number, and pinning the stack to it leaves the new captions with less room
         # than their own words need.
+        self._fit_nav()
         self.panel.fit_pages()
 
     def show_about(self) -> None:
@@ -547,6 +572,11 @@ class MainWindow(QMainWindow):
     def showEvent(self, event) -> None:
         super().showEvent(event)
         apply_rounded_corners(int(self.winId()))
+        # The rail is fitted again here because the first mapping is when every widget gets
+        # polished for real: the constructor's pass measured the chip against a font the platform
+        # had not resolved yet, and on the Linux desktop that number was small enough to hide a
+        # character.
+        self._fit_nav()
 
     def closeEvent(self, event) -> None:
         if not self._quitting:
