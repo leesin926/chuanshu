@@ -76,8 +76,10 @@ scripts/
                         自己报 unavailable、--lang、这台机器上 firewalld/ufw 都没有时 `firewall` 报
                         unknown（不是"没问题"），27 处。见"Linux 侧"
   freeze_smoke.py       起打包好的产物：先跑 `*-cli.exe` 那四条腿（读契约＋首跑铸码、--lang、真绑一个
-                        端口并说出入站、`firewall` 的结论与退出码互相咬合），再起窗口 exe、等窗口、截图、查日志有无
-                        ERROR，然后只结束自己起的进程（系统弹的防火墙框留给用户答）
+                        端口并说出入站、`firewall` 的结论与退出码互相咬合），再起窗口 exe、等窗口、
+                        向那个句柄要它自己的像素（`PrintWindow`，不是拍屏幕一块区域）、点一下导航栏
+                        换到「接收」页、在像素里数二维码的定位图案，然后查日志有无 ERROR，
+                        最后只结束自己起的进程（系统弹的防火墙框留给用户答）
   i18n_sync.py          翻译守卫：按 locale/ 目录扫描，zh_CN 空条目自动镜像 msgid；其余任何
                         语言只要还有空条目或 fuzzy 就直接构建失败（LANGUAGE_NAMES 承诺了却没
                         建目录的语言同样报错）
@@ -559,16 +561,25 @@ owns 三个监听口（`netstat`：TCP 43720、UDP 43721、每个网卡各一个
   不在 `finally` 里 Kill 掉，管道就一直不结束。
 - **`scripts/freeze_smoke.py`：起真正的打包产物**。上面两条都在源码进程里跑，证不了冻结环境
   才会坏的部分（`sys._MEIPASS` 下的资源查找、`cryptography` 的 `_rust.pyd`、QtSvg 插件、
-  `protocol/` 与 `.mo` 有没有收进去）。它启动 exe、等窗口、截图、扫日志里的 ERROR，
-  然后只结束自己起的那个进程。实测结论：`qrcode` 不用加 hiddenimport（`from qrcode.image.svg
+  `protocol/` 与 `.mo` 有没有收进去）。它启动 exe、等窗口、扫日志里的 ERROR，
+  然后只结束自己起的那个进程。窗口那条腿问的是**那个句柄自己的像素**（`PrintWindow` +
+  `PW_RENDERFULLCONTENT`），不是拍屏幕上一块区域——之前它就在传书被压住的时候把**挡在前面的
+  那个应用**存成了 `window.png`，还照自己窗口的尺寸印了一行、报了 PASS（#119）。所以现在有两道
+  否定：图不能是单色（挡住又不肯重绘的窗口回给你的就是一张纯色），二维码不能只靠"看着像"——
+  它先往导航栏第三行 Post 一个左键（**不动用户的光标**，且那一列里没有一个会弹对话框的按钮，
+  点歪最多是换了页），再到「接收」页的像素里数 QR 定位图案那 1:1:3:1:1 的横条，
+  并要求同一列竖着也成一次。实测这台机器：画出来的码 31～33 行命中，纯文字的首页 0 行，
+  把码那块涂白也 0 行——**这条腿要的就是"QtSvg 没打进包"这种只在冻结版发生、又一声不响的坏，
+  它得会说"不"**。实测结论：`qrcode` 不用加 hiddenimport（`from qrcode.image.svg
   import SvgPathImage` 是显式导入，`warn-app.txt` 里 `missing module PIL/png/lxml` 那几条来自
   qrcode 自己的可选后端，我们这条路径不会 import），`_rust.pyd`、`protocol/protocol.json`、
   两个 `.mo`、`assets/icons/` 都在 `_internal` 里，冻结版能画二维码、能绑 43720、两条发现通道都 ok。
   现在它还先跑 CLI 那四条腿，因为第二个入口是同一个 COLLECT 多带出来的，窗口那条腿证明不了它：
   冻结的 `ChuanShu-cli.exe self` 读得到 `_MEIPASS` 里的契约、首跑就印 6 位码、`--lang en` 拿到目录里的
   句子、`receive --no-discover` 真绑上 43915 并且把入站那半句一起说出来、`firewall` 印出的结论与它的退出码互相对得上（这台机器
-  给的是 `blocked` → 3，因为那个路径名下有阻止规则——**这条腿要的就是它敢把自己那条路径的真实处境
-  说出来**）。另外单独跑过一轮更狠的：三个 scratch 身份目录、1 MiB
+  现在给的是 `open` → 0；同一行早些时候在这台机器上印的是 `blocked` → 3，那条路径名下当时有阻止规则。
+  **这条腿要的不是某个固定答案，是它敢把自己那条路径的真实处境说出来**）。
+  另外单独跑过一轮更狠的：三个 scratch 身份目录、1 MiB
   双向落到磁盘逐字节对 sha256、陌生端拿错码与熟人不再要码两条分支都对（`.probe` 里的一次性脚本，
   没进仓库；四条腿本身已经在上面那条里成了一遍门）。默认路径就指 `dist/ChuanShu/`——指回某个 scratch
   副本会拿着旧结构出新结论，第一次跑就是这么暴露出"CLI 不在旁边"的。
