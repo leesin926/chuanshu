@@ -55,7 +55,10 @@ python scripts/check_protocol.py
 
 协议不看谁实现都得遵守同一条约定，所以手机端**不能只信 PC 端跑绿了**。要落地的是：
 
-1. 身份：Ed25519 自签 X.509（CN=peer_id），信任锚是证书 SPKI 的 SHA-256，不是 peer_id。
+1. 身份：一台设备两个摘要（`spec.md` §1）。Ed25519 密钥只签配对，信任锚是它的 SPKI SHA-256；套接字
+   递出来的是一张 RSA-2048 自签叶（CN=peer_id），二维码的 `f=`、广播前缀、TLS 钉子钉的都是叶的摘要。
+   两个都不是 peer_id。为什么不能是一把钥匙：Android 的 Conscrypt 不广告 ed25519、鸿蒙的平台 TLS 签不出
+   Ed25519 叶，PC 因此也跟着挂独立叶。
 2. 七个端点、`X-Chuanshu-Auth` token、`X-Sha256` 分块摘要、`X-File-Size`。
 3. 路径清洗（`spec.md` §5）——手机当接收方时这条同样致命，不能因为"手机不跑 Windows 保留名"就省。
 4. 断点续传：状态文件只是提示，结论只来自 `finalize` 的整文件摘要。
@@ -100,13 +103,21 @@ python scripts/check_protocol.py
 ## 待办（按依赖排序）
 
 1. ~~HBuilderX 建 uni-app x 工程~~（已建，Android 与鸿蒙两个目标都开着）
-2. UTS 侧实现身份与 TLS 指纹固定：Android 用 `java.security`（探针已覆盖），鸿蒙用
-   `@kit.CryptoArchitectureKit`。这是唯一需要两套原生桥接的地方，其余都在 UTS 层（iOS 用
-   CryptoKit 那条随 iOS 一起终止）。
-3. 接收端服务：Android 前台服务、鸿蒙仅前台可用，UI 状态按 §6 显示。
-4. 发现：mDNS 优先、UDP 广播补充、扫码/手输兜底（顺序不可颠倒，也不能只留 mDNS）。
+2. ~~UTS 侧实现身份与 TLS 指纹固定~~（Android `java.security` + 手搓 DER，鸿蒙 `@kit.CryptoArchitectureKit`；
+   两端各自的服务叶见 §1 的两个摘要。iOS 那条随 iOS 一起终止）
+3. ~~接收端服务~~（Android 前台服务 + pending 立即应答 + 重启不丢固定对端；鸿蒙仅前台可用，UI 按 §6 直说）
+4. 发现：mDNS 优先、UDP 广播补充、扫码/手输兜底（顺序不可颠倒，也不能只留 mDNS）。两条通道的代码与
+   设备侧规则都在（`cs-discovery.uts` 一份模型，三端共用），**卡在一件事**：Android 的组播锁要
+   `CHANGE_WIFI_MULTICAST_STATE`，而它得打进自定义基座才生效——`pack --iscustom` 花的是用户的 DCloud
+   账号，所以这一步等用户点头。鸿蒙的 `@ohos.net.mdns` 那半边同理待上机。
 5. 与 PC 端做真机互传回归：中文目录、多文件、中途杀进程续传、错误码中英文文案。
+   已经跑过的方向：PC↔鸿蒙（收发双向）、鸿蒙↔鸿蒙（两台模拟器）、PC↔PC、Android 收 PC 发。
+   还欠的是 Android **发**出去这一腿（模拟器 10.0.2.2 → 宿主 CLI 监听，5 MB 逐字节比对），
+   以及第二条 Android 模拟器做机对机。
 
 M2a 的最小切口是"手机发、PC 收"：扫（或粘贴）PC 的二维码拿到地址与完整指纹，用户只核对同屏的
 一次性配对码——PC 侧接收端已经跑绿，手机只要把
 `/v1/pair`、`/v1/offer`、`PUT chunk`、`/v1/finalize` 四条打出去就能有结论，发现层可以先不做。
+这条切口在 #106 上撞到的不是网络：手机拨不进 PC，是因为 PC 当时把自己那把 Ed25519 身份密钥直接当 TLS
+叶递出来，而 Android 的 TLS 客户端不接受这种服务器证书（同一个端口换成 RSA-2048 叶就握手成功）。
+现在三端一致：身份密钥只签名，套接字只递独立签发的 RSA 叶。

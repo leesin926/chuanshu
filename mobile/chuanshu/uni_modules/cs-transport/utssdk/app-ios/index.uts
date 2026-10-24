@@ -581,6 +581,7 @@ export function receiveStart(cb: (ok: boolean, message: string) => void): void {
 		self.peerId = made!.getString('peer_id', '')
 		self.name = made!.getString('name', '')
 		self.fingerprint = made!.getString('fingerprint', '')
+		self.served = CsIdentity.tlsFingerprint()
 		self.port = TRANSPORT_PORT
 		recvSelf = self
 		// The listener must be able to answer a pair request the moment it opens, so the code and the
@@ -851,7 +852,9 @@ export function discoverStart(cb: (ok: boolean, message: string) => void): void 
 		}
 		discId = made!.getString('peer_id', '')
 		discName = made!.getString('name', '')
-		discPrefix = prefixOf(made!.getString('fingerprint', ''))
+		// The leaf's prefix, not the identity key's: spec §2 verifies a candidate against a digest read off
+		// the TLS session, and this socket presents the leaf.
+		discPrefix = prefixOf(CsIdentity.tlsFingerprint())
 		discSince = CsServe.nowSeconds()
 		if (discPrefix == '') {
 			onMain(function () {

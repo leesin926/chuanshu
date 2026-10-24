@@ -146,7 +146,10 @@ class DiscoveryService:
         self.identity = identity
         self.device_name = device_name
         self.port = port
-        self.prefix = identity.fingerprint[: self.proto.prefix_chars]
+        # The prefix of the certificate the socket hands out, not of the identity key: verify_peer()
+        # below reads a digest off a live TLS connection and compares it to this, and spec §2 only
+        # excludes "地址撞错机器" if both numbers describe the same thing.
+        self.prefix = identity.served_fingerprint[: self.proto.prefix_chars]
         self.on_change = on_change
         self.broadcast_target = broadcast_target
         self.channels: dict[str, Channel] = {"mdns": Channel(), "udp": Channel()}
@@ -402,12 +405,14 @@ class DiscoveryService:
         The picture carries the same two secrets the screen shows, because scanning and
         reading-aloud are the same act of trust: whoever can photograph the QR can already
         read the code off it. ``k`` is left out when this build has no passphrase, so an
-        older scanner still gets a payload it can parse.
+        older scanner still gets a payload it can parse. The ``f`` is the leaf the socket
+        serves, because that is the number a scanner pins; the identity key that signs the
+        pair message is a different number and goes inside that message (spec §3).
         """
         fields = {"h": host or local_ipv4(), "p": str(self.port), "v": str(self.proto.version)}
         if passphrase:
             fields["k"] = passphrase
-        return protocol_spec.qr_url(f=self.identity.fingerprint, c=code, **fields)
+        return protocol_spec.qr_url(f=self.identity.served_fingerprint, c=code, **fields)
 
 
 class _MdnsListener:

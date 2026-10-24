@@ -348,10 +348,13 @@ export function detailOf(text: string): string {
 		return ''
 	}
 	const detail = obj.getJSON('detail')
-	if (detail == null) {
-		return ''
+	if (detail != null) {
+		return JSON.stringify(detail)
 	}
-	return JSON.stringify(detail)
+	// Android writes the platform exception straight into `detail`, Harmony wraps it as
+	// {"reason":"…"}; reading only the object shape made every Android detail come back empty, so a
+	// refused connect said 「协议错误：IO」 with the one sentence that explains it thrown away.
+	return obj.getString('detail', '')
 }
 
 /** Error codes come off the wire; the wording stays in one place on this end too. */

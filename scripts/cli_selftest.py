@@ -262,6 +262,36 @@ def main() -> int:
           not list((SCRATCH / "R" / "in3").rglob("sample.bin")),
           [str(p) for p in (SCRATCH / "R" / "in3").rglob("sample.bin")])
 
+    # --- leg 4: a pasted pairing payload carries its own code, so the sender types no --code
+    # `send`'s address argument advertises the chuanshu:// form, and that form is the same picture
+    # a receiver paints for scanning, which already holds the code and the passphrase
+    # (DiscoveryService.pairing_qr). Asking for --code after someone pasted it is the same act of
+    # trust written twice - and on a phone the string is the only thing that is easy to copy.
+    shutil.rmtree(SCRATCH / "P", ignore_errors=True)
+    shutil.rmtree(SCRATCH / "Q", ignore_errors=True)
+    r4 = start("Q", ["receive", "--yes", "--root", str(SCRATCH / "Q" / "in"), "--port", "43914",
+                     "--seconds", "90", "--no-discover"])
+    said4 = read_until(r4, r"按 Ctrl-C|听 \d+")
+    port4, code4, secret4 = banner(said4)
+    from app.net import spec as spec_mod
+    served4 = re.search(r"配对指纹：([0-9a-f]{64})", said4).group(1)
+    pasted = spec_mod.qr_url(h="127.0.0.1", p=str(port4), v=str(spec_mod.load().version),
+                             f=served4, c=code4, k=secret4)
+    check("a payload's two secrets read back out of it",
+          spec_mod.pairing_secrets(pasted, spec_mod.load()) == (code4, secret4),
+          spec_mod.pairing_secrets(pasted, spec_mod.load()))
+    check("a bare host carries no secrets",
+          spec_mod.pairing_secrets(f"127.0.0.1:{port4}", spec_mod.load()) == ("", ""),
+          spec_mod.pairing_secrets(f"127.0.0.1:{port4}", spec_mod.load()))
+    out4 = send("P", [pasted, str(SAMPLE), "--base", str(SCRATCH)])
+    check("the pasted payload got through with no --code", out4.returncode == 0,
+          (out4.stdout or out4.stderr)[-500:])
+    landed4 = list((SCRATCH / "Q" / "in").rglob("sample.bin"))
+    check("the payload file landed", len(landed4) == 1, [str(p) for p in landed4])
+    if landed4:
+        check("the payload bytes hash the same",
+              hashlib.sha256(landed4[0].read_bytes()).hexdigest() == digest)
+
     # --- the read-only commands describe what those two legs left behind
     pins_r = cli("R", ["pins"])
     check("R lists the peer it pinned", "S" in pins_r.stdout or "DESKTOP" in pins_r.stdout, pins_r.stdout.strip())
@@ -275,6 +305,7 @@ def main() -> int:
     stop(r1)
     stop(r2)
     stop(r3)
+    stop(r4)
     print("RESULT " + ("ALL PASS" if not failures else f"FAILURES: {failures}"))
     return 0 if not failures else 1
 

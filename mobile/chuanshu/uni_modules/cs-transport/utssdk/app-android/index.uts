@@ -464,6 +464,17 @@ const recvWrite: WriteFn = (relpath: string, offset: number, buf: ArrayBuffer): 
 	return CsStore.writeAt(relpath, offset, buf.toByteBuffer())
 }
 
+/** Two of the receive root's primitives, spelled the way the shared store calls them, for the one thing
+ *  on this end that needs to *write* outside a delivery: the bench makes a file whose bytes it can then
+ *  predict, because this emulator has no gallery to pick from. */
+export function storePrepareFile(relpath: string, size: number): string {
+	return recvPrepare(relpath, size)
+}
+
+export function storeWriteAt(relpath: string, offset: number, buf: ArrayBuffer): string {
+	return recvWrite(relpath, offset, buf)
+}
+
 /** finalize() re-reads the whole file from disk, so this is the line that decides whether a transfer
  *  actually arrived rather than whether it looked consistent on the way in. */
 const recvDigestFile: DigestFileFn = (relpath: string): string => {
@@ -567,6 +578,9 @@ export function receiveStart(cb: (ok: boolean, message: string) => void): void {
 		self.peerId = made!.getString('peer_id', '')
 		self.name = made!.getString('name', '')
 		self.fingerprint = made!.getString('fingerprint', '')
+		// The other number for this machine: the RSA-2048 leaf CsServe answers with. A peer that dials this
+		// phone pins that digest, so hello has to say it (spec §3).
+		self.served = ServedLeaf.fingerprint()
 		self.port = TRANSPORT_PORT
 		recvSelf = self
 		// The listener must be able to answer a pair request the moment it opens, so the code and the
@@ -707,6 +721,11 @@ export function receiveStatus(): string {
 	out['root'] = CsStore.rootPath()
 	out['note'] = recvStartNote
 	out['fingerprint'] = CsIdentity.fingerprint()
+	// The card needs both numbers of this machine, and the pairing string takes the second one: a peer
+	// that dials us pins what our socket presents, which is this RSA leaf and not the Ed25519 identity
+	// above. `/v1/hello` already says it (recvSelf.served), so without this line the same phone answers
+	// correctly to a caller and announces the wrong number to the person copying its pairing string.
+	out['served'] = ServedLeaf.fingerprint()
 	out['code'] = currentPairCode(recvInbox, CsServe.nowSeconds())
 	out['passphrase'] = passphraseOf(recvInbox, CsServe.nowSeconds())
 	const addrs: string[] = []
@@ -854,7 +873,10 @@ export function discoverStart(cb: (ok: boolean, message: string) => void): void 
 		}
 		discId = made!.getString('peer_id', '')
 		discName = made!.getString('name', '')
-		discPrefix = prefixOf(made!.getString('fingerprint', ''))
+		// Spec §2: a candidate is verified by the digest read off the live TLS session, and this socket
+		// answers under the RSA leaf rather than the Ed25519 identity - so the announcement that has to be
+		// matchable is the leaf's prefix.
+		discPrefix = prefixOf(ServedLeaf.fingerprint())
 		discSince = CsServe.nowSeconds()
 		if (discPrefix == '') {
 			onMain(function () {

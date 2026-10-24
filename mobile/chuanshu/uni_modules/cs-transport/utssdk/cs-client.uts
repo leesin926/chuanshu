@@ -50,12 +50,14 @@ export class TransferOptions {
 	/** The peer's passphrase as typed or scanned. '' leaves the key off the wire entirely, which is
 	 *  how a build without one still pairs (spec §3). */
 	secret: string = ''
-	/** The prefix a peer advertised through discovery. Empty means the user typed an address by
-	 *  hand, so the first hello is what pins it. */
+	/** The prefix this peer advertised - through discovery, or as the QR's `f=`. Either way it is a
+	 *  prefix of the certificate the socket hands out, not of the identity key. Empty means the user
+	 *  typed an address by hand, so the first hello is what pins it. */
 	pinPrefix: string = ''
 	/** This device's served TLS leaf, when the certificate it hands out is not signed by its own
-	 *  identity key - a Harmony phone's RSA-2048 leaf. '' on the ends whose key signs its own
-	 *  certificate, which is the majority of them and the reason the key stays off the wire. */
+	 *  identity key. Every end now serves a separate leaf (spec §3, and #106 for the PC), so this is a
+	 *  real digest on a current build; '' is what a peer still gets from an old one whose identity key
+	 *  signed its own certificate, and the receiver then verifies the short pair message. */
 	tlsFingerprint: string = ''
 	paths: string[] = []
 	relpaths: string[] = []
@@ -69,6 +71,9 @@ export class PeerSession {
 	peerName: string = ''
 	peerId: string = ''
 	peerFingerprint: string = ''
+	/** The digest the peer's socket presents - what a QR's `f=` or a broadcast prefix names. Held apart
+	 *  from `peerFingerprint`, which is who the machine is and what the pin store keys on. */
+	peerServed: string = ''
 	token: string = ''
 	pinPrefix: string = ''
 	secret: string = ''
@@ -114,7 +119,10 @@ function pathCheck(opts: TransferOptions): string {
 function helloPeer(opts: TransferOptions, myFingerprint: string, call: Caller, write: Writer, done: ConnectDone): void {
 	call('GET', '/v1/hello', '', '', new ArrayBuffer(0), '', '', function (status: number, body: string) {
 		if (status != 200) {
-			done(false, pinText(codeOf(body)), null)
+			// The transport's own codes (IO, CONN_RESET, TLS_PIN_MISMATCH…) carry the platform exception in
+			// `detail`, and that is the only thing telling a reader which step broke - every other refusal
+			// on this file already appends it.
+			done(false, pinText(codeOf(body)) + ' ' + detailOf(body), null)
 			return
 		}
 		const hello = parseJson(body)
@@ -142,8 +150,13 @@ function helloPeer(opts: TransferOptions, myFingerprint: string, call: Caller, w
 		session.peerName = hello.getString('name', '')
 		session.peerId = hello.getString('peer_id', '')
 		session.peerFingerprint = hello.getString('fingerprint', '')
+		// The digest the socket presents, which is what a prefix from a QR or a broadcast describes. A peer
+		// too old to have `served` is one whose identity key signs its own certificate, so for it the two
+		// numbers really are one - falling back keeps the check honest instead of turning it off.
+		const served = hello.getString('served', '')
+		session.peerServed = served == '' ? session.peerFingerprint : served
 		write('对端 ' + session.peerName + ' fp=' + session.peerFingerprint.substring(0, 16) + '…')
-		if (opts.pinPrefix != '' && !session.peerFingerprint.startsWith(opts.pinPrefix)) {
+		if (opts.pinPrefix != '' && !session.peerServed.startsWith(opts.pinPrefix)) {
 			done(false, '指纹前缀与广播不符，已中止：' + opts.pinPrefix, null)
 			return
 		}

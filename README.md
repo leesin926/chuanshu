@@ -1,6 +1,6 @@
 # 传书 ChuanShu — PC 端（PySide6 桌面客户端）
 
-局域网文件互传的桌面端：对等协议（既能发也能收）、Ed25519 自签证书 + SPKI 指纹固定、
+局域网文件互传的桌面端：对等协议（既能发也能收）、Ed25519 身份密钥签名 + RSA-2048 服务叶 + SPKI 指纹固定、
 断点续传。主窗口就是传输面板（我的设备 + 配对码/二维码 + 附近设备 + 发送进度），
 外面套国际化（gettext）、日志与异常捕获、PyInstaller 打包、Inno Setup 安装包这条链路。
 
@@ -45,12 +45,14 @@ app/
   ui/tray.py         系统托盘菜单（打开主界面 / 开机自启 / 退出）；`available()` 说这台桌面有没有托盘
 app/net/
   spec.py            读取 protocol/protocol.json：端点、错误码→HTTP、二维码字段顺序
-  identity.py        Ed25519 自签证书、SPKI 指纹固定、已配对设备表（identity/ 目录，POSIX 上这几个文件 0600）；
+  identity.py        Ed25519 身份密钥（签配对）+ 首次运行签发的 RSA-2048 服务叶（TLS 递出去的就是它）；
+                     两个摘要各管各的，SPKI 指纹固定、已配对设备表（identity/ 目录，POSIX 上这几个文件 0600）；
                      写盘前与文件做三方合并，窗口和命令行共用一个目录时不会互相抹掉固定
   receive.py         接收端 HTTPS 服务：配对、offer、分块落盘、路径清洗、崩溃后认领未完成 offer
   send.py            发送端：plan→offer→分块→finalize，token 失效时用已信任的 key 静默重配对
-  discovery.py       局域网发现：mDNS 注册/浏览 + UDP 广播 43721；广播只带指纹前缀，
-                     完整摘要必须经 verify() 从 /v1/hello 取回；每条通道可用与否单独上报
+  discovery.py       局域网发现：mDNS 注册/浏览 + UDP 广播 43721；广播只带**服务叶**的指纹前缀，
+                     完整摘要必须经 verify() 从 /v1/hello 取回（取 `served`，老对端只有 `fingerprint`）；
+                     每条通道可用与否单独上报
   errors.py          错误码的中文 msgid 字面量（给 pybabel 抽取用），与 protocol.json 必须一致
   firewall.py        只读地问平台防火墙"这台机器放不放对端连进来"：Windows 按程序路径问 netsh，
                      Linux 按端口问 firewalld/ufw；结论只有 open/no_allow/blocked/unknown 四个。
@@ -169,7 +171,14 @@ Remove-Item env:QT_QPA_PLATFORM; py scripts/ui_selftest.py      # 真字形 + �
 - **发送端的 socket 超时必须大于对方的决定窗口**：`offer_wait_timeout_s + 15`。
   接收端会把 `POST /v1/offer` 挂住等用户点"接收/拒绝"，客户端先超时的话，keep-alive
   重试会把同一个 offer 发两遍，对面看到两次询问（`app/net/send.py:_connect`）。
-- **广播只带 16 位指纹前缀**，所以 `verify()` 之前名单里的名字都是"未确认"。前缀只能
+- **一台设备两个指纹**：`served_fingerprint` 是套接字递出来的那张 RSA-2048 叶，`fingerprint` 是签配对
+  请求的 Ed25519 身份密钥。凡是描述"这条连接"的数（二维码的 `f=`、广播前缀、TLS 钉子、hello 的 `served`）
+  用前者，凡是描述"这台机器"的数（hello 与配对应答的 `fingerprint`、`trusted.json` 的键）用后者；
+  `is_trusted()` 认这两个数中的任意一个，`unpair` 也按任意一个的前缀找。为什么非要分开：没有任何平台的
+  TLS 栈愿意把 Ed25519 当叶证书使——鸿蒙签不出来（#47），Android 的 Conscrypt 压根不广告 ed25519、
+  android.jar 34 的 `SSLParameters` 也没有 setter 能加上，同一个端口换张叶就握手成功（#106 实测）。
+  代价是**换了服务叶的设备，对端旧钉子不再匹配**，已经配过对的得重新配一次。
+- **广播只带 16 位指纹前缀**（前缀是服务叶的），所以 `verify()` 之前名单里的名字都是"未确认"。前缀只能
   挡住"地址填错撞到别人"，真正的信任来自两台屏幕同时显示的一次性配对码（`pair_code_digits`
   位，`pair_code_ttl_s` 秒换一个）；已固定过的 key
   再配对时静默通过，所以配对码只在第一次要。
@@ -196,7 +205,7 @@ Remove-Item env:QT_QPA_PLATFORM; py scripts/ui_selftest.py      # 真字形 + �
 `py -m app.cli <子命令>`，走的是 GUI 底下同一套 `app/net/`，整条链路不 import PySide6：
 
 ```
-self        我是谁、固定过谁、身份/数据/接收目录在哪
+self        我是谁（配对指纹=套接字那张叶，身份指纹=签配对那把钥匙）、固定过谁、身份/数据/接收目录在哪
 receive     开接收（--yes 不问直接收，--root 换目录，--seconds 收一阵自己退，--port 换端口）
 send        发文件（粘配对串或 host[:端口]，第一次要 --code/--secret）
 peers       广播自己并听邻居（mDNS + UDP 都听；--no-verify 只列前缀）

@@ -63,6 +63,12 @@ export class LocalPeer {
 	peerId: string = ''
 	name: string = ''
 	fingerprint: string = ''
+	/** The digest of the certificate this device's listener actually hands out. Spec §3: it is a second
+	 *  number, because no platform can serve its own Ed25519 identity key - Android and Harmony sign an
+	 *  RSA-2048 leaf, and since #106 the PC does too. A peer dialling from a QR pins *this* one on the
+	 *  socket and keeps `fingerprint` as who the machine is. '' means the platform never filled it in,
+	 *  which is only ever true of a build whose leaf is its identity. */
+	served: string = ''
 	port: number = TRANSPORT_PORT
 	/** How slowly a sender should write a body larger than one TLS record at this device, in milliseconds
 	 *  per 4 KiB record. 0 (or absent from the answer) means "as fast as you can". A Harmony peer measured
@@ -1110,6 +1116,11 @@ export function handleReceive(
 			features: ['resume', 'chunk-hash', 'directory'],
 			port: self.port,
 			fingerprint: self.fingerprint,
+			// The number a scanner checks its QR prefix against. Answering with the identity digest here
+			// is what made a phone undiallable from its own pairing string (#115): the socket presents the
+			// leaf, so that is the digest the prefix has to describe. A platform that never filled `served`
+			// in is one whose leaf *is* its identity, and the two numbers are then the same by definition.
+			served: self.served == '' ? self.fingerprint : self.served,
 			chunk_pace_ms: self.chunkPaceMs
 		} as UTSJSONObject)
 	}

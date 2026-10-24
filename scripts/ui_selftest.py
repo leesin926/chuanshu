@@ -691,7 +691,7 @@ def phase_incoming(app: QApplication, dialog: AutoDialog, panel, sender: Identit
     """
     label = "accept" if accept else "decline"
     arrivals = len(received_rows(panel))
-    conn = PeerConnection(sender, "Probe-Sender", "127.0.0.1", panel._receiver.port, panel.identity.fingerprint)
+    conn = PeerConnection(sender, "Probe-Sender", "127.0.0.1", panel._receiver.port, panel.identity.served_fingerprint)
     outcome: dict = {}
 
     def push() -> None:
@@ -704,7 +704,7 @@ def phase_incoming(app: QApplication, dialog: AutoDialog, panel, sender: Identit
             # Which port answered, with whose certificate, is the whole difference between "the
             # panel refused us" and "a second instance on this machine took the port".
             outcome["error"] = error
-            outcome["where"] = f"127.0.0.1:{panel._receiver.port} want={panel.identity.fingerprint[:12]} served={_served_fingerprint(panel._receiver.port)}"
+            outcome["where"] = f"127.0.0.1:{panel._receiver.port} want={panel.identity.served_fingerprint[:12]} served={_served_fingerprint(panel._receiver.port)}"
 
     dialog.expect(label, landing=landing)
     thread = threading.Thread(target=push, daemon=True, name="probe-sender")
@@ -777,7 +777,7 @@ def phase_offer_expiry(app: QApplication, dialog: AutoDialog, panel, sender: Ide
     phase is about who closes the card, not about how long a person is allowed to think.
     """
     arrivals = len(received_rows(panel))
-    conn = PeerConnection(sender, "Probe-Sender", "127.0.0.1", panel._receiver.port, panel.identity.fingerprint)
+    conn = PeerConnection(sender, "Probe-Sender", "127.0.0.1", panel._receiver.port, panel.identity.served_fingerprint)
     outcome: dict = {}
 
     def push() -> None:
@@ -1029,7 +1029,7 @@ def phase_single_slot(app: QApplication, dialog: AutoDialog, panel, hidden) -> N
     stranger = load_or_create(SCRATCH / "peer-d")
     refused: list = []
     try:
-        third = PeerConnection(stranger, "Probe-Third", "127.0.0.1", panel._receiver.port, panel.identity.fingerprint)
+        third = PeerConnection(stranger, "Probe-Third", "127.0.0.1", panel._receiver.port, panel.identity.served_fingerprint)
         third.hello()
         third.pair(panel._receiver.current_pair_code(), panel._receiver.passphrase())
     except protocol_spec.ProtocolError as error:
@@ -1061,13 +1061,16 @@ def phase_reclaim(app: QApplication, panel, proto: protocol_spec.Protocol) -> No
     check("the screen names the peer and the window it ran out",
           f"{peer.name or peer.prefix} 已经 {minutes} 分钟没有动静" in shown, shown)
     check("and says the key is kept", "不用再报配对码" in shown, shown)
-    check("the peer is still pinned, so its next pair needs no code", panel.identity.trusted_entry(peer.fingerprint) is not None, "")
+    # Pinned under either number (spec §3): the panel names this peer by the certificate it pins,
+    # the trust store keeps it under the identity key that signed pair.
+    check("the peer is still pinned, so its next pair needs no code", panel.identity.is_trusted(peer.fingerprint),
+          peer.fingerprint[:12])
     check("the receiver keeps no clock for a session nobody holds", peer.fingerprint not in panel._receiver._seen,
           sorted(panel._receiver._seen))
 
     # The same clock on the half this machine did not dial: a phone that paired its way in.
     stranger = load_or_create(SCRATCH / "peer-e")
-    conn = PeerConnection(stranger, "Probe-Stalled", "127.0.0.1", panel._receiver.port, panel.identity.fingerprint)
+    conn = PeerConnection(stranger, "Probe-Stalled", "127.0.0.1", panel._receiver.port, panel.identity.served_fingerprint)
     seen: list = []
 
     def handshake() -> None:

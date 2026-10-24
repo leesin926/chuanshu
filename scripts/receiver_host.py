@@ -44,7 +44,9 @@ def main() -> int:
             {
                 "port": port,
                 "peer_id": identity.peer_id,
-                "fingerprint": identity.fingerprint,
+                # What a client dials this socket with: the leaf, not the identity key that signs
+                # pair (spec §3). A caller pinning the other number fails the handshake check.
+                "fingerprint": identity.served_fingerprint,
                 "code": service.current_pair_code(),
                 "adopted": adopted,
             },

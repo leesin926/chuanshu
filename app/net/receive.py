@@ -611,6 +611,10 @@ class ReceiveService:
             # Discovery advertises a prefix only; the full digest here is what lets a
             # candidate become a peer you can pin.
             "fingerprint": self.identity.fingerprint,
+            # …and this is the digest the socket actually presents (spec §3's leaf). A scanner that
+            # read only `fingerprint` would check a QR's prefix against the wrong number of two: the
+            # QR carries the leaf, the identity key is what the pair signature names.
+            "served": self.identity.served_fingerprint,
         }
 
     # ------------------------------------------------------------- transfers

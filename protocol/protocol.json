@@ -22,7 +22,7 @@
     "announce_interval_s": 3,
     "peer_expiry_s": 15,
     "fingerprint_prefix_chars": 16,
-    "note": "Broadcast carries a fingerprint PREFIX only; the full SPKI digest comes from GET /v1/hello and must match that prefix before pairing. Presence is not trust."
+    "note": "Broadcast carries a fingerprint PREFIX only - of the certificate the socket actually serves. The full digest comes from GET /v1/hello's `served` and must match that prefix before pairing; a build too old to answer `served` has no separate leaf, so its `fingerprint` is the same number. Presence is not trust."
   },
   "transport": {
     "chunk_size": 4194304,
@@ -38,8 +38,8 @@
     "hash": "sha256",
     "tls": {
       "min_version": "TLSv1.2",
-      "certificate": "self-signed Ed25519, CN=peer_id, 10 years",
-      "trust": "SPKI SHA-256 fingerprint pinned at first pairing"
+      "certificate": "self-signed RSA-2048 leaf, CN=peer_id, 20 years - served by every end, because no platform TLS stack can present an Ed25519 leaf (Harmony #47, Android #106)",
+      "trust": "two digests per device: the RSA leaf's SPKI SHA-256 is what the socket is pinned to (QR `f=`, broadcast prefix, hello `served`), the Ed25519 identity key's is what pair signs and what the trust store keys on"
     },
     "note": "pair_code_static is spec §3: the code minted on first run stays until the user rotates it by hand, which is what lets the pairing QR be printed. pair_code_ttl_s only bounds a build that ignores the flag. session_idle_timeout_s / offer_idle_timeout_s are floors, not timers: a receiver may reclaim later than they say, never sooner (spec §3, §4)."
   },
@@ -48,7 +48,7 @@
       "method": "GET",
       "path": "/v1/hello",
       "auth": false,
-      "purpose": "version + capability probe; the optional chunk_pace_ms says how slowly a sender must write a body bigger than one TLS record (milliseconds per 4 KiB record, absent or 0 = as fast as you like) - a Harmony receiver needs 15, below that a 4 MiB chunk arrives whole with the wrong bytes and the receiving process can die on the attempt"
+      "purpose": "version + capability probe; `fingerprint` names the identity key that will sign the pair request and `served` the certificate this socket presents (a scanner's prefix is checked against `served`); the optional chunk_pace_ms says how slowly a sender must write a body bigger than one TLS record (milliseconds per 4 KiB record, absent or 0 = as fast as you like) - a Harmony receiver needs 15, below that a 4 MiB chunk arrives whole with the wrong bytes and the receiving process can die on the attempt"
     },
     {
       "method": "POST",

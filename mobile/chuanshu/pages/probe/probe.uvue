@@ -31,6 +31,11 @@
 			<button class="btn" @click="runSendProbe">造 5 MB 测试文件发给对端</button>
 		</view>
 		<!-- #endif -->
+		<!-- #ifdef APP-ANDROID -->
+		<view class="row">
+			<button class="btn" @click="runSendProbe">造 5 MB 测试文件发给对端</button>
+		</view>
+		<!-- #endif -->
 		<!-- #ifdef APP-IOS -->
 		<view class="row">
 			<button class="btn" @click="runAlg">密钥算法 TLS</button>
@@ -70,7 +75,7 @@
 	// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
 	import { lanStart, lanStop, lanPeers, lanStatus, lanSelfReport } from '@/store/session.uts'
 	// #endif
-	// #ifdef APP-HARMONY
+	// #ifdef APP-ANDROID || APP-HARMONY
 	import { probeSendTestFile, onSend } from '@/store/session.uts'
 	// #endif
 
@@ -130,6 +135,20 @@
 	 *  phone-to-phone run has no source file unless this end makes one. The bytes join the same 待发送
 	 *  list a gallery photo joins and go out through the same `onSend`; what this measures is the kernel,
 	 *  not a lane built around it. Progress and the receipt verdict are on the 发送文件 page. */
+	function runSendProbe() {
+		const why = probeSendTestFile(5)
+		if (why != '') {
+			lines.value = why
+			return
+		}
+		onSend()
+		lines.value = '已造好 5 MB 测试文件并发出。进度与「对方已收下」看发送文件页。'
+	}
+	// #endif
+
+	// #ifdef APP-ANDROID
+	/** The same bench on this end: 手机发 → PC 收 has never run here, and the emulator's gallery is empty,
+	 *  so the outbound half of the kernel had nothing to put on the wire. */
 	function runSendProbe() {
 		const why = probeSendTestFile(5)
 		if (why != '') {

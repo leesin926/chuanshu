@@ -140,6 +140,10 @@ import {
  *  the Ed25519 key that signs the pair message, and §3 says a pair message names the leaf. */
 import { servedFingerprint } from '@/uni_modules/cs-transport'
 // #endif
+// #ifdef APP-ANDROID
+/** The bench's own source file needs these two on this end as well as on Harmony - see probeSendTestFile. */
+import { storePrepareFile, storeWriteAt } from '@/uni_modules/cs-transport'
+// #endif
 
 export type SessionState = {
 	/* 本机 */
@@ -210,6 +214,7 @@ export type SessionState = {
 	recvListenClass: string
 	recvAddrs: string[]
 	recvSelfFp: string
+	recvServedFp: string
 	// #endif
 	/* 发现名单在四个平台上都画：手机画两条通道听到的，浏览器画同一套规则喂出来的演示数据。 */
 	discButton: string
@@ -286,6 +291,7 @@ export const s = reactive({
 	recvListenClass: 'sub mt8',
 	recvAddrs: [] as string[],
 	recvSelfFp: '',
+	recvServedFp: '',
 	// #endif
 	discButton: '找局域网设备',
 	// #ifdef WEB
@@ -554,14 +560,16 @@ function saveReceiveMemory(): void {
 }
 
 /** The peer this device is to the rest of the network, filled in on the first request: the identity
- *  key in `fingerprint` and the name the user gave this phone, both of which a pair reply carries to
- *  whoever asked. */
+ *  key in `fingerprint`, the certificate this listener answers with in `served`, and the name the user
+ *  gave this phone. A pair reply carries the first to whoever asked; a hello carries both, because the
+ *  one a QR or a broadcast promises is the second. */
 function receiverSelf(): LocalPeer {
 	if (recvSelf == null) {
 		const made = new LocalPeer()
 		made.peerId = peerIdText()
 		made.name = deviceNameText()
 		made.fingerprint = identityFingerprint()
+		made.served = servedFingerprint()
 		made.port = TRANSPORT_PORT
 		// Measured on this platform's TLS server: a 4 MiB body written faster than one 4 KiB record
 		// every 15 ms arrives whole and wrong, and the process can die on the attempt. Declaring it in
@@ -857,9 +865,12 @@ function lanIp(): string {
 
 /** What this device promises the other side, in one line the user can hand over. There is no QR
  *  image on the phone yet, so this is the same payload a scan would give - address, port, the key
- *  to pin, code and password - and the desktop can paste it into 添加设备 instead. On Android the
- *  certificate the listener hands out is signed by this device's own identity key, so `f` really
- *  is this fingerprint; that is what lets the two ends agree on one number per device. */
+ *  to pin, code and password - and the desktop can paste it into 添加设备 instead.
+ *
+ *  `f` is the leaf the listener serves, not the identity fingerprint above it: spec §2 has whoever
+ *  dials read a digest off the TLS socket and compare it with this, and on every platform that socket
+ *  presents a certificate signed by another key. Putting the identity here is what made a phone
+ *  undiallable (#115); the identity number travels inside the signed pair message instead. */
 export function copyPairing() {
 	let text = '配对码 ' + s.recvCodeText + '　密码 ' + s.recvPassText
 	// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
@@ -869,9 +880,9 @@ export function copyPairing() {
 		}
 		text = text + '　端口 ' + TRANSPORT_PORT.toString()
 		const ip = lanIp()
-		if (ip != '' && s.recvSelfFp != '' && s.recvPassText != '还没有') {
+		if (ip != '' && s.recvServedFp != '' && s.recvPassText != '还没有') {
 			text = 'chuanshu://p?h=' + ip + '&p=' + TRANSPORT_PORT.toString() +
-				'&v=1&f=' + s.recvSelfFp + '&c=' + s.recvCodeText + '&k=' + s.recvPassText
+				'&v=1&f=' + s.recvServedFp + '&c=' + s.recvCodeText + '&k=' + s.recvPassText
 		}
 	}
 	// #endif
@@ -905,7 +916,12 @@ function applyListen(text: string) {
 	s.recvListening = made!.getBoolean('listening') ?? false
 	const root = made!.getString('root', '') ?? ''
 	const fp = made!.getString('fingerprint', '') ?? ''
+	// Two numbers for one machine: the identity key the pair message signs, and the leaf the socket
+	// presents. The card keeps telling the first, because that is the device; the pairing string carries
+	// the second, because that is what the peer who dials us has to pin on the wire.
+	const served = made!.getString('served', '') ?? ''
 	s.recvSelfFp = fp
+	s.recvServedFp = served == '' ? fp : served
 	s.recvListen = s.recvListening
 		? '正在监听 ' + (made!.getNumber('port') ?? 0).toString() + '，收到的文件落在 ' + root
 		: '没有监听：' + (made!.getString('note', '') ?? '')
@@ -1090,19 +1106,20 @@ function refreshPinned() {
 function markConnected(session: PeerSession, message: string) {
 	// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
 	/* The re-check spec §2 asks for: a candidate in the list is only a machine that shouted a fingerprint
-	   prefix, and this is the first moment this phone holds the whole digest, read off the TLS connection
-	   rather than off a packet. A mismatch means whoever answered is not whoever announced, and the
-	   session is dropped rather than reported - the pair code would not have caught an on-LAN machine
-	   that hijacked the announcement and knows the code. */
+	   prefix, and this is the first moment this phone holds the whole digest behind it. The prefix names the
+	   certificate the socket hands out - the transport pins that one while dialling - so the number it is
+	   compared against is the peer's declared leaf, not its identity key. A mismatch means whoever answered
+	   is not whoever announced, and the session is dropped rather than reported: the pair code would not
+	   have caught an on-LAN machine that hijacked the announcement and knows the code. */
 	if (discPicked != '') {
 		const wanted = discPicked
 		discPicked = ''
-		if (!lanVerify(wanted, session.peerFingerprint)) {
+		if (!lanVerify(wanted, session.peerServed)) {
 			markDisconnected('这台对端在 TLS 上不是它广播的那把密钥，已断开')
-			log('连接被拒：广播里报的前缀是 ' + wanted + '，TLS 上的完整指纹对不上')
+			log('连接被拒：广播里报的前缀是 ' + wanted + '，TLS 上递出来的证书对不上')
 			return
 		}
-		log('已核对：' + wanted + ' 这台机器在 TLS 上就是它自己（' + session.peerFingerprint.substring(0, 16) + '…）')
+		log('已核对：' + wanted + ' 这台机器在 TLS 上就是它自己（' + session.peerServed.substring(0, 16) + '…）')
 	}
 	// #endif
 	activeSession = session
@@ -1548,10 +1565,10 @@ export function runDiscSelf() {
 }
 // #endif
 
-// #ifdef APP-HARMONY
+// #ifdef APP-ANDROID || APP-HARMONY
 /** A phone with nothing it can send. The emulator has no camera roll and no photos, and the debug shell
  *  cannot write into its media library, so a phone-to-phone run has no source file at all unless this end
- *  makes one. The bytes are a counter, so the digest the other phone computes is checkable by anyone who
+ *  makes one. The bytes are a counter, so the digest the other end computes is checkable by anyone who
  *  has both logs.
  *
  *  The file joins the same 待发送 list a gallery photo joins and leaves through the same button: what this
@@ -1744,7 +1761,10 @@ export function lanStart(cb: (ok: boolean, message: string) => void): void {
 	}
 	discId = peerIdText()
 	discName = deviceNameText()
-	discPrefix = prefixOf(identityFingerprint())
+	// Spec §2: whoever hears this announcement dials the socket and reads a digest off the live TLS
+	// session, and that digest is the leaf's. Announcing the identity key's prefix would make every
+	// honest candidate fail its own re-check.
+	discPrefix = prefixOf(servedFingerprint())
 	if (discPrefix == '') {
 		cb(false, '本机指纹读不出来，发现层发不出可信的公告')
 		return

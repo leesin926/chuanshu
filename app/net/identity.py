@@ -4,6 +4,11 @@ The trust anchor is the certificate's SPKI fingerprint, never peer_id: reinstall
 the app mints a new peer_id but the same fingerprint only if the key survives, so
 the key file and the peer_id live together and are written atomically.
 
+Two keys live in this directory. The Ed25519 one is the identity - it signs pair, and its
+digest is the number a peer saves as the device. The socket hands out a separate RSA-2048
+leaf (``served_fingerprint``), which is the number a peer pins TLS against and the value the
+QR's ``f=`` carries; spec §3 binds the two with ``tls_fingerprint``.
+
 The pairing material (the code and the passphrase a user reads to the other side) is
 stored next to the key for the same reason: it is only worth as much as the key that
 signs with it, and both have to survive a restart so the QR a peer already scanned
@@ -24,7 +29,7 @@ from pathlib import Path
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ed25519
+from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
 from cryptography.x509.oid import NameOID
 
 from app.paths import identity_dir
@@ -33,6 +38,8 @@ log = logging.getLogger(__name__)
 
 _KEY = "peer-key.pem"
 _CERT = "peer-cert.pem"
+_LEAF = "tls-leaf.pem"
+_LEAF_KEY = "tls-leaf-key.pem"
 _TRUSTED = "trusted.json"
 _PAIRING = "pairing.json"
 
@@ -108,12 +115,68 @@ class Identity:
         self._trusted_path = directory / _TRUSTED
         self._pairing: dict[str, str] = {}
         self._pairing_path = directory / _PAIRING
+        self._leaf_path = directory / _LEAF
+        self._leaf_key_path = directory / _LEAF_KEY
         self.load_trusted()
         self.load_pairing()
+        self.ensure_leaf()
 
     @property
     def fingerprint(self) -> str:
         return fingerprint_of(self.cert)
+
+    # ------------------------------------------------------------ served leaf
+
+    @property
+    def served_fingerprint(self) -> str:
+        """The digest a peer pins this socket against, and the value the QR carries as ``f=``.
+
+        It is a different number from :attr:`fingerprint` because the leaf is not the identity key;
+        ``peer.json``'s owner reads that second number out of the pair request (spec §3).
+
+        Read from the file every time, like the pairing material: the window and the terminal share
+        one directory, and a digest cached in whichever process minted the leaf is one that a later
+        process cannot correct."""
+        self.ensure_leaf()
+        return fingerprint_of(x509.load_pem_x509_certificate(self._leaf_path.read_bytes()))
+
+    @property
+    def declared_tls_fingerprint(self) -> str:
+        """What spec §3's ``tls_fingerprint`` says about this device: the leaf, or '' when the
+        identity key is what the socket presents.
+
+        A build whose leaf IS its identity has two names for one number and nothing to tie together,
+        so it signs the short pair message; every end that serves a separate leaf signs the long one.
+        The receiver decides which to verify by whether the key is on the wire, so this stays a
+        per-device answer rather than a version gate."""
+        leaf = self.served_fingerprint
+        return "" if leaf == self.fingerprint else leaf
+
+    def ensure_leaf(self) -> None:
+        """Give this device the certificate it hands out, minting it on first run.
+
+        RSA-2048 rather than the Ed25519 identity, and not for a lack of taste: an Android client
+        cannot be pointed at an Ed25519 leaf. Measured on API 34 (task #106), the same phone finishes
+        a handshake against an RSA-2048 leaf and comes back ``SSLV3_ALERT_HANDSHAKE_FAILURE`` against
+        one whose key is Ed25519 - Conscrypt does not advertise ed25519 in signature_algorithms and
+        android.jar 34 has no ``SSLParameters`` setter to add it. Harmony ran into the same wall from
+        the other side (task #47), so every end now serves an RSA leaf and the Ed25519 key stays what
+        it signs with.
+        """
+        with self._lock:
+            if self._leaf_path.is_file() and self._leaf_key_path.is_file():
+                return
+            cert, key = _rsa_leaf(self.peer_id)
+            _atomic(
+                self._leaf_key_path,
+                key.private_bytes(
+                    serialization.Encoding.PEM,
+                    serialization.PrivateFormat.PKCS8,
+                    serialization.NoEncryption(),
+                ).decode(),
+            )
+            _atomic(self._leaf_path, cert.public_bytes(serialization.Encoding.PEM).decode())
+            log.info("created RSA-2048 TLS leaf for %s", self.peer_id[:12])
 
     # ------------------------------------------------------- pairing material
 
@@ -307,7 +370,7 @@ class Identity:
     def server_context(self) -> ssl.SSLContext:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-        ctx.load_cert_chain(str(self.directory / _CERT), str(self.directory / _KEY))
+        ctx.load_cert_chain(str(self._leaf_path), str(self._leaf_key_path))
         return ctx
 
 
@@ -340,6 +403,29 @@ def _self_signed(peer_id: str, key: ed25519.Ed25519PrivateKey) -> x509.Certifica
         .not_valid_after(now + dt.timedelta(days=3650))
         .sign(key, None)
     )
+
+
+def _rsa_leaf(peer_id: str) -> tuple[x509.Certificate, rsa.RSAPrivateKey]:
+    """The self-signed RSA-2048 certificate the socket hands out, distinct from the identity key.
+
+    Twenty years, not thirty: a notAfter past 2049 still encodes as UTCTime, whose two-digit year
+    reads back as 197x on a phone, and a leaf the peer's parser calls expired gets rebuilt - which
+    changes the digest every peer pinned (task #109).
+    """
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, peer_id)])
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    now = dt.datetime.now(dt.UTC)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - dt.timedelta(days=1))
+        .not_valid_after(now + dt.timedelta(days=365 * 20))
+        .sign(key, hashes.SHA256())
+    )
+    return cert, key
 
 
 def _harden_key_file(path: Path) -> None:

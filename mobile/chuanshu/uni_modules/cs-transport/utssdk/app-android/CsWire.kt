@@ -143,7 +143,9 @@ object CsWire {
         socket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
         // The certificate's CN is the peer_id, not a hostname, so URI matching would reject every
         // real peer. Identity is the pinned SPKI digest, checked in the trust manager.
-        socket.sslParameters = socket.sslParameters.apply { endpointIdentificationAlgorithm = "" }
+        socket.sslParameters = socket.sslParameters.apply {
+            endpointIdentificationAlgorithm = ""
+        }
         socket.startHandshake()
         return Pinned(socket, trust)
     }

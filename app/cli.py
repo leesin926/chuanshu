@@ -272,7 +272,8 @@ def cmd_self(args: argparse.Namespace, out: Terminal) -> int:
     proto = protocol_spec.load()
     out.say(f"本机：{device_name(settings)}")
     out.say(f"设备 ID：{identity.peer_id}")
-    out.say(f"指纹：{identity.fingerprint}")
+    out.say(f"配对指纹：{identity.served_fingerprint}")
+    out.say(f"身份指纹：{identity.fingerprint}")
     out.say(f"协议版本：{proto.version}")
     out.say(f"配对码：{identity.pair_code}")
     if proto.passphrase_chars:
@@ -366,7 +367,8 @@ def cmd_receive(args: argparse.Namespace, out: Terminal) -> int:
     out.say(f"本机：{device_name(settings)}")
     out.say(f"监听：{service.port}")
     out.say(f"配对码：{service.current_pair_code()}    密码：{service.passphrase()}")
-    out.say(f"指纹：{identity.fingerprint}")
+    out.say(f"配对指纹：{identity.served_fingerprint}")
+    out.say(f"身份指纹：{identity.fingerprint}")
     out.say(f"接收目录：{root}")
     out.say(_inbound_line(service.port))
     if adopted:
@@ -477,18 +479,24 @@ def cmd_send(args: argparse.Namespace, out: Terminal) -> int:
     if not getattr(args, "quiet", False):
         for item in files:
             out.say(f"  {item.relpath}  {_human(item.size)}")
+    code, secret = args.code, args.secret
+    if not code or not secret:
+        baked = protocol_spec.pairing_secrets(args.address, proto)
+        code, secret = code or baked[0], secret or baked[1]
     known = identity.is_trusted(peer.fingerprint)
-    if not known and not args.code:
-        out.say(f"没固定过这台，得用它的配对码：--code（{proto.pair_code_digits} 位，在它屏幕上）")
+    if not known and not code:
+        out.say(f"没固定过这台，得用它的配对码：--code（{proto.pair_code_digits} 位，在它屏幕上）"
+                "或者把它那份完整的 chuanshu:// 串贴进来，里面就带着码")
         return 2
     out.say(f"{'它已经固定过' if known else '第一次见它，要用配对码'}：{len(files)} 个文件，{_human(total_bytes)}")
 
     conn = PeerConnection(identity, device_name(settings), peer.host, peer.port, peer.fingerprint)
     started = time.monotonic()
     try:
-        result = conn.transfer(files, args.code, out.progress, args.secret)
+        result = conn.transfer(files, code, out.progress, secret)
     except PairNeeded:
-        out.say(f"对方不认识这把钥匙。把它屏幕上那 {proto.pair_code_digits} 位配对码用 --code 传给我。")
+        out.say(f"对方不认识这把钥匙。把它屏幕上那 {proto.pair_code_digits} 位配对码用 --code 传给我，"
+                "或者重新贴一份它现在的串。")
         return 1
     except protocol_spec.ProtocolError as error:
         out.say(f"传输失败：{proto_errors.describe(error.code)}")
@@ -611,10 +619,25 @@ def cmd_firewall(args: argparse.Namespace, out: Terminal) -> int:
     return _FIREWALL_EXIT[status.verdict]
 
 
+def _pin_matches(identity, wanted: str) -> list[str]:
+    """Pins whose either number starts with what the user typed.
+
+    ``self`` prints the pairing fingerprint - the certificate the socket serves - while the trust
+    store is keyed by the identity key that signed pair (spec §3). Either one has to name the same
+    device, or the number the terminal just printed is not the number ``unpair`` accepts.
+    """
+    hits: list[str] = []
+    for fingerprint in identity.pinned_fingerprints():
+        leaf = str((identity.trusted_entry(fingerprint) or {}).get("tls_fingerprint") or "")
+        if fingerprint.startswith(wanted) or (leaf and leaf.startswith(wanted)):
+            hits.append(fingerprint)
+    return hits
+
+
 def cmd_unpair(args: argparse.Namespace, out: Terminal) -> int:
     identity = _identity()
     wanted = args.fingerprint.lower()
-    matches = [fp for fp in identity.pinned_fingerprints() if fp.startswith(wanted)]
+    matches = _pin_matches(identity, wanted)
     if not matches:
         out.say(f"固定列表里没有 {wanted}。")
         return 1

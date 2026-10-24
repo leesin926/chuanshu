@@ -316,8 +316,12 @@ class PeerConnection:
         the passphrase reads a missing key as "this sender has no passphrase to offer" and
         accepts on the code alone, while an empty one would look like a wrong guess.
         ``tls_fingerprint`` follows the same rule - it is this device's served leaf certificate,
-        and is only declared when that leaf is not signed by the identity key (spec §3).
+        and is only declared when that leaf is not signed by the identity key (spec §3). Since task
+        #106 that is always true here: the socket answers under an RSA-2048 leaf because an Android
+        client cannot be pointed at an Ed25519 one, so the value comes from the identity rather than
+        from each caller.
         """
+        tls_fingerprint = tls_fingerprint or self.identity.declared_tls_fingerprint
         nonce = secrets.token_hex(16)
         message = protocol_spec.pair_message(self.identity.peer_id, nonce, tls_fingerprint)
         request = {

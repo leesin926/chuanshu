@@ -220,3 +220,16 @@ def split_addr(text: str, proto: Protocol) -> tuple[str, int, str]:
     if not host or not port.isdigit():
         raise ValueError(text)
     return host, int(port), ""
+
+
+def pairing_secrets(text: str, proto: Protocol) -> tuple[str, str]:
+    """The ``(code, passphrase)`` a pasted pairing payload carries; blanks for a bare ``host[:port]``.
+
+    A payload is already the whole act of trust - the picture carries the same two secrets the
+    screen shows (see ``DiscoveryService.pairing_qr``) - so a person who copied it should not have
+    to read them aloud again. Explicit flags still win; this only fills what was left blank.
+    """
+    if not text.startswith(proto.qr_scheme):
+        return "", ""
+    fields = parse_qr(text)
+    return fields.get("c", ""), fields.get("k", "")

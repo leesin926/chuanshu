@@ -133,11 +133,11 @@ def phase_in_process(proto: protocol_spec.Protocol, workspace: Path) -> None:
     service = ReceiveService(receiver, "Phone-Simulator", decide, host="127.0.0.1", port=0, root=workspace / "inproc-received")
     service.start()
     try:
-        conn = PeerConnection(sender, "PC-Sender", "127.0.0.1", service.port, receiver.fingerprint)
+        conn = PeerConnection(sender, "PC-Sender", "127.0.0.1", service.port, receiver.served_fingerprint)
         hello = conn.hello()
         check("hello reports v1 + resume", hello["protocol_version"] == proto.version and "resume" in hello["features"], hello)
 
-        wrong = PeerConnection(sender, "PC-Sender", "127.0.0.1", service.port, receiver.fingerprint)
+        wrong = PeerConnection(sender, "PC-Sender", "127.0.0.1", service.port, receiver.served_fingerprint)
         try:
             current = service.current_pair_code()
             wrong.pair(("1" if current[0] != "1" else "2") + current[1:])
@@ -151,7 +151,7 @@ def phase_in_process(proto: protocol_spec.Protocol, workspace: Path) -> None:
         # wrong must not be a way in. The refusal arrives as PairNeeded rather than a labelled
         # BAD_PAIR_CODE because the sender turns any failed pair into that one prompt on purpose -
         # a wrong password is not a different kind of mistake to a stranger than a wrong code is.
-        bogus = PeerConnection(sender, "PC-Sender", "127.0.0.1", service.port, receiver.fingerprint)
+        bogus = PeerConnection(sender, "PC-Sender", "127.0.0.1", service.port, receiver.served_fingerprint)
         try:
             bogus.pair(service.current_pair_code(), "!" * proto.passphrase_chars)
             check("right code with a wrong password rejected", False, "pairing succeeded with a bogus password")
@@ -167,7 +167,7 @@ def phase_in_process(proto: protocol_spec.Protocol, workspace: Path) -> None:
 
         # One device, one peer: a stranger with the right code and the right password is still
         # turned away while this session holds the slot.
-        second = PeerConnection(load_or_create(workspace / "second-id"), "PC-Second", "127.0.0.1", service.port, receiver.fingerprint)
+        second = PeerConnection(load_or_create(workspace / "second-id"), "PC-Second", "127.0.0.1", service.port, receiver.served_fingerprint)
         second.hello()
         try:
             second.pair(service.current_pair_code(), service.passphrase())
@@ -206,13 +206,13 @@ def phase_in_process(proto: protocol_spec.Protocol, workspace: Path) -> None:
         # A device that has never paired is refused, and _call cannot silently repair it
         # because that peer's key is not in the sender's trust list either.
         stranger = load_or_create(workspace / "stranger-id")
-        unpaired = PeerConnection(stranger, "Never-Paired", "127.0.0.1", service.port, receiver.fingerprint)
+        unpaired = PeerConnection(stranger, "Never-Paired", "127.0.0.1", service.port, receiver.served_fingerprint)
         unpaired.hello()
         expect_error("unpaired device cannot offer", "NOT_PAIRED", lambda: unpaired.offer(files))
 
         # A known key with a stale token is refused at the transport; the silent re-pair
         # that phase_restart exercises is _call's repair, not the receiver waving it through.
-        no_token = PeerConnection(sender, "PC-Sender", "127.0.0.1", service.port, receiver.fingerprint)
+        no_token = PeerConnection(sender, "PC-Sender", "127.0.0.1", service.port, receiver.served_fingerprint)
         no_token.hello()
         status, payload = no_token._request("POST", "/v1/offer", json_body=conn._manifest)
         check("stale token rejected by the receiver", status == proto.http_status("NOT_PAIRED") and payload["code"] == "NOT_PAIRED", f"{status} {payload}")
@@ -240,7 +240,7 @@ def phase_in_process(proto: protocol_spec.Protocol, workspace: Path) -> None:
         declined = ReceiveService(receiver, "Declining-Phone", lambda m, who, caller: False, host="127.0.0.1", port=0, root=workspace / "declined-received")
         declined.start()
         try:
-            loser = PeerConnection(sender, "PC-Sender", "127.0.0.1", declined.port, receiver.fingerprint)
+            loser = PeerConnection(sender, "PC-Sender", "127.0.0.1", declined.port, receiver.served_fingerprint)
             loser.hello()
             loser.pair(declined.current_pair_code())
             expect_error("user decline surfaces as DECLINED", "DECLINED", lambda: loser.offer(files))
@@ -304,7 +304,7 @@ def phase_stalled_offer(proto: protocol_spec.Protocol, workspace: Path) -> None:
     service.start()
     stopped = False
     try:
-        conn = PeerConnection(sender, "PC-Sender", "127.0.0.1", service.port, receiver.fingerprint)
+        conn = PeerConnection(sender, "PC-Sender", "127.0.0.1", service.port, receiver.served_fingerprint)
         conn.hello()
         conn.pair(service.current_pair_code())
         files = plan(corpus, base=workspace / "stall-corpus")
@@ -354,7 +354,7 @@ def phase_offer_poll(proto: protocol_spec.Protocol, workspace: Path) -> None:
         files = plan(corpus, base=workspace / "poll-corpus")
 
         def dial(name: str, seconds: int) -> PeerConnection:
-            conn = PeerConnection(sender, name, "127.0.0.1", service.port, receiver.fingerprint)
+            conn = PeerConnection(sender, name, "127.0.0.1", service.port, receiver.served_fingerprint)
             if seconds:
                 conn.proto = replace(proto, offer_wait_timeout_s=seconds)
             conn.hello()
@@ -454,7 +454,7 @@ def phase_discovery(proto: protocol_spec.Protocol, workspace: Path) -> None:
                 again = [p for p in b.candidates() if p.prefix == a.prefix]
                 via = sorted(again[0].via) if again else via
             checked = b.verify(candidate)
-            check("verify promotes the prefix to a pinnable digest", checked.fingerprint == a_id.fingerprint and checked.verified, checked.fingerprint[:12])
+            check("verify promotes the prefix to a pinnable digest", checked.fingerprint == a_id.served_fingerprint and checked.verified, checked.fingerprint[:12])
             check("verify keeps what hello says", checked.peer_id == a_id.peer_id and checked.name == "PC-A" and checked.port == a_svc.port, checked.public())
             # Behind a forward, the port in the hello is the peer's own number and unreachable from
             # here; following it moves every request after the hello to a dead socket.
@@ -479,7 +479,7 @@ def phase_discovery(proto: protocol_spec.Protocol, workspace: Path) -> None:
         fields = protocol_spec.parse_qr(url)
         check(
             "qr carries address, version, full fingerprint and code",
-            fields == {"h": "127.0.0.1", "p": str(b_svc.port), "v": str(proto.version), "f": b_id.fingerprint, "c": code},
+            fields == {"h": "127.0.0.1", "p": str(b_svc.port), "v": str(proto.version), "f": b_id.served_fingerprint, "c": code},
             fields,
         )
         # The password half rides along only when this build has one: a QR without it is a
@@ -490,7 +490,7 @@ def phase_discovery(proto: protocol_spec.Protocol, workspace: Path) -> None:
             b.pairing_qr(code, host="127.0.0.1", passphrase="")), with_pass.keys())
         expect_error("qr with an unsupported version is refused", "UNSUPPORTED_PROTOCOL", lambda: protocol_spec.parse_qr(url.replace(f"v={proto.version}", "v=99")))
         expect_error("qr without a fingerprint is refused", "UNSUPPORTED_PROTOCOL", lambda: protocol_spec.parse_qr("chuanshu://p?h=127.0.0.1&p=43720&v=1"))
-        truncated = protocol_spec.qr_url(h="127.0.0.1", p=str(b_svc.port), v=str(proto.version), f=b_id.fingerprint[:60], c=code)
+        truncated = protocol_spec.qr_url(h="127.0.0.1", p=str(b_svc.port), v=str(proto.version), f=b_id.served_fingerprint[:60], c=code)
         expect_error("qr with a truncated fingerprint is refused", "UNSUPPORTED_PROTOCOL", lambda: protocol_spec.parse_qr(truncated))
         junk_fp = protocol_spec.qr_url(h="127.0.0.1", p=str(b_svc.port), v=str(proto.version), f="z" * 64, c=code)
         expect_error("qr with a non-hex fingerprint is refused", "UNSUPPORTED_PROTOCOL", lambda: protocol_spec.parse_qr(junk_fp))
@@ -520,7 +520,7 @@ def phase_reverse_pin(proto: protocol_spec.Protocol, workspace: Path) -> None:
                                 root=workspace / "reverse-pc-received")
     pc_service.start()
     try:
-        out = PeerConnection(phone, "Phone-Simulator", "127.0.0.1", pc_service.port, pc.fingerprint)
+        out = PeerConnection(phone, "Phone-Simulator", "127.0.0.1", pc_service.port, pc.served_fingerprint)
         out.hello()
         out.pair(pc_service.current_pair_code(), pc_service.passphrase())
         entry = phone.trusted_entry(pc.fingerprint) or {}
@@ -533,7 +533,7 @@ def phase_reverse_pin(proto: protocol_spec.Protocol, workspace: Path) -> None:
                                    root=workspace / "reverse-phone-received")
     phone_service.start()
     try:
-        back = PeerConnection(pc, "PC-Waiting", "127.0.0.1", phone_service.port, phone.fingerprint)
+        back = PeerConnection(pc, "PC-Waiting", "127.0.0.1", phone_service.port, phone.served_fingerprint)
         back.hello()
         again = back.pair()
         check("a peer once dialled re-pairs by signature alone", again["resumed"] is True, again["resumed"])
