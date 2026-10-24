@@ -409,8 +409,9 @@ cryptography 41.0.7、**没有 PySide6、没有 zeroconf**）跑，scratch `HOME
 但字体度量与合成器行为在 offscreen 上证明不了（见"界面这层的验证"第一条），所以冻结产物又被拉到 WSLg 的
 **真显示**上跑了一遍（下一段）：那才是导轨宽度这类几何结论的来源。
 
-**真跑过 PyInstaller 的那半边**（#105）：`./build-linux.sh` 在 WSL Ubuntu-24.04 里出了三次产物，
-最后一次就是仓库里那个 `dist/ChuanShu-0.1.0-linux-x64.tar.gz`（70,075,331 字节，一个目录两个可执行）。
+**真跑过 PyInstaller 的那半边**（#105）：`./build-linux.sh` 在 WSL Ubuntu-24.04 里出了四次产物，
+最后一次（#118，叶摘要那两条之后）就是仓库里那个 `dist/ChuanShu-0.1.0-linux-x64.tar.gz`
+（70,084,045 字节，一个目录两个可执行）。
 在这之前还有一次纯脚本层的实跑（`.probe/linux_build_probe.sh`，一次性探针，不进仓库）：把 `-m PyInstaller`
 与翻译三步换成桩，其余照原样，于是 `--exe-only` 那条分支（真构建没走它）与"解压回来还在 +x"是那次拿到的结论。
 装的东西：`python3-venv`/`python3-pip`、PySide6 6.12.0 跑起来要的 Qt 运行库（`libxcb-*`、`libxkbcommon`
@@ -420,7 +421,10 @@ cryptography 41.0.7、**没有 PySide6、没有 zeroconf**）跑，scratch `HOME
 对应物：解压到临时目录、`XDG_*` 指到 scratch（绝不碰真的身份），跑冻结 CLI 的四条腿（`self`、
 `self --lang en`、`receive` 真起 43917 且横幅把端口和入站那半句都说出来了、`firewall` 的结论与退出码对得上），
 然后**在 WSLg 的真显示上把冻结的窗口拉起来**，`xdotool` 按 pid 找到窗口、`maim` 拍下来、再读它自己的
-`app.log`：10 条腿全绿，窗口 1080x761，日志无 ERROR/Traceback。真桌面证明掉的是 offscreen 永远证明不了的那类：
+`app.log`：10 条腿全绿，窗口 1080x761，日志无 ERROR/Traceback。导轨那一下点击要按两次才换页——第一次
+按下被吞（鼠标移动到了、那一行亮起、页面还停在「传输」），换页发生在第二下；`windowfocus`、
+`windowactivate --sync`、`mousedown`/`mouseup` 之间留 0.25 秒，四种办法都试过，都还吞第一下，所以那条腿
+改成按两次并在日志里说清是哪一拍出的图，而不是假装一拍就够。真桌面证明掉的是 offscreen 永远证明不了的那类：
 字体度量（同一个 12px，`advance("DESKTOP-58TSA70")` offscreen 180 / 真机 113，左导轨的宽度就是按它算的）、
 四个页面各自真渲染一遍长什么样、以及 #87 那行入站结论在桌面降级下说的是人话（这台机器没 firewalld 也没 ufw，
 所以窗口上那句是"读不到，所以不构成保证"）。**仍然没跑的**：Wayland 下 `startSystemMove()` 能不能拖动无边框窗口

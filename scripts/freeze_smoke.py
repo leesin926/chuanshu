@@ -29,6 +29,8 @@ import sys
 import time
 from pathlib import Path
 
+from window_pixels import finder_patterns, ink_and_paper   # shared with .probe/linux_smoke.sh
+
 ROOT = Path(__file__).resolve().parent.parent
 # The shipped folder, not a scratch copy: an older scratch build passes every check it was
 # built for, which is how a two-executable spec can be smoke-tested while still shipping one.
@@ -134,27 +136,6 @@ def capture(hwnd: int, w: int, h: int) -> bytes | None:
         user32.ReleaseDC(hwnd, hdc_win)
 
 
-def ink_and_paper(raw: bytes) -> tuple[int, float, float]:
-    """(distinct colours, share of near-black, share of near-white) across a sampled scan of *raw*.
-
-    The one failure PrintWindow has here is the polite kind: a window that will not repaint for a
-    covered capture answers with the right size and a single flat colour, and the leg passes. So the
-    gate refuses a flat image instead of trusting that the handle was the right one.
-    """
-    stride = 4 * max(1, len(raw) // 4 // 20000)
-    seen: set[bytes] = set()
-    dark = light = total = 0
-    for i in range(0, len(raw) - 3, stride):
-        lum = (raw[i + 2] * 299 + raw[i + 1] * 587 + raw[i] * 114) // 1000
-        seen.add(raw[i:i + 3])
-        total += 1
-        if lum < 48:
-            dark += 1
-        elif lum > 208:
-            light += 1
-    return len(seen), dark / total, light / total
-
-
 class POINT(ctypes.Structure):
     _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
 
@@ -175,58 +156,6 @@ def click(hwnd: int, x: int, y: int) -> None:
     user32.PostMessageW(hwnd, 0x0201, 1, lp)            # WM_LBUTTONDOWN, MK_LBUTTON
     time.sleep(0.1)
     user32.PostMessageW(hwnd, 0x0202, 0, lp)            # WM_LBUTTONUP
-
-
-def _runs(line: bytes) -> list[tuple[int, int, int]]:
-    """(value, start, length) for every constant run in a one-byte-per-pixel line."""
-    out: list[tuple[int, int, int]] = []
-    start = 0
-    for x in range(1, len(line)):
-        if line[x] != line[start]:
-            out.append((line[start], start, x - start))
-            start = x
-    out.append((line[start], start, len(line) - start))
-    return out
-
-
-def _one_to_one_three(line: bytes) -> list[int]:
-    """Where a line crosses 1:1:3:1:1 - the bar at the corner of every QR finder pattern.
-
-    The unit is the middle run divided by three and each of the five has to sit within 60 % of its
-    share, which is loose enough for antialiasing and tight enough that this UI's dashed drop-zone
-    border (1:1, then nothing) never answers.
-    """
-    hits: list[int] = []
-    seq = _runs(line)
-    for i in range(2, len(seq) - 2):
-        value, start, length = seq[i]
-        if not value or length < 5:
-            continue
-        unit = length / 3
-        if all(abs(seq[i + k][2] - unit * (1 if k else 3)) <= 0.6 * unit * (1 if k else 3)
-               for k in (-2, -1, 0, 1, 2)):
-            hits.append(start + length // 2)
-    return hits
-
-
-def finder_patterns(raw: bytes, w: int, h: int) -> int:
-    """How many scanlines cross a QR finder pattern - the corner mark nothing else here can draw.
-
-    The pairing QR is the one promise a frozen build can break in silence: ``_qr_pixmap`` paints the
-    modules with QtSvg onto a white image, so a bundle without the SVG plugin shows a clean white box,
-    a page that looks otherwise perfect, and an empty error log. Measured on this build: a drawn QR
-    gives 31-33 rows, a page of only text and dashed borders gives 0, and the same page with the box
-    painted over by hand also gives 0 - which is the answer this leg exists to catch.
-    """
-    dark = bytes(1 if v < 128 else 0 for v in raw[1::4])          # green channel, one byte per pixel
-    hits = 0
-    for y in range(0, h, 2):
-        for cx in _one_to_one_three(dark[y * w:(y + 1) * w]):
-            column = dark[cx::w]
-            if any(abs(cy - y) < 40 for cy in _one_to_one_three(column)):
-                hits += 1
-                break
-    return hits
 
 
 def cli_legs(exe: Path, env: dict[str, str]) -> tuple[list[str], int]:
