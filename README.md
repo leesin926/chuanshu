@@ -8,9 +8,9 @@
 
 | | 位置 | 内容 |
 |---|---|---|
-| PC 端 | 本仓库（远端名 `chuanshu-pc`） | PySide6 桌面端，Windows 已出包；Linux 是第二个目标平台：headless 半边（路径、身份权限、自启、端口、双向传输）已在 WSL 实测，GUI 与出包还没验证（见"Linux 侧"）；macOS 未排期 |
-| 手机端 | `chuanshu-mobile` | uni-app x，出 Android 与鸿蒙两个平台。iOS 2026-10-24 起终止：没有 Mac 就没法出可签名的包，`app-ios` 那两半边代码留在树里不再推进 |
-| 协议契约 | 两边各存一份 `protocol/` | `protocol.json` 是唯一真相源，手机端放在 `shared/protocol/` 并带来源摘要戳 |
+| PC 端 | 本仓库根目录（仓库名按 `chuanshu-pc` 起的，但**还没配任何 remote**，两个端都在这一个工作树里） | PySide6 桌面端，Windows 已出包；Linux 是第二个目标平台：headless 半边（路径、身份权限、自启、端口、双向传输）与冻结产物都在 WSL 实测过，GUI 那条也拉到 WSLg 真显示上拍过（见"Linux 侧"）；macOS 未排期 |
+| 手机端 | `mobile/` | uni-app x，出 Android 与鸿蒙两个平台。iOS 2026-10-24 起终止：没有 Mac 就没法出可签名的包，`app-ios` 那两半边代码留在树里不再推进 |
+| 协议契约 | `protocol/` 与 `mobile/shared/protocol/` | `protocol.json` 是唯一真相源，手机端那份是 vendored 副本，带来源摘要戳，由 `mobile/scripts/check_protocol.py` 守着 |
 
 分支按打包方式分开，不要让一个安装包背另一套方案的依赖：
 
@@ -62,13 +62,15 @@ protocol/
   spec.md            语义与理由：为什么这么定，两端必须一致实现什么
 scripts/
   protocol_selftest.py  M0 验收：配对→多文件含目录→杀进程重启→续传→finalize→两条发现通道，
-                        71 处断言、跑下来 78 条（报告写在 .probe/protocol_report.txt）
+                        72 处断言、跑下来 78 条（报告写在 .probe/protocol_report.txt）
   ui_selftest.py        M1 验收：驱动真实窗口，203 处断言、跑下来 403 条（部分按 8 种语言重复；
                         含设置窗口、缩到最小尺寸不裁切、没有托盘的桌面不承诺托盘、入站那句防火墙结论）。见"界面这层的验证"
-  cli_selftest.py       命令行验收（Windows 这台）：起两个 CLI 进程（各自一个身份目录）互配、双向传
-                        3MB 并逐字节对 sha256，顺带断言 import app.cli 不带进 Qt；再加一节 firewall：
-                        真跑一次 `firewall` 对得上退出码，并用备好的 netsh/firewalld/ufw 输出把四个结论、
-                        两个平台的放行命令都验一遍，30 处
+  cli_selftest.py       命令行验收（Windows 这台）：起几个 CLI 进程（各自一个身份目录）互配、双向传
+                        3MB 并逐字节对 sha256；第四条腿专测**粘整串 chuanshu://**——串里本来就带着配对码
+                        与密码，命令里不再输 --code 也该走得通，配套的还有"裸 host 不含任何秘密"那条反例；
+                        顺带断言 import app.cli 不带进 Qt；再加一节 firewall：真跑一次 `firewall`
+                        对得上退出码，并用备好的 netsh/firewalld/ufw 输出把四个结论、两个平台的放行命令
+                        都验一遍，38 处
   linux_selftest.py     命令行验收（Linux 那台，WSL 里跑）：XDG 路径、身份文件 0600 与旧私钥回收、
                         XDG 自启写读删、端口被占改用临时端口、双向传、没装 zeroconf 时 mDNS 通道
                         自己报 unavailable、--lang、这台机器上 firewalld/ufw 都没有时 `firewall` 报
@@ -207,14 +209,14 @@ Remove-Item env:QT_QPA_PLATFORM; py scripts/ui_selftest.py      # 真字形 + �
 ```
 self        我是谁（配对指纹=套接字那张叶，身份指纹=签配对那把钥匙）、固定过谁、身份/数据/接收目录在哪
 receive     开接收（--yes 不问直接收，--root 换目录，--seconds 收一阵自己退，--port 换端口）
-send        发文件（粘配对串或 host[:端口]，第一次要 --code/--secret）
+send        发文件（粘整串 chuanshu:// 就够了——配对码与密码本来就在串里；只给 host[:端口] 时第一次要 --code/--secret）
 peers       广播自己并听邻居（mDNS + UDP 都听；--no-verify 只列前缀）
 pins        列已固定的指纹
 firewall    问这台机器的防火墙放不放对端连进来（只读；退出码就是结论，见下）
 unpair      忘掉一台（前缀唯一即可）      pair-code  看/换（--rotate）配对码与密码
 ```
 
-三个决定写在这里，改之前先读：
+四个决定写在这里，改之前先读：
 
 - **`receive` 的来件询问是问在终端里的，但它自己有闹钟**：`ReceiveService.handler` 同步跑在服务
   线程上、手里还捏着对方的 socket（见"传输面板"第一条）。GUI 把那一步转成信号 + 弹框；命令行没有
@@ -232,6 +234,11 @@ unpair      忘掉一台（前缀唯一即可）      pair-code  看/换（--rot
   跟着 locale 走就会出现一句德语错误夹在一串中文里。退出码分得开：`0` 发完了，`1` 传坏了，`2` 是没配对码
   ——脚本看见 `2` 知道这单要人来输码，看见 `1` 才需要去翻日志。`-q` 只留结果行（对端、发完了、每文件的
   校验与摘要前缀），进度行在非 tty 时本来就不打。
+- **粘进来的整串里就带着配对码与密码，但只有命令行肯替你把它们用上**：`send` 拿到 `chuanshu://p?…&c=…&k=…`
+  时，缺的 `--code`/`--secret` 从串里补（`spec.pairing_secrets`，显式给的两个 flag 永远赢）。窗口那边故意
+  不这么做——`verify_address()` 只从串里取地址与 `f=` 前缀，六个数字仍然要人当场打，因为那张卡片就是
+  spec §3 说的那次带外确认；终端前没有"同屏看一眼"这回事，脚本要么给 flag，要么给整串。两种 face 的差别
+  写在这儿，别把它"统一"成一边。
 - **Windows 查不出端口被占，只能问出来**：`ThreadingHTTPServer` 带 `SO_REUSEADDR`，而 Windows 允许
   第二个进程 bind 一个已经有人在听的端口——两边都打印 `监听：43720`，真正应答的只有先绑上那个，
   于是给"第二个接收端"的文件全发进了第一个。`_serve()` 因此在 bind 前往 127.0.0.1 打一发 `/v1/hello`
@@ -429,6 +436,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Task all
 2. `pyinstaller app.spec` → `dist\ChuanShu\ChuanShu.exe` **加** `ChuanShu-cli.exe`（one-folder，启动快、
    好排查；一个 `COLLECT` 里两个入口，Inno 的 `recursesubdirs` 自动把第二个一起收）
 3. `ISCC installer\setup.iss` → `dist\installer\ChuanShu-Setup-0.1.0-x64.exe`
+
+`dist\` 里现成那两套（Windows 的 `ChuanShu\` + 安装包、Linux 的 tar.gz）都出在「一台设备两个摘要」这组
+改动**之前**（#106 #109 #115：套接字改递独立签发的 RSA 叶，二维码 `f=` 与广播前缀跟着换成叶摘要）。后果
+不是协议谈不拢，而是**存量那枚钉子对不上**：老包把这台机器的*身份*摘要当成了 TLS 叶记下来，新包递出来
+的是另一张叶，所以对端在握手那一步就停住了——`/v1/pair` 都到不了（#115 量过这个形状：把串里的 `f=` 改
+掉一个字符，钉不住的那一侧在配对之前就拒）。修它的动作是**重新扫一次码或重粘一份
+配对串**（串里带的就是现在的叶摘要），光输配对码不够。所以出包这件事要连着"已经配过对的那几台得重来一次"
+一起决定，不是跑一遍脚本就完。
 
 Linux 那一侧重复同样的三步，只是产物是 tar.gz：`./build-linux.sh`（`--exe-only` 只出可执行文件不打包，
 `PY=python3.12` 换解释器）。它需要 `requirements.txt` + `requirements-dev.txt` 都装上。这条在 WSL 里真跑出过

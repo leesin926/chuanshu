@@ -4,37 +4,50 @@
 `utssdk/app-ios/` 那两半边代码留在树里不再推进（协议契约的 vendored 副本、它的校验器，以及一个已经
 能用 HBuilderX CLI 编译的 uni-app x 工程（`chuanshu/`）都在仓库里）。
 
-**证据口径**：本仓库对手机端的一切"已验证"说法只到 *Kotlin 编译通过* 这一层。UTS→Kotlin→dex
-在没有真机的情况下可以本地跑完，运行时行为（Android 的 provider 是否暴露 Ed25519、平台解析器是
-否接受我们手搓的 DER、TLS 握手能否成）必须等真机。跨语言的正确性则已经在桌面上验证过：同一套
-Java/Python 实现在这台机器上和 PC 端 `app/net/identity.py` 双向通过。
+**证据口径**：本仓库对手机端的"已验证"分两档写，别混着看。*编译通过*（UTS→Kotlin→dex，没有设备也能
+跑完）只覆盖那条路径改得动；跨平台 TLS 的事实（Android 的 provider 不暴露 Ed25519、平台解析器接不接受
+手搓的 DER、握手能不能成）一律以**模拟器/真机实测**为准，已经跑过的方向见下面「待办」第 5 条。跨语言
+的正确性在桌面上也验过：同一套 Java/Python 实现在这台机器上和 PC 端 `app/net/identity.py` 双向通过。
 
 ## 现状
 
 ```
-shared/protocol/protocol.json   唯一真相源（从 chuanshu-pc vendored，只读）
+shared/protocol/protocol.json   唯一真相源（从 PC 端 protocol/ vendored，只读）
 shared/protocol/spec.md         语义与理由
 shared/protocol/SOURCE.json     来源戳：仓库、commit、protocol_version、两份文件的 sha256
 scripts/check_protocol.py       校验 vendored 副本没被手改 + 契约自身没跑偏
-chuanshu/                       uni-app x 工程（AppID __UNI__8DB2EF6，目标 APP-ANDROID）
-chuanshu/uni_modules/cs-identity/   UTS 插件：能力探针、手搓自签 X.509、回路 TLS 自检
+scripts/vendor_protocol.py      从 PC 端重新拉一份并刷新上面那三个文件
+chuanshu/                       uni-app x 工程（AppID __UNI__8DB2EF6，目标 APP-ANDROID / APP-HARMONY）
+chuanshu/uni_modules/cs-identity/   UTS 插件：能力探针、手搓自签 X.509、回路 TLS 自检（四端各自半边）
+chuanshu/uni_modules/cs-transport/  UTS 插件：收发那一半
+  ├─ cs-protocol.uts / cs-receive.uts   协议与接收状态机，平台无关，三端共用一份
+  ├─ cs-client.uts                      发出去那四条端点（pair/offer/chunk/finalize）
+  ├─ cs-discovery.uts                   发现层模型（mDNS 优先、UDP 广播补充、扫码兜底）
+  └─ app-android / app-harmony / app-ios / web   各自的平台半边（iOS 那份随 iOS 终止，只留不推进）
 chuanshu/store/session.uts            跨页共用的会话：连接、发送、接收、日志都在这一份状态里
 chuanshu/pages/home/home.uvue         首页：连接状态 + 连对端（扫码/粘贴/配对码）
+chuanshu/pages/scan/scan.uvue         扫码连接页：附近设备名单（发现层）+ 扫二维码或粘贴配对串，解析出卡片再连
 chuanshu/pages/files/files.uvue       文件页：收到的文件与待发送的清单
 chuanshu/pages/me/me.uvue             我的页：本机身份、配对信息、监听开关、探针入口
 chuanshu/pages/send/send.uvue         发送文件页：选文件、发送、进度
-chuanshu/pages/detail/detail.uvue     传输详情页：两个方向的任务 + 日志
-chuanshu/pages/probe/probe.uvue       三个按钮的平台能力探针，真机上点
+chuanshu/pages/detail/detail.uvue     传输详情页（tabBar「传输」）：两个方向的任务 + 日志
+chuanshu/pages/probe/probe.uvue       三个按钮的平台能力探针 + 造 5 MB 测试文件发给对端
 chuanshu/static/tabbar/               tabBar 图标，由 mobile/scripts/gen_tabbar.py 画
+chuanshu/manifest.json                出包口径：鸿蒙 bundleName 与 deviceTypes 都在这儿（bundleName 必须
+                                      等于签名描述文件里绑定的包名，否则 HBuilderX 直接报"未正确配置
+                                      鸿蒙应用的包名"）；Android 的权限不写在这份里，写在插件的
+                                      `uni_modules/cs-transport/utssdk/app-android/config.json`（组播锁
+                                      那条就在那儿声明着，但标准调试基座不带它——见「待办」第 4 条）
 ```
 
 ```powershell
-python scripts/check_protocol.py
+py -X utf8 scripts/check_protocol.py
 ```
 
-输出里的 commit 必须等于 `SOURCE.json` 的 `source_commit`（当前是 `754b863d…`），否则就是副本被手
-改过。改协议的正确顺序：先改 PC 仓库 `protocol/`，跑 PC 自测，再重新 vendor 到本仓库并更新
-`SOURCE.json` 的 commit 与摘要。
+它在三件事上给结论：输出里的 commit 等于 `SOURCE.json` 的 `source_commit`（那个号以文件里写的为准，
+别抄进文档，抄一次就 stale 一次），否则就是副本被手改过；契约自身没跑偏（错误码、端点、分块、配对码
+口径）；`cs-protocol.uts` 与合同镜像一致。改协议的正确顺序：先改本仓库根目录的 `protocol/`，跑 PC 自测，
+再 `py -X utf8 scripts/vendor_protocol.py` 重新 vendor 并刷新 `SOURCE.json` 的 commit 与摘要。
 
 编译链（不需要真机，也不需要 HBuilderX 图形界面）：
 
@@ -93,7 +106,8 @@ python scripts/check_protocol.py
 
 浏览器目标下走的是 `utssdk/web/index.uts`：它明说浏览器没有 `java.security`、也开不了 TCP，所以三个按钮在浏览器里的输出**不是证据**，只是界面与路由通了。这个文件存在的唯一理由是 `import ... from '@/uni_modules/cs-identity'` 在非 App 平台也要能解析——只有 `app-android` 目录时，web 端会直接 `Cannot find module`。
 
-三个都不依赖第二台设备，`tlsSelfCheck` 走 127.0.0.1，PC 与手机的局域网互通留到 M2a。
+三个都不依赖第二台设备，`tlsSelfCheck` 走 127.0.0.1。设备之间怎么连已经不是待验证的假设了：PC 与手机
+双向都跑过真机/模拟器回归，见下面第 5 条。
 
 不引 BouncyCastle 是刻意的：UTS 插件里的三方依赖要云打包时才从仓库拉，这台机器到那些仓库没有可
 靠路线。证书改用手搓 DER（约 236 字节），只需要 JDK 自带的 `Signature`/`MessageDigest`/
@@ -110,10 +124,15 @@ python scripts/check_protocol.py
    设备侧规则都在（`cs-discovery.uts` 一份模型，三端共用），**卡在一件事**：Android 的组播锁要
    `CHANGE_WIFI_MULTICAST_STATE`，而它得打进自定义基座才生效——`pack --iscustom` 花的是用户的 DCloud
    账号，所以这一步等用户点头。鸿蒙的 `@ohos.net.mdns` 那半边同理待上机。
-5. 与 PC 端做真机互传回归：中文目录、多文件、中途杀进程续传、错误码中英文文案。
-   已经跑过的方向：PC↔鸿蒙（收发双向）、鸿蒙↔鸿蒙（两台模拟器）、PC↔PC、Android 收 PC 发。
-   还欠的是 Android **发**出去这一腿（模拟器 10.0.2.2 → 宿主 CLI 监听，5 MB 逐字节比对），
-   以及第二条 Android 模拟器做机对机。
+5. 真机/模拟器互传回归。跑过的方向，结论都停在**接收方自己重算 sha256 逐字节比对**这一层，不是"两边都
+   说了 ok"：PC↔鸿蒙（双向，真机 + 模拟器）、鸿蒙↔鸿蒙（两台模拟器）、PC↔PC、Android 收 PC 发、
+   Android 发 PC 收（#106）、**Android↔Android 双向（#116，`.probe/a_116.py`）**。
+   机对机那一条要记住宿主是唯一的路：两台 AVD 各自的 10.0.2.15 互相到不了，所以接收方
+   `adb -s <收> forward tcp:<宿主端口> tcp:43720`，发送方拨 `10.0.2.2:<宿主端口>`；粘过去的那串
+   只许挪 `h` 与 `p`，`f=` 保持接收方自己 announce 的原样——那是它这一轮真正递出来的叶。反向那一腿
+   （先前被拨出去的那台现在当接收方）也连上了，说明"拨出去过"不等于"进不来"。
+   仍然欠的是同一单里的其它形状：中文目录、多文件带目录结构、中途杀进程续传、错误码中英文文案——
+   前两条 PC 侧 `protocol_selftest.py` 覆盖了，手机端没有对应实跑。
 
 M2a 的最小切口是"手机发、PC 收"：扫（或粘贴）PC 的二维码拿到地址与完整指纹，用户只核对同屏的
 一次性配对码——PC 侧接收端已经跑绿，手机只要把
