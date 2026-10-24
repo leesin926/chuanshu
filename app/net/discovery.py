@@ -83,6 +83,25 @@ class Peer:
         }
 
 
+def adopt_hello(proto: protocol_spec.Protocol, peer: Peer, digest: str, body: dict) -> None:
+    """Fold a peer's /v1/hello into what we know about it.
+
+    The port we dial is a fact about *this* machine's routing; the port in the hello is only the
+    peer's description of itself, and behind a forward (adb/hdc fport, socat, WSL or SSH port
+    mapping) it names the other side of the translation, which we cannot reach. Adopting it used to
+    send every request after the hello to a dead port, and let a stranger redirect a client's
+    traffic by declaring one. So a mismatch is logged, never followed.
+    """
+    peer.fingerprint = digest
+    peer.peer_id = str(body.get("peer_id", peer.peer_id))
+    peer.name = str(body.get("name", peer.name))
+    peer.version = int(body["protocol_version"])
+    advertised = int(body.get("port") or 0)
+    if advertised and advertised != peer.port:
+        log.info("%s calls its own port %d, but the connection lives on %d", peer.prefix, advertised, peer.port)
+    log.info("verified %s as %s (%s)", peer.prefix, peer.name, digest[: proto.prefix_chars])
+
+
 def verify_peer(proto: protocol_spec.Protocol, peer: Peer) -> Peer:
     """Read a peer's full SPKI digest over TLS and fill in what it says about itself.
 
@@ -110,12 +129,7 @@ def verify_peer(proto: protocol_spec.Protocol, peer: Peer) -> Peer:
         conn.close()
     if not proto.supports(int(body.get("protocol_version") or 0)):
         raise protocol_spec.ProtocolError("UNSUPPORTED_PROTOCOL", {"peer_version": body.get("protocol_version")})
-    peer.fingerprint = digest
-    peer.peer_id = str(body.get("peer_id", peer.peer_id))
-    peer.name = str(body.get("name", peer.name))
-    peer.version = int(body["protocol_version"])
-    peer.port = int(body.get("port", peer.port))
-    log.info("verified %s as %s (%s)", peer.prefix, peer.name, digest[: proto.prefix_chars])
+    adopt_hello(proto, peer, digest, body)
     return peer
 
 

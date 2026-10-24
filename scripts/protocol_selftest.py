@@ -408,7 +408,7 @@ def phase_offer_poll(proto: protocol_spec.Protocol, workspace: Path) -> None:
 
 def phase_discovery(proto: protocol_spec.Protocol, workspace: Path) -> None:
     """Two symmetric peers finding each other, then promoting a prefix to an anchor."""
-    from app.net.discovery import DiscoveryService, Peer
+    from app.net.discovery import DiscoveryService, Peer, adopt_hello
 
     a_id = load_or_create(workspace / "disc-a")
     b_id = load_or_create(workspace / "disc-b")
@@ -456,6 +456,11 @@ def phase_discovery(proto: protocol_spec.Protocol, workspace: Path) -> None:
             checked = b.verify(candidate)
             check("verify promotes the prefix to a pinnable digest", checked.fingerprint == a_id.fingerprint and checked.verified, checked.fingerprint[:12])
             check("verify keeps what hello says", checked.peer_id == a_id.peer_id and checked.name == "PC-A" and checked.port == a_svc.port, checked.public())
+            # Behind a forward, the port in the hello is the peer's own number and unreachable from
+            # here; following it moves every request after the hello to a dead socket.
+            elsewhere = Peer(prefix=checked.prefix, host=checked.host, port=43999, via={"selftest"})
+            adopt_hello(proto, elsewhere, checked.fingerprint, {**checked.public(), "protocol_version": proto.version, "port": a_svc.port})
+            check("a hello naming another port does not move the connection", elsewhere.port == 43999 and elsewhere.name == "PC-A", elsewhere.public())
             check("candidate reached us over", bool(via), f"via={via} channels={states}")
             if b.channels["mdns"].state == "ok":
                 # A channel that reports ok has to actually deliver, or the status lie is
