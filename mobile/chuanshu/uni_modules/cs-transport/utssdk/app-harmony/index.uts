@@ -2544,6 +2544,12 @@ export function receiveStatus(): string {
 const DISCOVERY_PORT: number = 43721
 const ANNOUNCE_INTERVAL_S: number = 3
 const MDNS_SERVICE_SHORT: string = '_chuanshu._tcp'
+/** How many announce beats a browse answer is trusted for before the query is sent again. On a real
+ *  device the PC was in the roster right after 发现起来 and had aged out of it about a minute later -
+ *  it kept announcing, and this phone kept reaching it, but no `serviceFound` came and no
+ *  `discoveryStop` was reported either. A browse that stops answering without saying so has to be
+ *  re-asked from our side, and inside the roster's 15 s expiry so the list does not blink. */
+const BROWSE_REFRESH_BEATS: number = 3
 
 type DiscAnnounce = () => string
 type DiscTxt = () => string[]
@@ -2563,6 +2569,8 @@ let discUdp: socket.UDPSocket | null = null
 let discSearch: mdns.DiscoveryService | null = null
 let discPublished: mdns.LocalServiceInfo | null = null
 let discTimer = -1
+let discBeats = 0
+let discBrowseStarted = false
 let discRunning = false
 let discUdpState = 'stopped'
 let discUdpDetail = ''
@@ -2700,6 +2708,11 @@ function discOpenUdp(port: number): void {
 		discAnnounceOnce()
 		discTimer = setInterval((): void => {
 			discAnnounceOnce()
+			discBeats = discBeats + 1
+			if (discBeats >= BROWSE_REFRESH_BEATS) {
+				discBeats = 0
+				discRefreshBrowse()
+			}
 		}, ANNOUNCE_INTERVAL_S * 1000)
 	}).catch((e: Error): void => {
 		discUdpState = 'unavailable'
@@ -2876,7 +2889,10 @@ function discBrowse(): void {
 		discDeliverService('lost', '', 0, discEntriesOf(info.serviceAttribute), remembered ?? '')
 	})
 	svc.on('discoveryStart', (event: mdns.DiscoveryEventInfo): void => {
-		discNote('mDNS 搜索已开始')
+		if (!discBrowseStarted) {
+			discBrowseStarted = true
+			discNote('mDNS 搜索已开始')
+		}
 	})
 	svc.on('discoveryStop', (event: mdns.DiscoveryEventInfo): void => {
 		discMdnsState = 'unavailable'
@@ -2885,6 +2901,28 @@ function discBrowse(): void {
 	})
 	svc.startSearchingMDNS()
 	discSearch = svc
+}
+
+/** Send the query again on the same beat the announcements go out. The remembered service names stay:
+ *  a refresh is not a goodbye, and dropping them would make the next `serviceLost` unjudgeable. */
+function discRefreshBrowse(): void {
+	const svc = discSearch
+	if (svc == null) {
+		return
+	}
+	discSearch = null
+	try {
+		// Unhook before stopping: a stop the platform reports as a goodbye would expire the very rows
+		// the next query is about to bring back, and the list would blink once per refresh.
+		svc.off('serviceFound')
+		svc.off('serviceLost')
+		svc.off('discoveryStart')
+		svc.off('discoveryStop')
+		svc.stopSearchingMDNS()
+	} catch (e) {
+		discNote('mDNS 旧搜索停不干净，直接重开：' + errText(e))
+	}
+	discBrowse()
 }
 
 function discTeardownMdns(): void {
@@ -2909,6 +2947,8 @@ function discTeardownMdns(): void {
 	discNames.clear()
 	discMdnsState = 'stopped'
 	discMdnsDetail = ''
+	discBrowseStarted = false
+	discBeats = 0
 }
 
 /** Hand the callbacks over before starting: this file has no identity, no roster and no protocol
