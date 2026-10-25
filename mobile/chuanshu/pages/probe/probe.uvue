@@ -30,10 +30,16 @@
 		<view class="row">
 			<button class="btn" @click="runSendProbe">造 5 MB 测试文件发给对端</button>
 		</view>
+		<view class="row">
+			<button class="btn" @click="runSendBatch">造多文件（中文子目录）发给对端</button>
+		</view>
 		<!-- #endif -->
 		<!-- #ifdef APP-ANDROID -->
 		<view class="row">
 			<button class="btn" @click="runSendProbe">造 5 MB 测试文件发给对端</button>
+		</view>
+		<view class="row">
+			<button class="btn" @click="runSendBatch">造多文件（中文子目录）发给对端</button>
 		</view>
 		<!-- #endif -->
 		<!-- #ifdef APP-IOS -->
@@ -76,7 +82,7 @@
 	import { lanStart, lanStop, lanPeers, lanStatus, lanSelfReport } from '@/store/session.uts'
 	// #endif
 	// #ifdef APP-ANDROID || APP-HARMONY
-	import { probeSendTestFile, onSend } from '@/store/session.uts'
+	import { probeSendTestFile, probeSendTestBatch, onSend } from '@/store/session.uts'
 	// #endif
 
 	const lines = ref('还没有运行。')
@@ -144,6 +150,18 @@
 		onSend()
 		lines.value = '已造好 5 MB 测试文件并发出。进度与「对方已收下」看发送文件页。'
 	}
+
+	/** #125's bench: three files under a Chinese subdirectory, one whole chunk / one partial / one odd
+	 *  tail, in a single offer. The list, the manifest and the landing all have to keep those names. */
+	function runSendBatch() {
+		const why = probeSendTestBatch()
+		if (why != '') {
+			lines.value = why
+			return
+		}
+		onSend()
+		lines.value = '已造好三个文件（含中文子目录）并发出。进度与「对方已收下」看发送文件页。'
+	}
 	// #endif
 
 	// #ifdef APP-ANDROID
@@ -157,6 +175,17 @@
 		}
 		onSend()
 		lines.value = '已造好 5 MB 测试文件并发出。进度与「对方已收下」看发送文件页。'
+	}
+
+	/** One offer, three files, all under 传书测试/ - see `probeSendTestBatch`. */
+	function runSendBatch() {
+		const why = probeSendTestBatch()
+		if (why != '') {
+			lines.value = why
+			return
+		}
+		onSend()
+		lines.value = '已造好三个文件（含中文子目录）并发出。进度与「对方已收下」看发送文件页。'
 	}
 	// #endif
 

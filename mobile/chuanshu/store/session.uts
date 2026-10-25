@@ -1637,6 +1637,60 @@ export function probeSendTestFile(sizeMB: number): string {
 	log('测试文件已备好：' + rel + '　' + formatSize(total))
 	return ''
 }
+
+/** One offer carrying several files, all of them under a Chinese subdirectory. PC covers this shape in
+ *  `protocol_selftest.py`; no phone has ever run it, which is why the sizes are picked to hit the three
+ *  cases that matter on the wire - one file of exactly one chunk (so the last chunk is a full 4 MiB and
+ *  not a remainder), one smaller than a chunk, and one whose tail is not a multiple of the 64 KiB writing
+ *  block. The names carry spaces and full-width brackets because a gallery picker never hands those over.
+ *
+ *  Same counter bytes as `probeSendTestFile` - the 64 KiB pattern repeated and then truncated - so the
+ *  other end's digest is recomputable from the rule alone. */
+export function probeSendTestBatch(): string {
+	const rels = ['传书测试/一块整.bin', '传书测试/中文目录/零头.bin', '传书测试/中文目录/两层嵌套/带空格 与（括号）.bin']
+	const totals = [4194304, 1023, 1048576]
+	const step = 64 * 1024
+	const block = new ArrayBuffer(step)
+	const view = new Uint8Array(block)
+	for (let i = 0; i < step; i++) {
+		view[i] = i % 251
+	}
+	clearFiles()
+	for (let f = 0; f < rels.length; f++) {
+		const rel = rels[f]
+		const total = totals[f]
+		const abs = storePrepareFile(rel, total)
+		if (abs == '') {
+			return '测试文件没能落盘：' + rel
+		}
+		let at = 0
+		while (at < total) {
+			const n = (total - at < step) ? (total - at) : step
+			let piece = block
+			if (n != step) {
+				const cut = new ArrayBuffer(n)
+				const cv = new Uint8Array(cut)
+				for (let i = 0; i < n; i++) {
+					cv[i] = i % 251
+				}
+				piece = cut
+			}
+			const why = storeWriteAt(rel, at, piece)
+			if (why != '') {
+				return '测试文件写到 ' + at.toString() + ' 字节失败：' + why
+			}
+			at = at + n
+		}
+		pickedPaths.push(abs)
+		pickedNames.push(rel)
+		pickedRel.push(rel)
+		pickedSizes.push(total)
+		log('测试文件已备好：' + rel + '　' + formatSize(total))
+	}
+	refreshList()
+	syncSendable()
+	return ''
+}
 // #endif
 
 /* ------------------------------------------------------------------ start up */
