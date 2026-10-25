@@ -122,11 +122,13 @@
 				<button class="mini" @click="sendFault('')">发送正常</button>
 				<button class="mini" @click="sendFault('BAD_CHUNK')">发坏一块</button>
 				<button class="mini" @click="sendFault('BAD_FILE')">发坏整文件</button>
+				<button class="mini" @click="sendFault('SWALLOW_REPLY')">吞一次回复</button>
 				<button class="mini" @click="recvFault('')">接收正常</button>
 				<button class="mini" @click="recvFault('STORAGE_FULL')">空间不足</button>
 				<button class="mini" @click="recvFault('WRITE_FAIL')">写入失败</button>
 			</view>
 			<button class="mini mt8" @click="recvSelfCheck">接收内核自检</button>
+			<button class="mini mt8" @click="sendSelfCheck">发送内核自检</button>
 			<button class="mini mt8" @click="discSelfCheck">发现内核自检</button>
 		</view>
 		<!-- #endif -->
@@ -139,7 +141,7 @@
 	import { onRecvListen, onRecvListenStop } from '@/store/session.uts'
 	// #endif
 	// #ifdef WEB
-	import { loadDemo, pasteDemoQr, expireDemoToken, restartDemo, unpin, setFault, pcPairGood, pcPairWrong, pcPairResume, pcSend, pcBreak, pickSendFault, pickRecvFault, runRecvSelf, runDiscSelf } from '@/store/session.uts'
+	import { loadDemo, pasteDemoQr, expireDemoToken, restartDemo, unpin, setFault, pcPairGood, pcPairWrong, pcPairResume, pcSend, pcBreak, pickSendFault, pickRecvFault, runRecvSelf, runSendSelf, runDiscSelf } from '@/store/session.uts'
 	// #endif
 
 	initSession()
@@ -226,6 +228,10 @@
 
 	function recvSelfCheck() {
 		runRecvSelf()
+	}
+
+	function sendSelfCheck() {
+		runSendSelf()
 	}
 
 	function discSelfCheck() {

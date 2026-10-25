@@ -1020,6 +1020,10 @@ function simFileOf(relpath: string): Uint8Array {
 
 let senderFault = ''
 let chunkDigestFaultLeft = 0
+/** One chunk write whose answer is taken back after the bytes were served - the browser's hand on the
+ *  same throat the fport tunnel uses on a phone (#120). The self-test drives it three ways; this counter
+ *  is only for the 发送端故障 button, which stops at the shape a person can see in the log. */
+let demoSwallowLeft = 0
 
 const simPrepareFile: (path: string, relpath: string, cb: MetaCallback) => void = (path: string, relpath: string, cb: MetaCallback): void => {
 	const bytes = simFileOf(path)
@@ -1057,6 +1061,11 @@ const simCall: Caller = (method: string, path: string, jsonBody: string, token: 
 	// of one, and the receive kernel below only ever counts and digests the chunk.
 	const reply = askOn(recvInbox, SIM_PEER_ID, method, path, jsonBody, token, unescapeChunk(body, escape), sha)
 	if (!reply.pending) {
+		if (demoSwallowLeft > 0 && method == 'PUT' && path.indexOf('/chunk/') >= 0) {
+			demoSwallowLeft = demoSwallowLeft - 1
+			cb(0, swallowed('故障注入：这一块已经落进对端收件箱，回复被吞掉'))
+			return
+		}
 		cb(reply.status, reply.body)
 		return
 	}
@@ -1079,6 +1088,7 @@ let simSession: PeerSession | null = null
 export function setSenderFault(fault: string): void {
 	senderFault = fault
 	chunkDigestFaultLeft = 0
+	demoSwallowLeft = 0
 }
 
 /** Receiver-side faults, so the 507 path and its rollback are not left untested just because a
@@ -1169,8 +1179,10 @@ export function demoPcSend(write: Writer, progress: ProgressCallback, fileEvent:
 	opts.paths = [SIM_TEXT, SIM_BIG]
 	opts.relpaths = [SIM_TEXT, SIM_BIG]
 	chunkDigestFaultLeft = senderFault == 'BAD_CHUNK' ? 1 : 0
+	demoSwallowLeft = senderFault == 'SWALLOW_REPLY' ? 1 : 0
 	sendFiles(session, opts, simTakeSelf, simSignPair, simCall, simPrepareFile, simReadChunk, simDigestHex, write, progress, fileEvent, function (ok: boolean, summary: string): void {
 		chunkDigestFaultLeft = 0
+		demoSwallowLeft = 0
 		finish(ok, summary)
 	})
 }
@@ -1582,6 +1594,168 @@ export function receiveSelfReport(): string {
 	check('写完的台账不会被当成续传接管', adoptAll(idle, [finishedLedger], nowSeconds()) == 0)
 
 	out.push(fail == 0 ? '接收自检 ' + pass.toString() + ' 项全部通过' : '接收自检失败 ' + fail.toString() + ' 项，通过 ' + pass.toString() + ' 项')
+	return out.join('\n')
+}
+
+/* ================================================== sender self-check (#132) */
+
+/** A peer that eats the answer to one chunk write. Two ways to eat it, and the difference is the whole
+ *  point of this suite: `peerBlind` also keeps the bytes away from the peer, which turns "the reply
+ *  died" into "the body died". Only the sender's own `GET /state` can tell those apart, so the three
+ *  legs below are distinguished by *what the sender does after it asks*, not by the error text.
+ *
+ *  A counter object rather than captured locals: Kotlin forbids a closure mutating a local `let`. */
+class ChunkSwallow {
+	inbox: Inbox = newInbox()
+	/** Which chunk write (1-based) loses its reply; -1 eats every one, 0 eats none. */
+	nth: number = 0
+	peerBlind: boolean = false
+	chunksSeen: number = 0
+	stateAsks: number = 0
+}
+
+class SenderRun {
+	/** connectPeer's session, and where the send ended up. */
+	session: PeerSession | null = null
+	done: boolean = false
+	ok: boolean = false
+	summary: string = ''
+}
+
+function swallowed(reason: string): string {
+	const detail = new UTSJSONObject()
+	detail['reason'] = reason
+	const out = new UTSJSONObject()
+	out['code'] = 'CONN_RESET'
+	out['detail'] = detail
+	return JSON.stringify(out)
+}
+
+function swallowCaller(probe: ChunkSwallow): Caller {
+	return (method: string, path: string, jsonBody: string, token: string, body: ArrayBuffer, sha: string, escape: string, cb: ReplyCallback): void => {
+		const isChunk = method == 'PUT' && path.indexOf('/chunk/') >= 0
+		const eat = isChunk && (probe.nth == -1 || probe.chunksSeen + 1 == probe.nth)
+		if (isChunk) {
+			probe.chunksSeen = probe.chunksSeen + 1
+		}
+		if (method == 'GET' && path.indexOf('/state') >= 0) {
+			probe.stateAsks = probe.stateAsks + 1
+		}
+		if (eat && probe.peerBlind) {
+			// Not even a request: the peer never learns these bytes existed.
+			cb(0, swallowed('自检注入：这一块没到对端，回复也没回来'))
+			return
+		}
+		const reply = askOn(probe.inbox, SIM_PEER_ID, method, path, jsonBody, token, unescapeChunk(body, escape), sha)
+		if (!reply.pending) {
+			if (eat) {
+				// The bytes were served and stored; only the answer is taken back.
+				cb(0, swallowed('自检注入：体已落对端，回复被吞掉'))
+				return
+			}
+			cb(reply.status, reply.body)
+			return
+		}
+		// The offer is the only request that can await a person. This peer answers on the spot - the
+		// legs below are about the chunk writes that come after the decision.
+		const parsed = parseJson(jsonBody)
+		const offerId = parsed == null ? '' : parsed!.getString('offer_id', '')
+		const decided = resolveOffer(probe.inbox, offerId, true, recvPrepare, recvDrop)
+		cb(decided.status, decided.body)
+	}
+}
+
+const noopWrite: Writer = (line: string): void => {}
+const noopProgress: ProgressCallback = (done: number, total: number): void => {}
+const noopFileEvent: FileEvent = (relpath: string, status: string, done: number, total: number): void => {}
+
+/** One send through the real client, from pairing to finalize. Everything this harness injects answers
+ *  inline, so a leg is over when this returns. */
+function runSender(probe: ChunkSwallow, relpath: string, run: SenderRun): void {
+	const call = swallowCaller(probe)
+	const link = new TransferOptions()
+	link.host = '自检对端'
+	link.port = TRANSPORT_PORT
+	link.code = currentPairCode(probe.inbox, nowSeconds())
+	link.secret = passphraseOf(probe.inbox, nowSeconds())
+	connectPeer(link, simTakeSelf, simSignPair, call, noopWrite, function (ok: boolean, message: string, session: PeerSession | null): void {
+		if (ok && session != null) {
+			run.session = session
+			return
+		}
+		run.done = true
+		run.summary = '配对没成：' + message
+	})
+	const session = run.session
+	if (session == null) {
+		return
+	}
+	const opts = new TransferOptions()
+	opts.host = link.host
+	opts.port = link.port
+	opts.paths = [relpath]
+	opts.relpaths = [relpath]
+	sendFiles(session, opts, simTakeSelf, simSignPair, call, simPrepareFile, simReadChunk, simDigestHex,
+		noopWrite, noopProgress, noopFileEvent, function (ok: boolean, summary: string): void {
+			run.done = true
+			run.ok = ok
+			run.summary = summary
+		})
+}
+
+/** The 发送半边 of the self-test: spec §4's two recovery rules (#120, #130) run against a peer that
+ *  swallows a chunk reply, so the branch the phones share is measured rather than read. */
+export function senderSelfReport(): string {
+	const out: string[] = []
+	let pass = 0
+	let fail = 0
+	const check = (label: string, ok: boolean, extra: string): void => {
+		if (ok) {
+			pass = pass + 1
+			out.push('通过 · ' + label)
+		} else {
+			fail = fail + 1
+			out.push('不符 · ' + label + '：' + extra)
+		}
+	}
+	// '大块' is what makes the browser's stand-in file two chunks, so the first one can be lost.
+	const big = '自检大块.bin'
+
+	// A. body landed, reply eaten (spec §4: 回复没来不等于体没到).
+	const a = new ChunkSwallow()
+	a.nth = 1
+	const ra = new SenderRun()
+	runSender(a, big, ra)
+	check('吞掉第一块的回复后这单仍然传成', ra.done && ra.ok, ra.summary)
+	check('它为那块问过对方一次', a.stateAsks == 1, a.stateAsks.toString())
+	// Two writes, one per chunk: the eaten reply did not cost a rewrite.
+	check('那块没有重写：对端只收到两次写块', a.chunksSeen == 2, a.chunksSeen.toString())
+	check('吞回复这单整文件摘要对上了（落到收到清单）', arrivalsAll(a.inbox).length == 1, arrivalsAll(a.inbox).join('、'))
+
+	// B. reply eaten *and* the bytes never arrived: the peer's answer says "not there", so the only
+	// honest reading is a hiccup, and the chunk goes again on what is left of the budget (#130).
+	const b = new ChunkSwallow()
+	b.nth = 1
+	b.peerBlind = true
+	const rb = new SenderRun()
+	runSender(b, big, rb)
+	check('对方说没到，这一块重写后这单传成', rb.done && rb.ok, rb.summary)
+	check('重写它也只问过对方一次', b.stateAsks == 1, b.stateAsks.toString())
+	// Three writes: the blind one, the rewrite, then the second chunk.
+	check('缺的那块重写了一次', b.chunksSeen == 3, b.chunksSeen.toString())
+
+	// C. a relay that eats every answer: the budget is what ends this, not a hang and not a loop.
+	const c = new ChunkSwallow()
+	c.nth = -1
+	c.peerBlind = true
+	const rc = new SenderRun()
+	runSender(c, big, rc)
+	check('每次都吞掉回复时这单判死', rc.done && !rc.ok, rc.summary)
+	// Three writes (spec §4) and one question after each of them: the third answer is the one that says stop.
+	check('判死前只写了三次就收手', c.chunksSeen == 3 && c.stateAsks == 3, c.chunksSeen.toString() + '/' + c.stateAsks.toString())
+	check('报出去的是那次的真实原因', rc.summary.indexOf('CONN_RESET') >= 0 || rc.summary.indexOf('自检注入') >= 0, rc.summary)
+
+	out.push(fail == 0 ? '发送自检 ' + pass.toString() + ' 项全部通过' : '发送自检失败 ' + fail.toString() + ' 项，通过 ' + pass.toString() + ' 项')
 	return out.join('\n')
 }
 

@@ -58,6 +58,11 @@ export function cancelSend(): void {
 	sendCancelled = true
 }
 
+/** spec §4: a chunk gets at most three writes. The same budget covers both reasons to write it again -
+ *  a rejected digest and a body whose reply never came - because the peer's `state` answer is what
+ *  tells them apart, not the number of tries spent. */
+const CHUNK_RESEND_MAX: number = 2
+
 export class TransferOptions {
 	host: string = ''
 	port: number = 43720
@@ -342,7 +347,31 @@ export function sendFiles(
 		return found == null ? 0 : found!.size
 	}
 
-	function putChunk(path: string, buf: ArrayBuffer, sha: string, escape: string, attempt: number, cb: (ok: boolean, body: string) => void) {
+	/** spec §4 "回复没来不等于体没到", asked the only way a phone can ask: the transport says the
+	 *  peer never answered this write, so read what the peer says it holds before this end declares
+	 *  the chunk lost. `known` is whether that answer was readable at all - an unreadable one is the
+	 *  only case, besides a spent budget, where the spec lets the original error stand. */
+	function chunkHeld(offerId: string, fileId: string, index: number, fallback: string, cb: (known: boolean, hasIt: boolean, why: string) => void) {
+		authed('GET', '/v1/offer/' + offerId + '/state', '', new ArrayBuffer(0), '', '', false, function (status: number, body: string) {
+			if (status != 200) {
+				// The question died too. Report the answer to it, not the original PUT error: that one
+				// says nothing about whether this end could even ask.
+				cb(false, false, body)
+				return
+			}
+			const plans = statePlans(body)
+			for (let i = 0; i < plans.length; i++) {
+				if (plans[i].id == fileId) {
+					cb(true, plans[i].missing.indexOf(index) < 0, fallback)
+					return
+				}
+			}
+			cb(false, false, fallback)
+		})
+	}
+
+	function putChunk(offerId: string, fileId: string, index: number, buf: ArrayBuffer, sha: string, escape: string, attempt: number, cb: (ok: boolean, body: string) => void) {
+		const path = '/v1/offer/' + offerId + '/chunk/' + fileId + '/' + index.toString()
 		authed('PUT', path, '', buf, sha, escape, false, function (status: number, body: string) {
 			if (status == 200) {
 				cb(true, body)
@@ -350,9 +379,32 @@ export function sendFiles(
 			}
 			const code = codeOf(body)
 			// A rejected chunk is one lost chunk: resend it instead of restarting the file.
-			if (code == 'CHUNK_DIGEST_MISMATCH' && attempt < 2) {
+			if (code == 'CHUNK_DIGEST_MISMATCH' && attempt < CHUNK_RESEND_MAX) {
 				write('分块校验失败，重发 ' + path + '（第 ' + (attempt + 1).toString() + ' 次）')
-				putChunk(path, buf, sha, escape, attempt + 1, cb)
+				putChunk(offerId, fileId, index, buf, sha, escape, attempt + 1, cb)
+				return
+			}
+			/** status 0 is the only shape both phones agree on for "the peer never answered this
+			 *  write": each platform hands its own vocabulary in `code` (Harmony's ArkTS error names,
+			 *  Android's Kotlin ones plus `IO` when the reply did not parse at all), so the code string
+			 *  cannot be the test. A cancellation is the other status-0 shape and it is this
+			 *  end's own decision, so it stays out of this branch. */
+			if (status == 0 && code != 'CANCELLED') {
+				chunkHeld(offerId, fileId, index, body, function (known: boolean, hasIt: boolean, why: string) {
+					if (known && hasIt) {
+						write('这一块的回复没来，但对方说它已经有了：' + path)
+						cb(true, '')
+						return
+					}
+					// "Not there" on a pipe with no rung left to climb is a hiccup, not a verdict: the
+					// bytes may well have landed and only the response was eaten. Rewrite that one chunk.
+					if (known && !hasIt && attempt < CHUNK_RESEND_MAX) {
+						write('对方说它还没有这一块，重写一次：' + path + '（第 ' + (attempt + 1).toString() + ' 次）')
+						putChunk(offerId, fileId, index, buf, sha, escape, attempt + 1, cb)
+						return
+					}
+					cb(false, why)
+				})
 				return
 			}
 			cb(false, body)
@@ -395,8 +447,7 @@ export function sendFiles(
 				// The digest is of the chunk as the manifest describes it; the escape only says how these
 				// bytes walk over to a peer whose TLS server stops at a zero.
 				const wire = escapeChunk(buf)
-				const path = '/v1/offer/' + offerId + '/chunk/' + file.id + '/' + index.toString()
-				putChunk(path, wire.bytes, sha, wire.escape, 0, function (ok: boolean, body: string) {
+				putChunk(offerId, file.id, index, wire.bytes, sha, wire.escape, 0, function (ok: boolean, body: string) {
 					if (!ok) {
 						fileEvent(file.relpath, '推送失败', itemIndex, plan.missing.length)
 						cb(false, pinText(codeOf(body)) + ' ' + detailOf(body))

@@ -37,7 +37,7 @@ import { abandonSend } from '@/uni_modules/cs-transport'
 // #endif
 // #ifdef WEB
 import { demoPeer, demoQrUrl, demoExpireToken, setDemoFault, demoRestart, demoUnpin, pinnedFingerprint } from '@/uni_modules/cs-transport'
-import { receiveWrongCode, demoPcConnect, demoPcSend, demoPcDisconnect, demoPcConnected, setSenderFault, setReceiveFault, receiveSelfReport, discoverySelfReport } from '@/uni_modules/cs-transport'
+import { receiveWrongCode, demoPcConnect, demoPcSend, demoPcDisconnect, demoPcConnected, setSenderFault, setReceiveFault, receiveSelfReport, senderSelfReport, discoverySelfReport } from '@/uni_modules/cs-transport'
 /** The same roster the three phones merge announcements into. The browser cannot hear the LAN, so what
  *  it feeds these functions is written by hand further down and labelled as demo data on the card. */
 import { newRoster, applyAnnounce, applyTxt, buildAnnounce, buildTxt, sweepPeers, candidatesOf } from '@/uni_modules/cs-transport/utssdk/cs-discovery.uts'
@@ -1583,6 +1583,15 @@ export function pickRecvFault(fault: string) {
 
 export function runRecvSelf() {
 	const parts = receiveSelfReport().split('\n')
+	for (let i = 0; i < parts.length; i++) {
+		log(parts[i])
+	}
+}
+
+/** 发送那一半的自检：吞掉一次写块的回复，看这台设备是先问对方还缺不缺，还是直接把整单判死。
+ *  三条腿走的是手机共用的 cs-client，不是浏览器的替身实现。 */
+export function runSendSelf() {
+	const parts = senderSelfReport().split('\n')
 	for (let i = 0; i < parts.length; i++) {
 		log(parts[i])
 	}
