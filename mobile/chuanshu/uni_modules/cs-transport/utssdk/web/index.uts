@@ -837,6 +837,13 @@ const recvInbox = newInbox()
  *  and the whole-file re-read are the parts worth reading carefully, and the durability they claim is
  *  still device work. */
 const recvStore = new Map<string, Uint8Array>()
+
+/** Where an offer's bytes sit in this target's inbox: the shared state machine hands the store the
+ *  offer's own directory plus the sent name, so a probe that wants to look at a file has to ask for the
+ *  same path (#128). */
+const landOf = (offerId: string, relpath: string): string => {
+	return offerId + '/' + relpath
+}
 let recvFault = ''
 
 function nowSeconds(): number {
@@ -899,21 +906,28 @@ const recvPrepare: PrepareFn = (relpath: string, size: number): string => {
 }
 
 const recvWrite: WriteFn = (relpath: string, offset: number, buf: ArrayBuffer): string => {
-	const target = recvStore.get(relpath)
-	if (target == null) {
-		return '目标文件还没有分配'
-	}
 	if (recvFault == 'WRITE_FAIL') {
 		return '写入失败（注入）'
 	}
-	const have = target!
 	const src = new Uint8Array(buf)
-	if (offset + src.length > have.length) {
-		return '写入超出文件末尾'
+	// The Map is this target's file: an offer's allocation was made at the declared length, so a chunk
+	// that finds nothing there is the repair after a ledger the digest denied (#127), not a wrong
+	// offset. Grow it the way `RandomAccessFile` does on a phone - the sender fills from chunk 0, so the
+	// length the manifest declared is what ends up hashed.
+	let have = recvStore.get(relpath)
+	if (have == null) {
+		have = new Uint8Array(offset + src.length)
+	} else if (have!.length < offset + src.length) {
+		const grown = new Uint8Array(offset + src.length)
+		for (let i = 0; i < have!.length; i++) {
+			grown[i] = have![i]
+		}
+		have = grown
 	}
 	for (let i = 0; i < src.length; i++) {
-		have[offset + i] = src[i]
+		have![offset + i] = src[i]
 	}
+	recvStore.set(relpath, have!)
 	return ''
 }
 
@@ -1433,14 +1447,15 @@ export function receiveSelfReport(): string {
 	}
 	check('校验通过的文件带回落点', dest.indexOf(SCRATCH_TEXT) >= 0)
 
-	// 这一端不像 PC 一单一个目录：那份停在半路的清单和刚刚传成功的这一份写的是同一个路径。
-	// 回收前者不能删掉后者，所以落点上的字节只要还符合清单里声明的校验和，就不是半个文件。
+	// 那份过了点的台账说的是同一单、同一个落点。这一端现在和 PC 一样一单一个目录，所以回收它只会
+	// 碰这一单自己的字节——而这一单的字节刚刚传满并校验过了，落点上的东西还合清单里那个校验和，
+	// 于是它不是半个文件。
 	if (ledger != null) {
 		const staleBox = newInbox()
 		adoptAll(staleBox, [JSON.stringify(ledger)], nowSeconds())
 		const staleNames: string[] = []
 		sweep(staleBox, nowSeconds(), (path: string): void => { staleNames.push(path) }, recvDigestFile)
-		const bigName = files[1].relpath
+		const bigName = landOf(offerId, files[1].relpath)
 		check('回收停摆清单不删同名收全的文件', bigName != '' && recvStore.has(bigName) && staleNames.indexOf(bigName) < 0 && snapshot(staleBox, nowSeconds()).rows.length == 0, staleNames.join('、'))
 	}
 
@@ -1458,7 +1473,7 @@ export function receiveSelfReport(): string {
 		&& !bootSnap.rows[0].gone && !bootSnap.rows[1].gone)
 	// 人可以自己从接收目录里删掉一个收过的文件。那一行不能跟着消失——列表悄悄少一项只能让人猜——
 	// 也不能继续说「落到」，那是一句会让人去点开一个不存在的东西的话。
-	recvStore.delete(files[0].relpath)
+	recvStore.delete(landOf(offerId, files[0].relpath))
 	const goneSnap = snapshot(bootBox, nowSeconds())
 	markLanded(goneSnap.rows, (path: string): boolean => { return recvStore.has(path) })
 	let goneNow = 0
@@ -1477,11 +1492,11 @@ export function receiveSelfReport(): string {
 	resolveOffer(box, halfId, true, recvPrepare, recvDrop)
 	const head = sliceOf(all, 0, chunkSizeAt(halfFiles[1].size, 0))
 	ask('PUT', '/v1/offer/' + halfId + '/chunk/' + halfFiles[1].id + '/0', '', head.buffer as ArrayBuffer, hexOf(sha256Bytes(head)))
-	check('取消前文件已在收件箱里', recvStore.has(halfFiles[1].relpath))
+	check('取消前文件已在收件箱里', recvStore.has(landOf(halfId, halfFiles[1].relpath)))
 	const cancelled = ask('DELETE', '/v1/offer/' + halfId, '', new ArrayBuffer(0), '')
 	check('取消传输带回 dropped', codeOfReply(cancelled) == '' && cancelled.status == 200)
 	check('取消后传输不再存在', codeOfReply(ask('GET', '/v1/offer/' + halfId + '/state', '', new ArrayBuffer(0), '')) == 'OFFER_UNKNOWN')
-	check('取消后不留半个文件', !recvStore.has(halfFiles[1].relpath))
+	check('取消后不留半个文件', !recvStore.has(landOf(halfId, halfFiles[1].relpath)))
 
 	// 10. the user can say no, and a full disk rolls the allocation back.
 	const noId = hexOf(randomBytes(8))
@@ -1494,7 +1509,7 @@ export function receiveSelfReport(): string {
 	recvFault = ''
 	check('空间不足回 STORAGE_FULL', full.status == 507)
 	check('空间不足后没有留下半个传输', snapshot(box, nowSeconds()).pendingOfferIds.length == 0)
-	check('空间不足后分配好的文件也回滚了', !recvStore.has(SCRATCH_TEXT))
+	check('空间不足后分配好的文件也回滚了', !recvStore.has(landOf(fullId, SCRATCH_TEXT)))
 
 	// 11. spec §3: a session that stops moving gives the slot back on its own.
 	const idle = newInbox()
@@ -1530,14 +1545,14 @@ export function receiveSelfReport(): string {
 	resolveOffer(idle, stallId, true, recvPrepare, recvDrop)
 	const stallHead = sliceOf(simFileOf(STALL_BIG), 0, chunkSizeAt(stallFiles[1].size, 0))
 	idlePut('/v1/offer/' + stallId + '/chunk/' + stallFiles[1].id + '/0', idleToken2, stallHead)
-	check('停摆前文件已经落在收件箱里', recvStore.has(STALL_BIG))
+	check('停摆前文件已经落在收件箱里', recvStore.has(landOf(stallId, STALL_BIG)))
 	// 这一小时里对端别处的请求一直在给会话续命，只有这一单没人填。不先把心跳打到那个时刻，
 	// 这次收回会把会话一起收走，测到的是 §3 而不是 §4。
 	const offerStallAt = nowSeconds() + OFFER_IDLE_S + 1
 	seenNow(idle, simFp, offerStallAt)
 	sweep(idle, offerStallAt, recvDrop, recvDigestFile)
 	check('没人填的传输到点自己下台', codeOfReply(idleAsk('GET', '/v1/offer/' + stallId + '/state', '', idleToken2)) == 'OFFER_UNKNOWN')
-	check('到点后不留半个文件', !recvStore.has(STALL_BIG) && !recvStore.has(STALL_TEXT))
+	check('到点后不留半个文件', !recvStore.has(landOf(stallId, STALL_BIG)) && !recvStore.has(landOf(stallId, STALL_TEXT)))
 
 	// 13. a transfer that finished is not a stalled one: its bytes survive the very same window.
 	const finId = hexOf(randomBytes(8))
@@ -1560,7 +1575,7 @@ export function receiveSelfReport(): string {
 	const finishStallAt = nowSeconds() + OFFER_IDLE_S + 1
 	seenNow(idle, simFp, finishStallAt)
 	sweep(idle, finishStallAt, recvDrop, recvDigestFile)
-	check('收满的文件不会被闲置回收删掉', recvStore.has(STALL_TEXT) && recvStore.has(STALL_BIG))
+	check('收满的文件不会被闲置回收删掉', recvStore.has(landOf(finId, STALL_TEXT)) && recvStore.has(landOf(finId, STALL_BIG)))
 	// The ledger that says it is finished must never come back as something to resume - that is the
 	// one shape where the reclaim above would be deleting a person's received file.
 	const finishedLedger = '{"offer_id":"' + finId + '","complete":true,"files":[{"id":"f1","relpath":"' + STALL_TEXT + '","size":1,"sha256":"00","type":"text/plain","verdict":1}],"received":{},"from_name":"PC"}'

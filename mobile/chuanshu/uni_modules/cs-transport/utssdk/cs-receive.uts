@@ -102,6 +102,10 @@ class RFile {
 	sha256: string = ''
 	mtime: number = 0
 	type: string = 'application/octet-stream'
+	/** Where this file goes inside the receive root: the offer's own directory plus the sent name. The
+	 *  only path the store primitives are ever handed - `relpath` alone was one flat namespace, where a
+	 *  second offer for the same name allocated over bytes the first one had already verified (#128). */
+	land: string = ''
 	/** Where the bytes actually went, only known once the offer was accepted. */
 	dest: string = ''
 	chunks: Map<number, string> = new Map()
@@ -134,6 +138,9 @@ class ROffer {
  *  收到的文件 describes this process rather than this device. */
 class RArrival {
 	relpath: string = ''
+	/** The path this file was laid at, kept so the card can still find it - and so a second offer for the
+	 *  same name reads as the second file it is, not as the first one arriving again. */
+	land: string = ''
 	size: number = 0
 	dest: string = ''
 	fromName: string = ''
@@ -216,6 +223,8 @@ export class FileRow {
 	offerId: string = ''
 	fromName: string = ''
 	relpath: string = ''
+	/** Where the bytes of this row sit inside the receive root; `markLanded` probes this, not `relpath`. */
+	land: string = ''
 	size: number = 0
 	type: string = ''
 	dest: string = ''
@@ -428,25 +437,39 @@ function nameFor(inbox: Inbox, fingerprint: string): string {
 	return '对端 ' + fingerprint.substring(0, 8) + '…'
 }
 
+/** Every offer gets its own directory inside the receive root - the shape `app/net/receive.py` has used
+ *  from the start (`root/<offer_id>/<relpath>`). Laying all offers flat on `relpath` meant a second
+ *  sender naming a file the first one had already delivered landed on the same bytes, and accepting it
+ *  allocates at the declared length: the earlier delivery was truncated to a sparse file under a resume
+ *  ledger that still vouched for it (#128, witnessed while building #127's second leg). */
+function landingOf(offerId: string, relpath: string): string {
+	return offerId == '' ? relpath : offerId + '/' + relpath
+}
+
+/** A stored `land` that is empty means the document predates per-offer directories: those bytes lie flat
+ *  under the sent name, and that is where the card and the resume have to keep looking for them. */
+function landingOr(land: string, relpath: string): string {
+	return land == '' ? relpath : land
+}
+
 /** Give back the bytes a transfer that is going away leaves in this device's receive folder.
  *
- *  The PC keeps every offer in its own directory, so deleting an interrupted batch can only touch that
- *  batch. A phone puts every offer's files at the same path, so the bytes standing at a name are not
- *  necessarily this offer's: the usual way an offer stalls is that the sender gives up and sends the
- *  same file again, and that second one finishes. Deleting the path then throws away a file the person
- *  has, which is worse than the sparse allocation this is meant to clean up. So only what does not hash
- *  to what this offer was asked to receive is garbage - and a whole file that arrived but never got its
- *  finalize stays, because no one can tell whose it is. */
+ *  Only what does not hash to what this offer asked for is garbage, and a file this end already
+ *  verified keeps its place: the sender that gave up and re-sent the same name is the usual way an
+ *  offer stalls, and the bytes a person has are worth more than the sparse allocation being cleaned
+ *  up. Inside the offer's own directory nothing of anybody else's can be reached either way. */
 function releaseFiles(offer: ROffer, drop: DropFn, digestFile: DigestFileFn): void {
 	for (let k = 0; k < offer.files.length; k++) {
 		const file = offer.files[k]
 		if (file.verdict == 1) {
 			continue
 		}
-		if (file.sha256 != '' && digestFile(file.relpath) == file.sha256) {
+		// Bytes that hash to what this offer was asked for stay; anything else is this offer's own
+		// half-written allocation, and its directory is nobody else's.
+		if (file.sha256 != '' && digestFile(file.land) == file.sha256) {
 			continue
 		}
-		drop(file.relpath)
+		drop(file.land)
 	}
 }
 
@@ -884,6 +907,7 @@ function offerReply(inbox: Inbox, now: number, json: string, caller: string): Wi
 		const file = new RFile()
 		file.id = entry.getString('id', '')
 		file.relpath = relpath
+		file.land = landingOf(offerId, relpath)
 		file.size = Math.floor(entry.getNumber('size', 0))
 		file.sha256 = entry.getString('sha256', '')
 		file.mtime = Math.floor(entry.getNumber('mtime', 0))
@@ -940,7 +964,7 @@ function chunkReply(
 		// Idempotent on purpose: a re-send costs a hash, not a rewrite.
 		return okWith({ index: index, stored: true, idempotent: true } as UTSJSONObject)
 	}
-	const why = writeAt(file!.relpath, index * CHUNK_SIZE, data)
+	const why = writeAt(file!.land, index * CHUNK_SIZE, data)
 	if (why != '') {
 		return failWith('STORAGE_FULL', { relpath: file!.relpath, reason: why } as UTSJSONObject)
 	}
@@ -963,12 +987,12 @@ function stateReply(inbox: Inbox, offerId: string): WireReply {
 const ARRIVALS_KEPT: number = 500
 
 /** Whether these bytes are already written down, so the card gets one row for them and not two. */
-function hasArrival(inbox: Inbox, relpath: string): boolean {
-	if (relpath == '') {
+function hasArrival(inbox: Inbox, land: string): boolean {
+	if (land == '') {
 		return false
 	}
 	for (let k = 0; k < inbox.arrivals.length; k++) {
-		if (inbox.arrivals[k].relpath == relpath) {
+		if (inbox.arrivals[k].land == land) {
 			return true
 		}
 	}
@@ -981,11 +1005,12 @@ function hasArrival(inbox: Inbox, relpath: string): boolean {
 function recordArrivals(inbox: Inbox, offer: ROffer): void {
 	for (let i = 0; i < offer.files.length; i++) {
 		const file = offer.files[i]
-		if (file.verdict != 1 || file.relpath == '' || hasArrival(inbox, file.relpath)) {
+		if (file.verdict != 1 || file.relpath == '' || hasArrival(inbox, file.land)) {
 			continue
 		}
 		const arrival = new RArrival()
 		arrival.relpath = file.relpath
+		arrival.land = file.land
 		arrival.size = file.size
 		arrival.dest = file.dest
 		arrival.fromName = offer.fromName
@@ -1022,7 +1047,7 @@ function finalizeReply(inbox: Inbox, offerId: string, digestFile: DigestFileFn):
 		if (ok) {
 			// Re-read what is on disk rather than trusting the per-chunk digests: chunks that each
 			// hash correctly can still sit at the wrong offset.
-			ok = digestFile(file.relpath) == file.sha256
+			ok = digestFile(file.land) == file.sha256
 			if (!ok) {
 				// And when that read disagrees, the ledger stops being evidence of anything: forget the
 				// chunks it recorded. A re-pushed chunk whose digest is still written down would be
@@ -1195,12 +1220,12 @@ export function resolveOffer(inbox: Inbox, offerId: string, accepted: boolean, p
 	}
 	for (let i = 0; i < offer!.files.length; i++) {
 		const file = offer!.files[i]
-		const dest = prepare(file.relpath, file.size)
+		const dest = prepare(file.land, file.size)
 		if (dest == '') {
 			// Roll back what was already allocated: a half-accepted offer would strand files the
 			// sender was just told do not exist.
 			for (let k = 0; k < i; k++) {
-				drop(offer!.files[k].relpath)
+				drop(offer!.files[k].land)
 			}
 			dropOffer(inbox, offerId)
 			return failWith('STORAGE_FULL', { relpath: file.relpath } as UTSJSONObject)
@@ -1244,7 +1269,7 @@ export function snapshot(inbox: Inbox, now: number): ReceiveSnapshot {
 		const gone = !offer.awaiting && now - offer.touched >= SESSION_IDLE_S
 		for (let k = 0; k < offer.files.length; k++) {
 			const file = offer.files[k]
-			if (file.verdict == 1 && hasArrival(inbox, file.relpath)) {
+			if (file.verdict == 1 && hasArrival(inbox, file.land)) {
 				// A finished offer has an arrival record for each file it delivered, and that record is
 				// the row below. Counting the same bytes twice would inflate 已验证 while the offer is
 				// still in memory. A file verified inside an offer that did not finish has no record -
@@ -1255,6 +1280,7 @@ export function snapshot(inbox: Inbox, now: number): ReceiveSnapshot {
 			row.offerId = offer.offerId
 			row.fromName = offer.fromName
 			row.relpath = file.relpath
+			row.land = file.land
 			row.size = file.size
 			row.type = file.type
 			row.dest = file.dest
@@ -1280,6 +1306,7 @@ export function snapshot(inbox: Inbox, now: number): ReceiveSnapshot {
 		const row = new FileRow()
 		row.fromName = a.fromName
 		row.relpath = a.relpath
+		row.land = a.land
 		row.size = a.size
 		row.dest = a.dest
 		row.verdict = 1
@@ -1296,7 +1323,10 @@ export function snapshot(inbox: Inbox, now: number): ReceiveSnapshot {
 export function markLanded(rows: FileRow[], exists: ExistsFn): void {
 	for (let i = 0; i < rows.length; i++) {
 		const row = rows[i]
-		if (row.landed && !exists(row.relpath)) {
+		// A record written before offers had their own directory names the flat path, and that is where
+		// those bytes still are - so an empty `land` means `relpath`, not a guess at the new shape.
+		const where = landingOr(row.land, row.relpath)
+		if (row.landed && !exists(where)) {
 			row.gone = true
 		}
 	}
@@ -1318,6 +1348,7 @@ export function stateJson(inbox: Inbox, offerId: string): string {
 		const entry: UTSJSONObject = {
 			id: file.id,
 			relpath: file.relpath,
+			land: file.land,
 			size: file.size,
 			sha256: file.sha256,
 			mtime: file.mtime,
@@ -1404,6 +1435,9 @@ export function adopt(inbox: Inbox, text: string, now: number): boolean {
 		const file = new RFile()
 		file.id = entry.getString('id', '')
 		file.relpath = entry.getString('relpath', '')
+		// A ledger written before offers owned a directory describes flat bytes; resume it where those
+		// bytes are, rather than moving the transfer out from under its own chunk list.
+		file.land = landingOr(entry.getString('land', ''), file.relpath)
 		file.size = Math.floor(entry.getNumber('size', 0))
 		file.sha256 = entry.getString('sha256', '')
 		file.mtime = Math.floor(entry.getNumber('mtime', 0))
@@ -1411,7 +1445,7 @@ export function adopt(inbox: Inbox, text: string, now: number): boolean {
 		file.verdict = Math.floor(entry.getNumber('verdict', 0))
 		file.dest = entry.getString('dest', '')
 		if (file.dest == '') {
-			file.dest = file.relpath
+			file.dest = file.land
 		}
 		if (received != null) {
 			const chunks = received!.getJSON(file.id)
@@ -1449,6 +1483,7 @@ export function arrivalsAll(inbox: Inbox): string[] {
 		const a = inbox.arrivals[i]
 		out.push(JSON.stringify({
 			relpath: a.relpath,
+			land: a.land,
 			size: a.size,
 			dest: a.dest,
 			from: a.fromName,
@@ -1476,9 +1511,13 @@ export function adoptArrivals(inbox: Inbox, list: string[]): number {
 		if (relpath == '') {
 			continue
 		}
+		// Keyed by where the bytes went, the same key recordArrivals uses: two offers may deliver the same
+		// name, and the second one's copy is a second file rather than the first arriving again. A record
+		// written before offers had their own directory is flat, under the sent name.
+		const land = landingOr(body!.getString('land', ''), relpath)
 		let known = false
 		for (let k = 0; k < inbox.arrivals.length; k++) {
-			if (inbox.arrivals[k].relpath == relpath) {
+			if (inbox.arrivals[k].land == land) {
 				known = true
 			}
 		}
@@ -1487,6 +1526,7 @@ export function adoptArrivals(inbox: Inbox, list: string[]): number {
 		}
 		const arrival = new RArrival()
 		arrival.relpath = relpath
+		arrival.land = land
 		arrival.size = body!.getNumber('size', 0)
 		arrival.dest = body!.getString('dest', '')
 		arrival.fromName = body!.getString('from', '')
