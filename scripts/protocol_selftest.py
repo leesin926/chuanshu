@@ -27,7 +27,7 @@ from app.net import errors  # noqa: E402
 from app.net import spec as protocol_spec  # noqa: E402
 from app.net.identity import load_or_create  # noqa: E402
 from app.net.receive import STATE_FILE, ReceiveService, sanitize_relpath  # noqa: E402
-from app.net.send import PairNeeded, PeerConnection, plan  # noqa: E402
+from app.net.send import PACE_MS_LADDER, PairNeeded, PeerConnection, plan  # noqa: E402
 
 REPORT = Path(os.environ.get("CHUANSHU_REPORT", str(ROOT / ".probe" / "protocol_report.txt")))
 REPORT.parent.mkdir(parents=True, exist_ok=True)
@@ -406,6 +406,86 @@ def phase_offer_poll(proto: protocol_spec.Protocol, workspace: Path) -> None:
         service.stop()
 
 
+def phase_chunk_reply_lost(proto: protocol_spec.Protocol, workspace: Path) -> None:
+    """A chunk whose reply never came is not a chunk the peer does not have.
+
+    Measured on the Harmony emulator at the top of the pace ladder (2026-10-25): the relay takes the
+    whole body - the receiver's own record accounting adds up and its recomputed digest is the right
+    one - and then aborts the socket before the response is written. The sender had no rung left to
+    spend, so it raised, and the person watched a transfer fail that the other end had completed.
+    One GET is the repair, and a GET that cannot be read must still fail the chunk: the peer being
+    gone is a different fact from the peer being slow, and only the first one has no answer.
+    """
+    corpus = workspace / "reply-corpus"
+    (corpus / "相册").mkdir(parents=True, exist_ok=True)
+    (corpus / "相册" / "第一张.bin").write_bytes(blob(11, 20_000))
+    (corpus / "相册" / "第二张.bin").write_bytes(blob(13, 31_000))
+    sender = load_or_create(workspace / "reply-sender")
+    receiver = load_or_create(workspace / "reply-receiver")
+    root = workspace / "reply-received"
+    service = ReceiveService(receiver, "PC-Reply", lambda manifest, who, caller: True,
+                             host="127.0.0.1", port=0, root=root)
+    service.start()
+    try:
+        files = plan(sorted(corpus.rglob("*.bin")), base=corpus)
+        first_file = next(f for f in files if f.relpath.endswith("第一张.bin"))
+        other = next(f for f in files if f.relpath.endswith("第二张.bin"))
+
+        def dial(name: str) -> PeerConnection:
+            conn = PeerConnection(sender, name, "127.0.0.1", service.port, receiver.served_fingerprint)
+            conn.hello()
+            conn.pair(service.current_pair_code())
+            return conn
+
+        conn = dial("PC-Reply-Landed")
+        conn.offer(files)
+        real = conn._once
+        asked = [0]
+        put_first = f"/v1/offer/{conn.offer_id}/chunk/{first_file.id}/0"
+
+        def lost_reply(method, path, body, headers, pace_ms=0):
+            got = real(method, path, body, headers, pace_ms)
+            if method == "PUT" and path == put_first:
+                asked[0] += 1
+                raise ConnectionResetError("body landed, the relay dropped the reply")
+            return got
+
+        conn.pace_ms = PACE_MS_LADDER[-1]
+        conn._once = lost_reply
+        try:
+            result = conn.send(files)
+        finally:
+            conn._once = real
+        check("回复丢了但体已经落对，这单照样传完",
+              all(v["ok"] for v in result["verified"])
+              and hashlib.sha256((root / conn.offer_id / first_file.relpath).read_bytes()).hexdigest() == first_file.sha256
+              and (root / conn.offer_id / other.relpath).is_file(),
+              [v["id"] for v in result["verified"] if not v["ok"]])
+        check("问一次就够了，没有把那一块重发", asked[0] == 1, asked[0])
+
+        gone = dial("PC-Reply-Missing")
+        gone.offer(files)
+        gone_real = gone._once
+        gone_put = f"/v1/offer/{gone.offer_id}/chunk/{first_file.id}/0"
+
+        def never_landed(method, path, body, headers, pace_ms=0):
+            if method == "PUT" and path == gone_put:
+                raise ConnectionResetError("the body never arrived either")
+            return gone_real(method, path, body, headers, pace_ms)
+
+        gone.pace_ms = PACE_MS_LADDER[-1]
+        gone._once = never_landed
+        try:
+            gone.send(files)
+            check("体真没落时要照旧失败", False, "send returned")
+        except ConnectionResetError as exc:
+            check("体真没落时要照旧失败", "never arrived" in str(exc), str(exc))
+        finally:
+            gone._once = gone_real
+    finally:
+        service.stop()
+
+
 def phase_discovery(proto: protocol_spec.Protocol, workspace: Path) -> None:
     """Two symmetric peers finding each other, then promoting a prefix to an anchor."""
     from app.net.discovery import DiscoveryService, Peer, adopt_hello
@@ -606,6 +686,7 @@ def main() -> int:
         phase_restart(proto, workspace)
         phase_stalled_offer(proto, workspace)
         phase_offer_poll(proto, workspace)
+        phase_chunk_reply_lost(proto, workspace)
         phase_discovery(proto, workspace)
         phase_reverse_pin(proto, workspace)
         phase_shared_identity(proto, workspace)

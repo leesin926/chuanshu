@@ -513,9 +513,17 @@ class PeerConnection:
                 # A body that dies on the way in is the same complaint as a wrong digest, only louder: the
                 # pipe could not carry it at this rate. Slowing down is the one repair that does not need
                 # the peer's help, so spend a rung of the ladder before giving up on the chunk.
-                if not self._slow_pipe(f"{type(exc).__name__}: {exc}"):
-                    raise
-                continue
+                if self._slow_pipe(f"{type(exc).__name__}: {exc}"):
+                    continue
+                # The ladder is spent, and this attempt says nothing about the bytes: a relay can drop the
+                # socket after the body landed and before the reply was written. Ask before raising - one
+                # GET is cheap next to a transfer the person already approved.
+                if self._chunk_landed(file, index):
+                    log.warning("chunk %d of %s died on the reply, not the body: the peer already has it", index, file.relpath)
+                    if progress is not None:
+                        progress(file.relpath, index, total)
+                    return
+                raise
             if status == 200:
                 if progress is not None:
                     progress(file.relpath, index, total)
@@ -544,3 +552,20 @@ class PeerConnection:
         self.pace_ms = rung
         log.warning("chunk rejected (%s): pacing to %d ms per TLS record for the rest of this peer", reason, self.pace_ms)
         return True
+
+    def _chunk_landed(self, file: OutgoingFile, index: int) -> bool:
+        """Whether the peer says it already holds this chunk.
+
+        Only ever asked after a body whose reply never came. A question that cannot be read is answered
+        as "not landed", so a peer that is truly gone still gets the original failure rather than a
+        transfer that finalize later cannot explain.
+        """
+        try:
+            state = self.state()
+        except (http.client.HTTPException, OSError, protocol_spec.ProtocolError) as exc:
+            log.warning("could not ask the peer what it holds: %s", exc)
+            return False
+        for entry in state.get("files", []):
+            if str(entry.get("id")) == file.id:
+                return index not in entry.get("missing", [])
+        return False
