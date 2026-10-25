@@ -412,9 +412,9 @@ cryptography 41.0.7、**没有 PySide6、没有 zeroconf**）跑，scratch `HOME
 但字体度量与合成器行为在 offscreen 上证明不了（见"界面这层的验证"第一条），所以冻结产物又被拉到 WSLg 的
 **真显示**上跑了一遍（下一段）：那才是导轨宽度这类几何结论的来源。
 
-**真跑过 PyInstaller 的那半边**（#105）：`./build-linux.sh` 在 WSL Ubuntu-24.04 里出了四次产物，
-最后一次（#118，叶摘要那两条之后）就是仓库里那个 `dist/ChuanShu-0.1.0-linux-x64.tar.gz`
-（70,084,045 字节，一个目录两个可执行）。
+**真跑过 PyInstaller 的那半边**（#105）：`./build-linux.sh` 在 WSL Ubuntu-24.04 里出了五次产物，
+最后一次（#131，#120 #130 那两条之后）就是仓库里那个 `dist/ChuanShu-0.1.0-linux-x64.tar.gz`
+（70,088,891 字节，一个目录两个可执行）。
 在这之前还有一次纯脚本层的实跑（`.probe/linux_build_probe.sh`，一次性探针，不进仓库）：把 `-m PyInstaller`
 与翻译三步换成桩，其余照原样，于是 `--exe-only` 那条分支（真构建没走它）与"解压回来还在 +x"是那次拿到的结论。
 装的东西：`python3-venv`/`python3-pip`、PySide6 6.12.0 跑起来要的 Qt 运行库（`libxcb-*`、`libxkbcommon`
@@ -446,13 +446,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Task all
    好排查；一个 `COLLECT` 里两个入口，Inno 的 `recursesubdirs` 自动把第二个一起收）
 3. `ISCC installer\setup.iss` → `dist\installer\ChuanShu-Setup-0.1.0-x64.exe`
 
-`dist\` 里现成那两套（Windows 的 `ChuanShu\` + 安装包、Linux 的 tar.gz）都出在「一台设备两个摘要」这组
-改动**之前**（#106 #109 #115：套接字改递独立签发的 RSA 叶，二维码 `f=` 与广播前缀跟着换成叶摘要）。后果
-不是协议谈不拢，而是**存量那枚钉子对不上**：老包把这台机器的*身份*摘要当成了 TLS 叶记下来，新包递出来
-的是另一张叶，所以对端在握手那一步就停住了——`/v1/pair` 都到不了（#115 量过这个形状：把串里的 `f=` 改
-掉一个字符，钉不住的那一侧在配对之前就拒）。修它的动作是**重新扫一次码或重粘一份
-配对串**（串里带的就是现在的叶摘要），光输配对码不够。所以出包这件事要连着"已经配过对的那几台得重来一次"
-一起决定，不是跑一遍脚本就完。
+`dist\` 里现成那两套（Windows 的 `ChuanShu\` + 安装包、Linux 的 tar.gz）出在 #131，也就是「分块体落对了但
+回复没来，先问一次 `state`」那两条（#120 #130）之后；上一次出包是 #117 #118。出包这件事历史上连着一个动作
+要做：#106 #109 #115 把 TLS 叶换成独立签发的那张以后，**存量那枚钉子对不上**——老包把这台机器的*身份*摘要
+当成了 TLS 叶记下来，新包递出来的是另一张叶，所以对端在握手那一步就停住了——`/v1/pair` 都到不了（#115 量过
+这个形状：把串里的 `f=` 改掉一个字符，钉不住的那一侧在配对之前就拒）。修它的动作是**重新扫一次码或重粘一份
+配对串**（串里带的就是现在的叶摘要），光输配对码不够。那一轮重来已经过去了：现在这两个包与现在这份串是同一
+张叶，出包不再附带"已经配过对的那几台得重来一次"。
 
 Linux 那一侧重复同样的三步，只是产物是 tar.gz：`./build-linux.sh`（`--exe-only` 只出可执行文件不打包，
 `PY=python3.12` 换解释器）。它需要 `requirements.txt` + `requirements-dev.txt` 都装上。这条在 WSL 里真跑出过
@@ -592,6 +592,11 @@ owns 三个监听口（`netstat`：TCP 43720、UDP 43721、每个网卡各一个
   副本会拿着旧结构出新结论，第一次跑就是这么暴露出"CLI 不在旁边"的。
   `--no-discover` 挡不住 Windows 弹防火墙框：一个纯 TCP 监听就够弹了，所以跑完这一门桌上常留一个
   系统框——那个框归用户答，脚本从不点它（点"取消"留下的就是上面那两条阻止规则）。
+- **冒烟证的是"跑得起来"，不是"这一步改动在里面"**。改过 `app/net/send.py` 重出包之后（#131），用
+  `PyInstaller.archive.readers` 把产物里的 `PYZ` 掏出来、`marshal` 出 `app.net.send` 的 code object，
+  在它的常量里找那三句新日志（Windows 侧读 `dist\ChuanShu\ChuanShu.exe`，Linux 侧在 WSL 里读解压出来的
+  `ChuanShu/ChuanShu`）——两边都命中才算这次出包真的把 #130 带上了。这条不是例行步骤：只有"改了产品代码
+  又重出包"那一轮值得做一次，因为那三句在包里是编译后的常量，grep 二进制搜不到。
 
 ## 需要改的地方
 
