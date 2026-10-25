@@ -509,9 +509,11 @@ def phase_chunk_reply_lost(proto: protocol_spec.Protocol, workspace: Path) -> No
         gone.offer(files)
         gone_real = gone._once
         gone_put = f"/v1/offer/{gone.offer_id}/chunk/{first_file.id}/0"
+        gone_puts = [0]
 
         def never_landed(method, path, body, headers, pace_ms=0):
             if method == "PUT" and path == gone_put:
+                gone_puts[0] += 1
                 raise ConnectionResetError("the body never arrived either")
             return gone_real(method, path, body, headers, pace_ms)
 
@@ -522,6 +524,10 @@ def phase_chunk_reply_lost(proto: protocol_spec.Protocol, workspace: Path) -> No
             check("体真没落时要照旧失败", False, "send returned")
         except ConnectionResetError as exc:
             check("体真没落时要照旧失败", "never arrived" in str(exc), str(exc))
+            # The peer *answered* this one - "I do not have it" - which is the hiccup shape, so the sender
+            # is supposed to spend the rest of the attempts on it. Counting the writes is what tells this
+            # leg apart from the one below, where nobody answers and rewriting would be dialling a dead end.
+            check("问到了「没到」就把剩下的尝试次数花在这一块上", gone_puts[0] == 3, gone_puts[0])
         finally:
             gone._once = gone_real
 
