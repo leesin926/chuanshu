@@ -1182,13 +1182,22 @@ function startConnect() {
 	)
 }
 
+/** A refusal the connect button owes an answer to. `log()` writes into the 传输 page's list, which is not
+ *  the page the tap happened on, so the line under the button has to say it too: measured here, a pair
+ *  string whose 密码 was lowercase left 连接 with no visible answer at all, and three probe rounds read
+ *  that silence as a dial that never started. */
+function refuse(why: string) {
+	log(why)
+	s.sessionLabel = why
+}
+
 /** The second half of the connect button, once the store knows what the pin store says about this
  *  address. */
 function checkCodeAndNetwork() {
 	if (activeOptions.code != '' || s.pinnedFp == '') {
 		const why = codeReject(activeOptions.code)
 		if (why != '') {
-			log('配对码：' + why)
+			refuse('配对码：' + why)
 			return
 		}
 	} else {
@@ -1196,12 +1205,12 @@ function checkCodeAndNetwork() {
 	}
 	const passWhy = passReject(activeOptions.secret)
 	if (passWhy != '') {
-		log('配对密码：' + passWhy)
+		refuse('配对密码：' + passWhy)
 		return
 	}
 	checkNet(activeOptions.host, function (level: string): void {
 		if (level == 'bad') {
-			log('没有连接：' + s.netLabel)
+			refuse('没有连接：' + s.netLabel)
 			return
 		}
 		startConnect()
