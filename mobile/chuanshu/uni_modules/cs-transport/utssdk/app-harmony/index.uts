@@ -1421,7 +1421,8 @@ function sendRecords(
 	paceMs: number,
 	done: () => void,
 	onFail: (why: string) => void,
-	label: string
+	label: string,
+	alive: () => boolean
 ): void {
 	const take = data.length - at
 	const size = take < WRITE_RECORD_BYTES ? take : WRITE_RECORD_BYTES
@@ -1441,6 +1442,22 @@ function sendRecords(
 				+ (at == 0 ? '，节奏 ' + paceMs.toString() + ' 毫秒' : ''))
 		}
 	}
+	if (!alive()) {
+		// This request is over - answered, failed or given up on - and its socket has been handed to
+		// `close()`, which this device does not finish quickly (`关连接的 promise 在 500 毫秒内没落地`
+		// is on the log for almost every request, and writes onto a socket it has already let go of
+		// show up as `The send failed with no corresponding socketFd`). Writing the rest of the body
+		// now is not merely wasted: the bytes can be delivered into the *next* connection, where the
+		// peer is sitting at the start of a request line - and a JSON body arriving there is what
+		// `Bad request syntax ('{}')` in the PC's log was, a few hundred ms after a finalize this end
+		// had already been answered for.
+		// The heartbeat goes with the request: it was started for this body, and a cursor that keeps
+		// printing every five seconds about a transfer this end is done with is a lie about a stall.
+		sendWatchOn = false
+		trace(label + ' 剩下的 ' + (data.length - at).toString()
+			+ ' 字节不写了：这一单已经交出去了')
+		return
+	}
 	cli.send(bufOf(sliceBytes(data, at, size))).then((): void => {
 		const next = at + size
 		if (label != '' && next < data.length
@@ -1453,11 +1470,11 @@ function sendRecords(
 			return
 		}
 		if (paceMs <= 0) {
-			sendRecords(cli, data, next, paceMs, done, onFail, label)
+			sendRecords(cli, data, next, paceMs, done, onFail, label, alive)
 			return
 		}
 		setTimeout((): void => {
-			sendRecords(cli, data, next, paceMs, done, onFail, label)
+			sendRecords(cli, data, next, paceMs, done, onFail, label, alive)
 		}, paceMs)
 	}).catch((e: Error): void => {
 		onFail(errText(e))
@@ -1642,7 +1659,7 @@ function httpRun(
 			// The complaint lands on the request's error branch, and that is where the pipe gets slowed
 			// down - one rung per attempt, not one per place the failure is noticed.
 			fail('IO', '请求体没写出去：' + why)
-		}, watched ? tag : '')
+		}, watched ? tag : '', (): boolean => !finished)
 	}
 
 	let header = method + ' ' + path + ' HTTP/1.1\r\n'
@@ -1724,6 +1741,13 @@ function httpRun(
 		out.fp = seen
 		stage = '写出请求头'
 		cli.send(headBuf).then((): void => {
+			if (finished) {
+				// The head went out, but this request was answered, failed or gave up while it was in
+				// the air, and `shutThen` has the socket in `close()`. Starting the body now would be the
+				// first byte written to whatever connection owns this descriptor from here on.
+				trace(tag + ' 请求头写完了但这一单已经交出去，体不写了')
+				return
+			}
 			if (payload.byteLength == 0) {
 				return
 			}
