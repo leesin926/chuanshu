@@ -1599,10 +1599,11 @@ export function receiveSelfReport(): string {
 
 /* ================================================== sender self-check (#132) */
 
-/** A peer that eats the answer to one chunk write. Two ways to eat it, and the difference is the whole
+/** A peer that eats the answer to one chunk write. Three ways to eat it, and the difference is the whole
  *  point of this suite: `peerBlind` also keeps the bytes away from the peer, which turns "the reply
- *  died" into "the body died". Only the sender's own `GET /state` can tell those apart, so the three
- *  legs below are distinguished by *what the sender does after it asks*, not by the error text.
+ *  died" into "the body died", and `muteState` takes the sender's only way of telling those apart away
+ *  from it. Only the sender's own `GET /state` can read the peer's ledger, so the legs below are
+ *  distinguished by *what the sender does after it asks*, not by the error text.
  *
  *  A counter object rather than captured locals: Kotlin forbids a closure mutating a local `let`. */
 class ChunkSwallow {
@@ -1610,6 +1611,9 @@ class ChunkSwallow {
 	/** Which chunk write (1-based) loses its reply; -1 eats every one, 0 eats none. */
 	nth: number = 0
 	peerBlind: boolean = false
+	/** How many `GET /state` questions this peer refuses to answer. Spec §4's third rule is about this
+	 *  shape - 问不到答案 - and it is the one leg the phones have evidence for and the browser did not. */
+	muteState: number = 0
 	chunksSeen: number = 0
 	stateAsks: number = 0
 }
@@ -1640,6 +1644,11 @@ function swallowCaller(probe: ChunkSwallow): Caller {
 		}
 		if (method == 'GET' && path.indexOf('/state') >= 0) {
 			probe.stateAsks = probe.stateAsks + 1
+			if (probe.muteState > 0) {
+				probe.muteState = probe.muteState - 1
+				cb(0, swallowed('自检注入：发送方来问这一块的账，这一问本机也不答'))
+				return
+			}
 		}
 		if (eat && probe.peerBlind) {
 			// Not even a request: the peer never learns these bytes existed.
@@ -1703,7 +1712,7 @@ function runSender(probe: ChunkSwallow, relpath: string, run: SenderRun): void {
 		})
 }
 
-/** The 发送半边 of the self-test: spec §4's two recovery rules (#120, #130) run against a peer that
+/** The 发送半边 of the self-test: spec §4's recovery rules (#120, #130) run against a peer that
  *  swallows a chunk reply, so the branch the phones share is measured rather than read. */
 export function senderSelfReport(): string {
 	const out: string[] = []
@@ -1754,6 +1763,19 @@ export function senderSelfReport(): string {
 	// Three writes (spec §4) and one question after each of them: the third answer is the one that says stop.
 	check('判死前只写了三次就收手', c.chunksSeen == 3 && c.stateAsks == 3, c.chunksSeen.toString() + '/' + c.stateAsks.toString())
 	check('报出去的是那次的真实原因', rc.summary.indexOf('CONN_RESET') >= 0 || rc.summary.indexOf('自检注入') >= 0, rc.summary)
+
+	// D. the body dies *and* the question about it dies too: 问不到答案 is spec §4's third shape, and the
+	// honest reading of it is one write and that question's own error - not a rewrite, not the PUT's error.
+	const d = new ChunkSwallow()
+	d.nth = 1
+	d.peerBlind = true
+	d.muteState = 1
+	const rd = new SenderRun()
+	runSender(d, big, rd)
+	check('那一问也没人答时这单判死', rd.done && !rd.ok, rd.summary)
+	check('判死前只问过对方一次', d.stateAsks == 1, d.stateAsks.toString())
+	check('问不到答案就不重写：对端只收到一次写块', d.chunksSeen == 1, d.chunksSeen.toString())
+	check('报出去的是那一问的错，不是写块自己的错', rd.summary.indexOf('这一问') >= 0, rd.summary)
 
 	out.push(fail == 0 ? '发送自检 ' + pass.toString() + ' 项全部通过' : '发送自检失败 ' + fail.toString() + ' 项，通过 ' + pass.toString() + ' 项')
 	return out.join('\n')
