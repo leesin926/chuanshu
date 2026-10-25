@@ -26,7 +26,7 @@ export {
 	codeReject, passReject, digitsOnly, formatSize, parsePairUrl
 } from '../cs-protocol.uts'
 export {
-	TransferOptions, PeerSession, connectPeer, sendFiles,
+	TransferOptions, PeerSession, connectPeer, sendFiles, cancelSend,
 	SelfCallback, SignCallback, ReplyCallback, MetaCallback, BufferCallback, HexCallback
 } from '../cs-client.uts'
 
@@ -252,6 +252,14 @@ function inSameNet(local: number, prefix: number, peer: number): boolean {
 	}
 	const mask = Math.pow(2, shift)
 	return Math.floor(local / mask) == Math.floor(peer / mask)
+}
+
+/** Hand back every request this device is still inside, by closing its socket, and say how many were
+ *  open. The other half of what 传输详情's 取消 promises: `cs-client`'s own flag stops the requests that
+ *  were only queued, and this stops the one whose bytes are still going out - at a paced peer that is
+ *  the difference between a button and a wait of forty seconds per chunk. */
+export function abandonSend(why: string): number {
+	return CsWire.cancelInflight(why)
 }
 
 /** Decide, before spending a handshake, whether the peer address is even on the network this phone is

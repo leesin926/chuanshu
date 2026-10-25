@@ -16,6 +16,7 @@ import {
 	PeerSession,
 	connectPeer,
 	sendFiles,
+	cancelSend,
 	SelfCallback,
 	SignCallback,
 	ReplyCallback,
@@ -27,6 +28,12 @@ import { TRANSPORT_PORT, PAIR_CODE_DIGITS, PASSPHRASE_CHARS, SESSION_IDLE_S, cod
 import { selfInfo, signPair, request, prepareFile, readChunk, digestHex, transportMocked, transportNote, lanCheck } from '@/uni_modules/cs-transport'
 // #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
 import { pinnedFor, unpinPeer, receiveStart, receiveStop, receiveStatus } from '@/uni_modules/cs-transport'
+// #endif
+// #ifdef APP-ANDROID || APP-HARMONY
+/** Only the phones have a request that can be forty seconds into a body when the user presses 取消: both
+ *  write a chunk at the peer's pace, and the browser's peer answers as fast as the loop asks. The name is
+ *  therefore this file's, not the pages', and iOS is out of scope, so it has no half to reach. */
+import { abandonSend } from '@/uni_modules/cs-transport'
 // #endif
 // #ifdef WEB
 import { demoPeer, demoQrUrl, demoExpireToken, setDemoFault, demoRestart, demoUnpin, pinnedFingerprint } from '@/uni_modules/cs-transport'
@@ -1244,6 +1251,20 @@ export function onDisconnect() {
 	if (session == null) {
 		return
 	}
+	/** The two halves of the promise 传输详情 makes when it says 取消 is 断开这条连接.
+	 *
+	 *  The flag in the state machine stops the steps that were only queued - the chunks behind the
+	 *  current one, the finalize - and the phones' own handle stops the one whose bytes are already on
+	 *  their way out, which at a paced peer was up to forty seconds of writing per chunk that a pressed
+	 *  button could not reach. Without the second half the screen said 已断开 while the file carried on
+	 *  arriving, and the user had no way to tell that the transfer they cancelled had completed. */
+	cancelSend()
+	// #ifdef APP-ANDROID || APP-HARMONY
+	const dropped = abandonSend('用户按下了取消')
+	if (dropped > 0) {
+		log('取消了 ' + dropped.toString() + ' 条还没写完的请求')
+	}
+	// #endif
 	markDisconnected(s.pinnedFp == ''
 		? '已断开：本机还没有固定这台对端，下次连上要重新核对配对码'
 		: '已断开：指纹仍然固定，下次连上不用再核对配对码')

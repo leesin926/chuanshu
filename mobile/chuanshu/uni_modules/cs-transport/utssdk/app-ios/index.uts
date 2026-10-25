@@ -36,7 +36,7 @@ export {
 	codeReject, passReject, digitsOnly, formatSize, parsePairUrl
 } from '../cs-protocol.uts'
 export {
-	TransferOptions, PeerSession, connectPeer, sendFiles,
+	TransferOptions, PeerSession, connectPeer, sendFiles, cancelSend,
 	SelfCallback, SignCallback, ReplyCallback, MetaCallback, BufferCallback, HexCallback
 } from '../cs-client.uts'
 

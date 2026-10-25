@@ -398,6 +398,12 @@ export function errorText(code: string): string {
 	if (code == 'HOST_UNKNOWN') {
 		return '这个名字解析不出来'
 	}
+	// Also this end's own, and never on the wire: 取消 on 传输详情 hands back every request this device
+	// still owns, and the sentence the send loop shows has to say who stopped it - otherwise a
+	// cancelled transfer looks exactly like a peer that refused one.
+	if (code == 'CANCELLED') {
+		return '本机取消了这次传输'
+	}
 	return '协议错误：' + code
 }
 

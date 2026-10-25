@@ -1504,6 +1504,32 @@ function probeName(host: string, named: NamedCb, unnamed: NamedCb): void {
 	})
 }
 
+/** A request that has been started and not yet handed back. */
+type AbandonFn = (why: string) => void
+
+/** Every dial-out request this device still owns.
+ *
+ *  `sendRecords` already refuses to write to a connection its own request gave up on, but nothing used
+ *  to be able to *make* it give one up: 传输详情's 取消 marked the session closed and the 4 MiB body in
+ *  the air kept going at this peer's pace - on a Harmony receiver that declares 40 ms per record, about
+ *  40 s per chunk. Each request puts its own `fail` behind this door and takes it off the moment it is
+ *  answered, so a cancel hands back exactly the requests that were in flight and never a stale one.
+ *  A list rather than a slot, because a state poll and a chunk can overlap; the cancel is for all of
+ *  them, since the user pressed it on the transfer, not on a request. */
+let inflight: AbandonFn[] = []
+
+/** Hand back every request this side is still holding, as a failure this end caused. Returns how many
+ *  were taken, so the caller can tell a cancel that interrupted something from one that found the
+ *  line idle. */
+export function abandonSend(why: string): number {
+	const list = inflight
+	inflight = []
+	for (let i = 0; i < list.length; i++) {
+		list[i](why)
+	}
+	return list.length
+}
+
 /** One request over one connection.
  *
  *  The order is the whole design: bind, connect without the platform's own certificate validation, read
@@ -1537,6 +1563,20 @@ function httpRun(
 	 *  that is the only way to tell whether this socket was closed by its own request or by the one before
 	 *  it, which is the difference between two bugs with the same symptom. */
 	const tag = 'C ' + method + ' ' + path
+	let abandon: AbandonFn | null = null
+	/** Take this request off the list of cancellable ones. Both ways out of it - answered and failed -
+	 *  go through here, so a request that has already been handed back can never be failed twice by a
+	 *  取消 pressed after it finished. */
+	const forget = (): void => {
+		if (abandon == null) {
+			return
+		}
+		const at = inflight.indexOf(abandon!)
+		if (at >= 0) {
+			inflight.splice(at, 1)
+		}
+		abandon = null
+	}
 
 	const stop = (): void => {
 		if (timer != 0) {
@@ -1581,6 +1621,7 @@ function httpRun(
 		}
 		finished = true
 		stop()
+		forget()
 		out.error = code
 		out.detail = detail
 		shutThen((): void => {
@@ -1593,6 +1634,7 @@ function httpRun(
 		}
 		finished = true
 		stop()
+		forget()
 		out.status = statusOf(textOfBytes(sliceBytes(acc, 0, headEnd)))
 		out.body = textOfBytes(sliceBytes(acc, headEnd + 4, acc.length - headEnd - 4))
 		shutThen((): void => {
@@ -1661,6 +1703,13 @@ function httpRun(
 			fail('IO', '请求体没写出去：' + why)
 		}, watched ? tag : '', (): boolean => !finished)
 	}
+
+	/** From here until `fail` or `take` runs, this request can be handed back from outside it - which is
+	 *  the only way 传输详情's 取消 can reach a body being written at a paced 4 KiB per 40 ms. */
+	abandon = (why: string): void => {
+		fail('CANCELLED', why)
+	}
+	inflight.push(abandon!)
 
 	let header = method + ' ' + path + ' HTTP/1.1\r\n'
 	header = header + 'Host: ' + host + ':' + port.toString() + '\r\n'
@@ -1859,7 +1908,10 @@ export function request(
 		if (r.error != '') {
 			// A chunk request that never got an answer is the pipe complaining the same way a wrong
 			// digest does, only louder - the body was written and the peer's reader went away.
-			if (method == 'PUT') {
+			// A request this end handed back on purpose is not that: nothing about the pipe changed,
+			// and climbing the pace ladder here would make the next transfer slower because the user
+			// pressed a button.
+			if (method == 'PUT' && r.error != 'CANCELLED') {
 				slowPipe(host, port)
 			}
 			reply(r.error, r.detail, cb)

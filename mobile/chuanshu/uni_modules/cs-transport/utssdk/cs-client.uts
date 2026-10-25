@@ -43,6 +43,21 @@ export type FinishCallback = (ok: boolean, summary: string) => void
 export type FileEvent = (relpath: string, status: string, done: number, total: number) => void
 export type ConnectDone = (ok: boolean, message: string, session: PeerSession | null) => void
 
+/** Whether this device's user has asked for the running transfer to stop.
+ *
+ *  传输详情's 取消 is a promise about the socket, and the loop below is what makes the promise hold
+ *  between requests: every step of a send goes through `authed`, so a flag read there stops the offer,
+ *  the state polls, the remaining chunks and the finalize without a single byte leaving this end. The
+ *  platform halves stop the request that is already in the air; this flag stops the ones that were only
+ *  queued. It belongs to the state machine rather than to a page, because the page that shows the
+ *  button is not the one holding the loop. */
+let sendCancelled = false
+
+/** Stop this device's own send loop at its next boundary. See `sendCancelled`. */
+export function cancelSend(): void {
+	sendCancelled = true
+}
+
 export class TransferOptions {
 	host: string = ''
 	port: number = 43720
@@ -265,6 +280,8 @@ export function sendFiles(
 	fileEvent: FileEvent,
 	finish: FinishCallback
 ): void {
+	// A send that starts now is a send the user asked for, whatever they cancelled a minute ago.
+	sendCancelled = false
 	if (opts.paths.length == 0) {
 		finish(false, '还没有选择文件')
 		return
@@ -288,6 +305,12 @@ export function sendFiles(
 	 *  `escape` is the wire encoding of `body` ('' means the bytes are the content itself), decided
 	 *  per request by the caller because only a chunk can carry a zero byte. */
 	function authed(method: string, path: string, json: string, body: ArrayBuffer, sha: string, escape: string, repaired: boolean, cb: ReplyCallback): void {
+		if (sendCancelled) {
+			/** Shaped like a refusal from the peer, because that is what every step of this loop already
+			 *  knows how to read; only the code says it came from this end. */
+			cb(0, '{"code":"CANCELLED","detail":{"reason":"这一单还没发出去就被本机收回了"}}')
+			return
+		}
 		call(method, path, json, session.token, body, sha, escape, function (status: number, resp: string) {
 			if (status != 403 || codeOf(resp) != 'NOT_PAIRED' || repaired) {
 				cb(status, resp)

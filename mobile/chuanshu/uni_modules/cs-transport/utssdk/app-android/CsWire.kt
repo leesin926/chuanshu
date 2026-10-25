@@ -205,6 +205,32 @@ object CsWire {
         }
     }
 
+    // -------------------------------------------------------------------- cancellation
+
+    /** The requests this device is still inside, by socket.
+     *
+     *  Closing one of these is what makes 传输详情's 取消 land now instead of when the body finishes: a
+     *  chunk goes out at the peer's pace, and a Harmony receiver asks for one 4 KiB record per 40 ms, so
+     *  a 4 MiB chunk is about 40 s of writes that a cancel used to be unable to interrupt. The id stays
+     *  remembered as cancelled for the length of this request, because the failure the close produces is
+     *  this end's own decision - not a pipe worth slowing down for. */
+    private val inflight = ConcurrentHashMap<Int, SSLSocket>()
+    /** Which socket this device closed on purpose, and the sentence the user's action deserves. */
+    private val cancelled = ConcurrentHashMap<Int, String>()
+
+    /** Hand back every request in flight as this device's own cancellation. Returns how many were open. */
+    fun cancelInflight(why: String): Int {
+        val ids = ArrayList(inflight.keys)
+        for (id in ids) {
+            cancelled[id] = why
+            try {
+                inflight.remove(id)?.close()
+            } catch (ignored: Throwable) {
+            }
+        }
+        return ids.size
+    }
+
     /** One request, one connection, and always a JSON string out of it: either
      *  {"status":<code>,"body":"..."} or {"error":<transport code>,"detail":"..."}.
      *
@@ -226,9 +252,12 @@ object CsWire {
     ): String {
         val payload = bytesOf(body)
         var pinned: Pinned? = null
+        var sockId = 0
         return try {
             pinned = openSocket(host, port.toInt(), pinHex)
             val socket = pinned.socket
+            sockId = System.identityHashCode(socket)
+            inflight[sockId] = socket
             socket.soTimeout = timeoutMs.toInt()
             val text = StringBuilder()
                 .append("$method $path HTTP/1.1\r\n")
@@ -279,9 +308,17 @@ object CsWire {
                     .toString()
             }
         } catch (e: Throwable) {
-            if (method == "PUT") slowPipe(host, port.toInt())
-            errorOf(e, host)
+            // A socket this end closed on purpose is the user cancelling, not a pipe to slow down.
+            val byUs = cancelled.get(sockId)
+            if (byUs != null) {
+                JSONObject().put("error", "CANCELLED").put("detail", byUs).toString()
+            } else {
+                if (method == "PUT") slowPipe(host, port.toInt())
+                errorOf(e, host)
+            }
         } finally {
+            inflight.remove(sockId)
+            cancelled.remove(sockId)
             try {
                 pinned?.socket?.close()
             } catch (ignored: Throwable) {
