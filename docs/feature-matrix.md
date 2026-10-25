@@ -41,7 +41,7 @@ Ed25519 叶、TLS 记录会乱序到达——这三条都是上机才知道的�
 | 身份 | 一台设备**两个摘要**：Ed25519 身份密钥只签配对码；套接字递出的是独立签发的 **RSA-2048 自签叶**（`CN=peer_id`，20 年）。信任锚是叶的 SPKI SHA-256；二维码 `f=`、广播前缀、TLS 钉子钉的都是这个叶摘要。两个都**不是** `peer_id` |
 | 端点 | 七个：`GET /v1/hello`、`POST /v1/pair`、`POST /v1/offer`、`GET /v1/state`、`PUT /v1/offer/{id}/chunk/{idx}`、`POST /v1/finalize`、`DELETE /v1/offer/{id}`；鉴权走 `X-Chuanshu-Auth`，分块摘要 `X-Sha256`，声明长度 `X-File-Size` |
 | 分块 | 4 MiB，同一 offer 最多 2 块并行；`hello` 里接收方声明 `chunk_pace_ms`，发送方按节奏写记录（手机侧阶梯 `[0, 15, 40]`） |
-| 恢复 | 状态文件只是提示，**结论只来自 `finalize` 的整文件摘要**；offer id 就是续传柄，接收方的 `missing` 列表决定还缺什么 |
+| 恢复 | 状态文件只是提示，**结论只来自 `finalize` 的整文件摘要**；offer id 就是续传柄，接收方的 `missing` 列表决定还缺什么。被摘要推翻的那本台账当场作废：`finalize` 一旦「台账说全有、磁盘说没有」，接收方就抹掉这个文件的分块记录并改口说全缺——否则发送方整单重发会被逐块「已经存过」挡回来，一个字节也写不回去（这一条是 #127 在安卓模拟器上量出来的） |
 | 限额 | 一次 offer 2000 个文件、名字 255 字节、路径深度 16、offer 等待 60 s、会话闲置 900 s、offer 闲置 3600 s、配对码 120 s（6 位数字，口令 8 位大写+数字） |
 | 错误码 | 11 个，中英双语文案；`CANCELLED` 是**传输层自己的**词，永不上线 |
 | 中继 | 只在合同里留字段位，没有实现 |
@@ -91,6 +91,7 @@ Linux 与 Windows 的三个真实分歧，都已落到代码分支：
 | 发：同一单多个文件 + 中文子目录（一块整 / 零头 / 带空格与括号） | 完成 | `模拟器`（#125 安卓腿：4 MiB + 1023 B + 1 MiB 三份一次发出，PC 侧逐字节比对三份全对、目录层级保住、单里三行都报完成） |
 | 发：`pair/offer/chunk/finalize` + 4 MiB 分块 + 0x00 转义 | 完成 | `模拟器`（5 MB / 2 块，接收方逐字节比对） |
 | 收：立即应答 + 轮询 `state` + 落盘后本地重算 | 完成 | `模拟器`（PC 发→手机收；中文子目录保留） |
+| 收：接收途中杀掉进程，重启后接管同一单只补缺的尾巴；台账被磁盘推翻时当场作废 | 完成 | `模拟器`（#127 两条腿：第一条 `接管以后的台账：received=1 missing=[1]` → 收尾 `sha=6f25483fb457…` 逐字节一致；第二条两块写完先不 finalize、杀掉、把文件删掉，手机自称 `received=2 missing=[]`，`finalize` 拦住并当场改口缺 `[0, 1]`，整单重发后 `verified_ok=True`。原文 `.probe/a_127.txt`） |
 | 机对机（两台 AVD 互传，双向） | 完成 | `模拟器`（宿主是唯一的路：接收方 `adb forward`，发送方拨 `10.0.2.2`） |
 | 三份记忆：固定对端 / 未完成的单 / 已收下的文件 | 完成 | `模拟器`（重启后 `run-as` 读回文件，卡片逐个问文件系统） |
 | 写入节奏 `chunk_pace_ms` + 阶梯 `[0,15,40]`、记录上限 4096 | 完成 | `模拟器`（4 MiB 块在 15 ms 档实测 ~37 s） |
@@ -107,6 +108,7 @@ Linux 与 Windows 的三个真实分歧，都已落到代码分支：
 | 身份：`@kit.CryptoArchitectureKit` 出 Ed25519 签名；服务叶仍是 RSA-2048 | 完成 | `真机`（平台 TLS 签不出 Ed25519 叶，这是上机才发现的） |
 | 收：0x00 截断 → `X-Chunk-Escape` 转义、TLS 记录乱序到达仍解析得出、立即应答 + 轮询 | 完成 | `真机` + `模拟器`（#56/#59/#94/#61） |
 | 收：对端已消失的 offer 不再谎报"还没收到分块" | 完成 | `模拟器`（#95） |
+| 收：整文件摘要推翻台账时当场作废 + 写入不再拦"文件已经不在了" | 代码同源，**这一条的鸿蒙设备腿还没跑** | `编译门`（#127：判据那半在共用文件 `cs-receive.uts` 里，安卓量到的结论这一端才拿得到；`app-harmony/index.uts::storeWrite` 去掉 `写入超出文件末尾` 是本端独有的一处。hap 编出并签好（`项目 chuanshu 编译成功。` + `运行包制作成功`，`.probe/h_build127.log`），但没有在模拟器上真杀过一次接收） |
 | 发：同单第二块不再写出几 KB 就停摆；串包（往正在关闭的连接里写字节）修掉 | 完成 | `模拟器`（#99/#121，全程无串包） |
 | 发：同一单多个文件 + 中文子目录 | 完成 | `模拟器`（#125 鸿蒙腿：与安卓那趟同一批三份，PC 侧逐字节比对全对、目录层级保住；发送页三行都报到「对方已收下 3 个文件 / 5.00 MB」） |
 | 发：接收方声明的节奏真用上，守卫那一支在有条节奏的对端上跑到过一次 | 完成 | `模拟器`（#62/#122：少写 139264 字节，重发整单落对） |
@@ -183,7 +185,7 @@ E:\android-sdk\emulator\emulator.exe -avd chuanshu34b -no-window -no-audio -no-b
 ### 仓库门禁（`scripts/`）
 | 脚本 | 覆盖 |
 |---|---|
-| `protocol_selftest.py` | 合同镜像、七个端点、路径清洗（含中文目录）、多文件带目录、断点续传、并发身份目录 |
+| `protocol_selftest.py` | 合同镜像、七个端点、路径清洗（含中文目录）、多文件带目录、断点续传（含杀接收进程后 `reopen`）、整文件摘要推翻台账时台账作废（#127）、并发身份目录 |
 | `ui_selftest.py` | 图形界面四页、接收确认弹窗、设置窗口、7 语言 |
 | `cli_selftest.py` | CLI 八条子命令端到端（含 `receive` 的 offer 计时器） |
 | `linux_selftest.py` | Linux 侧 27 条断言，Qt-free（stdout **和** stderr 都要读：发现通道写的是 stderr） |
@@ -202,6 +204,7 @@ E:\android-sdk\emulator\emulator.exe -avd chuanshu34b -no-window -no-audio -no-b
 | `a_123.py` | 连接按钮拒掉填错的配对串时，扫码页自述拒因 | 两条腿（小写密码拒 + 合法密码连得上） |
 | `a_124.py` | 取消两级在 Android 上的两个 leg | `PASS`（leg1 半块断掉 + leg2 重发逐字节一致、15 ms 档没爬） |
 | `a_125.py` / `h_125.py` | 一次 offer 带三个文件、其中两个在中文子目录里（一块整 4 MiB / 零头 1023 B / 1 MiB 带空格与括号） | 两条都 `PASS`：`三份都落对 YES / 目录层级保住 YES`（原文 `.probe/a_125.txt`、`.probe/h_125.txt`） |
+| `a_127.py` | 接收途中杀掉手机进程：接管续传 + 台账作废两条腿 | `PASS 杀掉接收中的手机：续传把尾巴补齐，而结论仍然只由整文件摘要给`（四条判据全 YES，原文 `.probe/a_127.txt`） |
 | `h_110.py` `h_121.py` `h_122.py` `h_124.py` | 鸿蒙：重启仍列收过的 / 串包 / 守卫那一支 / 取消 | 四条都 `PASS`（原文见 `.probe/*.txt`） |
 | `h_disc91.py` / `h_disc91_prod.py` | 发现层：名单、前缀是 served-leaf、点一台填进连接卡 | `found:5 lost:0`，两条通道 `ok` |
 | `hgui.py` / `hdump.py` / `deploy.py` / `sweep.py` | 鸿蒙 UI 驱动与部署 | 工具，不产出结论 |
@@ -215,10 +218,12 @@ E:\android-sdk\emulator\emulator.exe -avd chuanshu34b -no-window -no-audio -no-b
    没有它，鸿蒙的真机矩阵停在 #57/#58 那两条（PC↔手机双向），发现与取消两级只有模拟器证据。
 2. **#36 / #90 / #93 Android 发现层上机** — 唯一卡点是 `CHANGE_WIFI_MULTICAST_STATE` 要打进自定义基座，
    而 `pack --iscustom` 花用户的 DCloud 账号。**等用户点头**，期间可以用 `pack --precheck` 免费验配置。
-3. **中途杀进程续传**（手机端，任务 #127）：`state` 只是提示，`finalize` 的整文件摘要才是结论；
-   手机端还没在设备上把这一条走一遍——PC 侧 `protocol_selftest.py` 杀的是接收进程，重启后 `reopen` 同一个
-   offer id 只补缺的尾巴；手机这一侧的接管（`adoptAll`）已经有代码，缺的是把这趟在模拟器上真杀掉一次。
-   多文件那批（#125 的三个形状）就是现成的分块源。
+3. **手机接收目录平铺，两单同路径会互相截断**（任务 #128，#127 的第二条腿撞上才发现）：PC 落
+   `接收根目录/<offer_id>/<relpath>`，手机落 `接收根目录/<relpath>`。同一个 `relpath` 被第二单送到时，
+   后一单 accept 里的 `prepare` 会把前一单**已经校验过**的交付截断重写，卡片上那行就变成"一个已经不在了"。
+   两条路：A 按单建目录（与 PC 对齐，`arrivals` 与卡片路径要跟着改）；B 名字撞了就加后缀，并把最终落点记进
+   `file.dest`（`state`、卡片、`finalize` 的 `path` 都读 `dest`，改动面小）。#127 那趟是先把旧单扫干净
+   （`A116.sweep_stale`）才让第二条腿的前提成立的，所以这条不能当已修。
 4. **物理 Linux 桌面** — 需要 `pip install PySide6` 与真实桌面环境；现在的 Linux GUI 结论停在 WSLg。
 5. **Linux 防火墙落到实处** — `inspect()` 会读 `firewalld`/`ufw` 的判定并打印该跑的命令，但它不代跑；
    要真的验一条 Linux 入站放行，需要物理桌面 + 管理员口令（这台机器的 WSL 只能验到"包进得来"那一半）。
@@ -244,6 +249,15 @@ E:\android-sdk\emulator\emulator.exe -avd chuanshu34b -no-window -no-audio -no-b
   要收尾，否则宿主的产品端口一直被占。
 - **`.uts` 到 Kotlin 后只保留平台入口再导出的名字**：共享文件里导出的符号若没被 `app-android/index.uts`
   列出，会被 tree-shake 掉，报 `找不到名称"cancelSend"`（鸿蒙/web 不管这条）。
+- **接一单时按声明长度把每个文件预分配好**（Android `setLength` / 鸿蒙 `truncateSync`）：只收到第一块的
+  文件读起来是"整长度 + 尾部为零"，**字节数证明不了没写完**。判"这是半单"要比第一块的分块字节 **加**
+  整文件摘要不相等（`.probe/a_127.py::half_written`），拿 `size < 声明` 当前提是错的。
+- **手机落盘平铺（`接收根目录/<relpath>`），PC 按单建目录（`接收根目录/<offer_id>/<relpath>`）**：#127 第二条腿
+  原本要"两块写完、删掉文件、看台账撒谎"，结果第一次的前提就不成立——上一单同名的完整文件就躺在同一个路径上，
+  后一单 accept 的预分配把它截断了。这条差异本身是任务 #128。
+- **给 UTS 类的属性整体赋值编不过 Kotlin**：`file.chunks = new Map<number, string>()` 到 Kotlin 是 `val`，
+  报 `'val' cannot be reassigned`（编译日志只给这一句，得回到共用文件里找）。要清空就改集合本身
+  （`file.chunks.clear()`），要重新报缺哪几块就另算一个 `const holes`。
 
 ## 8. 索引
 

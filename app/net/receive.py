@@ -688,7 +688,11 @@ class ReceiveService:
         if stored.get(index) == digest:
             return {"index": index, "stored": True, "idempotent": True}
         target = self._target(state, sanitize_relpath(str(file["relpath"]), self.proto))
-        with open(target, "r+b") as handle:
+        # `r+b` only while the file is still there. A chunk re-pushed into a file that went away has to
+        # recreate it - the phone's RandomAccessFile("rw") does this by definition - otherwise the very
+        # repair finalize just asked for cannot be written (#127: the ledger cleared, the resend
+        # arrived, and the receiver answered with a 500 on a path it had just told the sender to fill).
+        with open(target, "r+b" if target.exists() else "wb") as handle:
             handle.seek(index * self.proto.chunk_size)
             handle.write(data)
         stored[index] = digest
@@ -706,6 +710,14 @@ class ReceiveService:
             missing = state.missing(file)
             target = self._target(state, sanitize_relpath(str(file["relpath"]), self.proto))
             ok = not missing and _digest_file(target) == str(file["sha256"])
+            if not ok and not missing:
+                # The disk just contradicted the ledger, so the chunks it recorded are not evidence of
+                # anything any more: forget them, or the sender's whole-file resend would be answered
+                # "already stored" chunk by chunk and rewrite nothing (mirror of the same rule in
+                # cs-receive.uts, witnessed on a phone by .probe/a_127.py leg 2, task #127).
+                state.received[str(file["id"])] = {}
+                state.persist()
+                missing = state.missing(file)
             results.append({"id": file["id"], "ok": ok, "missing": missing, "path": str(target) if ok else None})
             if ok:
                 landed.append({"relpath": str(file["relpath"]), "size": int(file["size"]), "path": str(target)})
@@ -798,6 +810,14 @@ def _prepare(target: Path, size: int) -> None:
 
 
 def _digest_file(path: Path) -> str:
+    """sha256 of what is on disk, or "" when there is nothing to read.
+
+    A file deleted out from under its resume ledger is one of the answers finalize has to be able to
+    give (#127), and from the sender's side "not there" is the same verdict as "the bytes are wrong" -
+    the phone's `digestFile` has always said so, and a crash here was the PC diverging from it.
+    """
+    if not path.is_file():
+        return ""
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
         for block in iter(partial(handle.read, 1 << 20), b""):

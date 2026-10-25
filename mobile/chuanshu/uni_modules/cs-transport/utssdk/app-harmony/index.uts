@@ -1000,8 +1000,11 @@ function storePrepare(relpath: string, size: number): string {
 	}
 }
 
-/** '' on success, the reason otherwise. A chunk landing at the wrong offset has to fail loudly: the
- *  sender's per-chunk digest would still match whatever was stored. */
+/** '' on success, the reason otherwise. Writing past the end used to be one, and it cannot be: the
+ *  state machine bounds the index by the manifest's chunk count and the body by that chunk's length,
+ *  so a short file here is not a wrong offset - it is an allocation that is no longer there, and the
+ *  resend that arrives is the repair (#127; mirrored on Android). Where a chunk really does sit wrong,
+ *  finalize's whole-file re-read is the verdict the contract points at. */
 function storeWrite(relpath: string, offset: number, data: ArrayBuffer): string {
 	const where = recvPath(relpath)
 	if (where == '') {
@@ -1011,12 +1014,8 @@ function storeWrite(relpath: string, offset: number, data: ArrayBuffer): string 
 		return '偏移是负数'
 	}
 	try {
-		const f = fs.openSync(where, fs.OpenMode.READ_WRITE)
+		const f = fs.openSync(where, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE)
 		try {
-			const st = fs.statSync(f.fd)
-			if (offset + data.byteLength > st.size) {
-				return '写入超出文件末尾'
-			}
 			fs.lseek(f.fd, offset)
 			const n = fs.writeSync(f.fd, data)
 			if (n != data.byteLength) {

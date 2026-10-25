@@ -1023,13 +1023,34 @@ function finalizeReply(inbox: Inbox, offerId: string, digestFile: DigestFileFn):
 			// Re-read what is on disk rather than trusting the per-chunk digests: chunks that each
 			// hash correctly can still sit at the wrong offset.
 			ok = digestFile(file.relpath) == file.sha256
+			if (!ok) {
+				// And when that read disagrees, the ledger stops being evidence of anything: forget the
+				// chunks it recorded. A re-pushed chunk whose digest is still written down would be
+				// answered "already stored" and thrown away, so the sender's whole-file resend - its last
+				// move - would rewrite zero bytes and the offer could never come back. That is what the
+				// emulator measured (#127 leg 2: the file deleted under a ledger holding both chunks;
+				// finalize refused it, the resend changed nothing, FILE_DIGEST_MISMATCH was the last
+				// word, and the card went on saying 已校验过，这个文件已经不在了).
+				// A file with chunks genuinely still missing is left alone: there the ledger is not
+				// contradicted, merely unfinished, and its list is the whole point of the resume.
+				file.chunks.clear()
+			}
+		}
+		// Read back after that decision, so a ledger just erased here and the answer the sender gets
+		// cannot disagree: the reply says what this end can still show, which after a contradiction is
+		// nothing.
+		const holes: number[] = []
+		for (let k = 0; k < count; k++) {
+			if (!file.chunks.has(k)) {
+				holes.push(k)
+			}
 		}
 		file.verdict = ok ? 1 : 2
-		file.missingAt = missing.length
+		file.missingAt = holes.length
 		if (!ok) {
 			whole = false
 		}
-		const entry: UTSJSONObject = { id: file.id, ok: ok, missing: missing, path: ok ? file.dest : null }
+		const entry: UTSJSONObject = { id: file.id, ok: ok, missing: holes, path: ok ? file.dest : null }
 		verified.push(entry)
 	}
 	if (whole) {

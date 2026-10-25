@@ -59,8 +59,9 @@ object CsStore {
         }
     }
 
-    /** '' on success, the reason otherwise. A chunk that lands at the wrong offset has to fail loudly:
-     *  the sender's per-chunk digest would still match whatever we stored. */
+    /** '' on success, the reason otherwise. This is a positional write into a file the offer allocated,
+     *  so a chunk that lands where it should not is caught by finalize's re-read of the whole file -
+     *  the one verdict the contract recognises. */
     fun writeAt(relpath: String, offset: Number, buf: ByteBuffer?): String {
         val base = root() ?: return "拿不到应用私有目录"
         val file = cleanPath(base, relpath) ?: return "这个路径不在接收目录里"
@@ -74,7 +75,13 @@ object CsStore {
             try {
                 val from = offset.toLong()
                 if (from < 0) return "偏移是负数"
-                if (from + data.size > raf.length()) return "写入超出文件末尾"
+                // Writing past the end used to be refused. The state machine cannot ask for it: the index
+                // is bounded by the manifest's chunk count and the body by that chunk's own length, so
+                // `from + size` is at most the declared size - which means the only way to reach this
+                // point with a short file is an allocation that is no longer there, and that is the
+                // repair #127 needs laid back down, not a wrong offset. A chunk that genuinely sits
+                // where it should not still fails, just at finalize's whole-file re-read - the place
+                // the contract says the verdict comes from.
                 raf.seek(from)
                 raf.write(data)
             } finally {

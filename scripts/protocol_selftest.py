@@ -289,6 +289,48 @@ def phase_restart(proto: protocol_spec.Protocol, workspace: Path) -> None:
             stop_host(handle2)
 
 
+def phase_lying_ledger(proto: protocol_spec.Protocol, workspace: Path) -> None:
+    """A resume ledger can be contradicted by the disk, and then it stops being evidence (#127).
+
+    Both chunks of one file land and the offer is never finalized, so the ledger vouches for the whole
+    file; the file is then deleted out from under it, which is what a phone looks like once its written
+    bytes are removed and only the state document survives. `finalize` has to refuse it - the verdict is
+    the digest, never the ledger - and the sender's whole-file resend then has to actually write. A
+    receiver that answers "already stored" from the very ledger the disk just denied repairs nothing,
+    and the offer can never come back: that is the shape the Android emulator produced, with
+    FILE_DIGEST_MISMATCH as the last word.
+    """
+    corpus = build_corpus(workspace / "lie-corpus")
+    sender = load_or_create(workspace / "lie-sender")
+    receiver = load_or_create(workspace / "lie-receiver")
+    root = workspace / "lie-received"
+    service = ReceiveService(receiver, "PC-Lie", lambda manifest, who, caller: True,
+                             host="127.0.0.1", port=0, root=root)
+    service.start()
+    try:
+        files = plan(corpus, base=workspace / "lie-corpus")
+        big = next(f for f in files if f.relpath.endswith("IMG_大文件.bin"))
+        count = (big.size + proto.chunk_size - 1) // proto.chunk_size
+        conn = PeerConnection(sender, "PC-Sender", "127.0.0.1", service.port, receiver.served_fingerprint)
+        conn.hello()
+        conn.pair(service.current_pair_code())
+        conn.offer(files)
+        conn.push_missing(files, conn.state(), None, 3)
+        landing = root / conn.offer_id / big.relpath
+        check("every chunk of that file was on disk before the lie", landing.stat().st_size == big.size, landing)
+        landing.unlink()
+        bad = [v for v in conn.finalize()["verified"] if not v["ok"]]
+        check("finalize refuses the file the disk denies", [v["id"] for v in bad] == [big.id], bad)
+        check("it stops vouching for the chunks it cannot show", bad and bad[0]["missing"] == list(range(count)),
+              bad[0] if bad else None)
+        result = conn.send(files, None)
+        check("the resend writes bytes instead of being skipped", all(v["ok"] for v in result["verified"]),
+              [v for v in result["verified"] if not v["ok"]])
+        check("repaired file byte-identical", hashlib.sha256(landing.read_bytes()).hexdigest() == big.sha256)
+    finally:
+        service.stop()
+
+
 def phase_stalled_offer(proto: protocol_spec.Protocol, workspace: Path) -> None:
     """spec §4 counts an idle offer from the last chunk that landed, so that moment is data.
 
@@ -684,6 +726,7 @@ def main() -> int:
         workspace = Path(tmp)
         phase_in_process(proto, workspace)
         phase_restart(proto, workspace)
+        phase_lying_ledger(proto, workspace)
         phase_stalled_offer(proto, workspace)
         phase_offer_poll(proto, workspace)
         phase_chunk_reply_lost(proto, workspace)
