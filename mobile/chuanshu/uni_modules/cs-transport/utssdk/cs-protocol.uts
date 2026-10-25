@@ -349,7 +349,19 @@ export function detailOf(text: string): string {
 	}
 	const detail = obj.getJSON('detail')
 	if (detail != null) {
-		return JSON.stringify(detail)
+		// The contract puts the human sentence in `detail.reason` (spec.md §3) and names one more key,
+		// `detail.peer`, on the refusal that has to say *who* holds the slot. Printing the whole object
+		// made every one of those land on the page as JSON - 「失败：本机取消了这次传输 {"reason":"…"}」 -
+		// so the two named keys are read out, and anything else the peer added still goes through as text.
+		const reason = detail.getString('reason', '')
+		const who = detail.getString('peer', '')
+		if (reason == '') {
+			return JSON.stringify(detail)
+		}
+		if (who == '') {
+			return reason
+		}
+		return reason + '　' + who
 	}
 	// Android writes the platform exception straight into `detail`, Harmony wraps it as
 	// {"reason":"…"}; reading only the object shape made every Android detail come back empty, so a
