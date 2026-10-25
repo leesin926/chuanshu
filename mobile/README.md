@@ -9,6 +9,9 @@
 手搓的 DER、握手能不能成）一律以**模拟器/真机实测**为准，已经跑过的方向见下面「待办」第 5 条。跨语言
 的正确性在桌面上也验过：同一套 Java/Python 实现在这台机器上和 PC 端 `app/net/identity.py` 双向通过。
 
+手机端在整体产品里的位置（与 PC 的 Windows/Linux × GUI/CLI 放在同一张表上比）见
+[`../docs/feature-matrix.md`](../docs/feature-matrix.md)；这份 README 讲工程结构与待办，那份讲功能点与证据档。
+
 ## 现状
 
 ```

@@ -4,6 +4,9 @@
 断点续传。主窗口就是传输面板（我的设备 + 配对码/二维码 + 附近设备 + 发送进度），
 外面套国际化（gettext）、日志与异常捕获、PyInstaller 打包、Inno Setup 安装包这条链路。
 
+各端（Windows/Linux × GUI/CLI、Android、鸿蒙、浏览器）能做到哪一步、每条结论是哪一档证据给的、
+还欠什么，看 [docs/feature-matrix.md](docs/feature-matrix.md)。这份 README 讲实现与出包，那份讲范围与验收状态。
+
 ## 仓库与分支
 
 | | 位置 | 内容 |
