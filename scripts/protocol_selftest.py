@@ -524,6 +524,36 @@ def phase_chunk_reply_lost(proto: protocol_spec.Protocol, workspace: Path) -> No
             check("体真没落时要照旧失败", "never arrived" in str(exc), str(exc))
         finally:
             gone._once = gone_real
+
+        # The middle of those two facts, and the one the Harmony tunnel actually hit the next day: at the
+        # bottom rung a 4 MiB body was dropped *before* any of it arrived, three times running, and the
+        # fourth write landed. That is a relay hiccup, not a pipe that is too fast, and the first drop
+        # used to be fatal - so a transfer the person had already approved died on a socket that recovered
+        # one second later. Bounded by the attempt budget, which the paragraph above keeps failing honestly.
+        hiccup = dial("PC-Pipe-Hiccup")
+        hiccup.offer(files)
+        hiccup_real = hiccup._once
+        hiccup_put = f"/v1/offer/{hiccup.offer_id}/chunk/{first_file.id}/0"
+        tries = [0]
+
+        def aborts_once(method, path, body, headers, pace_ms=0):
+            if method == "PUT" and path == hiccup_put:
+                tries[0] += 1
+                if tries[0] < 2:
+                    raise ConnectionResetError("the tunnel dropped this body before it landed")
+            return hiccup_real(method, path, body, headers, pace_ms)
+
+        hiccup.pace_ms = PACE_MS_LADDER[-1]
+        hiccup._once = aborts_once
+        try:
+            healed = hiccup.send(files)
+        finally:
+            hiccup._once = hiccup_real
+        check("节奏已在下限、体被管道吐掉一次时：重发那一块，这单照样传完",
+              all(v["ok"] for v in healed["verified"])
+              and hashlib.sha256((root / hiccup.offer_id / first_file.relpath).read_bytes()).hexdigest() == first_file.sha256
+              and tries[0] == 2,
+              [tries[0], [v["id"] for v in healed["verified"] if not v["ok"]]])
     finally:
         service.stop()
 

@@ -523,6 +523,15 @@ class PeerConnection:
                     if progress is not None:
                         progress(file.relpath, index, total)
                     return
+                # "Never got it" is a hiccup, not a verdict. On a pipe already at the bottom rung an
+                # abort says nothing about speed - measured on the Harmony fport tunnel, a 4 MiB body
+                # was dropped three times in a row at 40 ms and the fourth write landed - so spend what
+                # is left of the attempt budget writing it again. A relay that drops every attempt
+                # still raises.
+                if attempt + 1 < retries:
+                    log.warning("chunk %d of %s aborted at the pace floor, writing it again (attempt %d)",
+                                index, file.relpath, attempt + 2)
+                    continue
                 raise
             if status == 200:
                 if progress is not None:
