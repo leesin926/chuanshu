@@ -554,6 +554,40 @@ def phase_chunk_reply_lost(proto: protocol_spec.Protocol, workspace: Path) -> No
               and hashlib.sha256((root / hiccup.offer_id / first_file.relpath).read_bytes()).hexdigest() == first_file.sha256
               and tries[0] == 2,
               [tries[0], [v["id"] for v in healed["verified"] if not v["ok"]]])
+
+        # The third case is the one the sentence above names and neither PC leg covers: the body went
+        # away *and* the one question the sender is allowed to ask got no answer either. A peer nobody can
+        # reach has said nothing about the bytes, so writing that chunk again is not a repair - the phone
+        # sender raises on the first write (#132, the leg the devices call `mute`), and the PC read an
+        # unanswered question as a plain "no" and kept dialling a dead socket until the attempts ran out.
+        mute = dial("PC-Reply-Mute")
+        mute.offer(files)
+        mute_real = mute._once
+        mute_put = f"/v1/offer/{mute.offer_id}/chunk/{first_file.id}/0"
+        mute_puts = [0]
+        mute_asks = [0]
+
+        def deaf(method, path, body, headers, pace_ms=0):
+            if method == "PUT" and path == mute_put:
+                mute_puts[0] += 1
+                raise ConnectionResetError("the body was dropped and nobody is left to ask")
+            if path.endswith("/state") and mute_puts[0]:
+                mute_asks[0] += 1
+                raise ConnectionResetError("the question got no answer either")
+            return mute_real(method, path, body, headers, pace_ms)
+
+        mute.pace_ms = PACE_MS_LADDER[-1]
+        mute._once = deaf
+        try:
+            mute.send(files)
+            check("问不到答案就不重写：那一次写就是最后一次", False, "send returned")
+        except ConnectionResetError as exc:
+            check("问不到答案就不重写：那一次写就是最后一次",
+                  mute_puts[0] == 1 and mute_asks[0] == 1,
+                  [mute_puts[0], mute_asks[0]])
+            check("报出去的还是那一次写自己的错", "nobody is left" in str(exc), str(exc))
+        finally:
+            mute._once = mute_real
     finally:
         service.stop()
 

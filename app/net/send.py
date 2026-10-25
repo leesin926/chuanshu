@@ -518,7 +518,12 @@ class PeerConnection:
                 # The ladder is spent, and this attempt says nothing about the bytes: a relay can drop the
                 # socket after the body landed and before the reply was written. Ask before raising - one
                 # GET is cheap next to a transfer the person already approved.
-                if self._chunk_landed(file, index):
+                landed = self._chunk_landed(file, index)
+                if landed is None:
+                    # Nobody answered. That is the one shape where writing the chunk again has no chance of
+                    # being the repair, so the question is the verdict: spec §4 sends the original error up.
+                    raise
+                if landed:
                     log.warning("chunk %d of %s died on the reply, not the body: the peer already has it", index, file.relpath)
                     if progress is not None:
                         progress(file.relpath, index, total)
@@ -562,18 +567,18 @@ class PeerConnection:
         log.warning("chunk rejected (%s): pacing to %d ms per TLS record for the rest of this peer", reason, self.pace_ms)
         return True
 
-    def _chunk_landed(self, file: OutgoingFile, index: int) -> bool:
-        """Whether the peer says it already holds this chunk.
+    def _chunk_landed(self, file: OutgoingFile, index: int) -> bool | None:
+        """What the peer says about this chunk: True/False once it answered, None when nothing answered.
 
-        Only ever asked after a body whose reply never came. A question that cannot be read is answered
-        as "not landed", so a peer that is truly gone still gets the original failure rather than a
-        transfer that finalize later cannot explain.
+        Only ever asked after a body whose reply never came. Spec §4 sorts these three apart, and the third
+        is not a "no": a peer that cannot be reached tells us nothing about the bytes, and spending the rest
+        of the attempts writing into that socket is what the phones already refuse to do.
         """
         try:
             state = self.state()
         except (http.client.HTTPException, OSError, protocol_spec.ProtocolError) as exc:
             log.warning("could not ask the peer what it holds: %s", exc)
-            return False
+            return None
         for entry in state.get("files", []):
             if str(entry.get("id")) == file.id:
                 return index not in entry.get("missing", [])
