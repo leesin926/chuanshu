@@ -412,9 +412,9 @@ cryptography 41.0.7、**没有 PySide6、没有 zeroconf**）跑，scratch `HOME
 但字体度量与合成器行为在 offscreen 上证明不了（见"界面这层的验证"第一条），所以冻结产物又被拉到 WSLg 的
 **真显示**上跑了一遍（下一段）：那才是导轨宽度这类几何结论的来源。
 
-**真跑过 PyInstaller 的那半边**（#105）：`./build-linux.sh` 在 WSL Ubuntu-24.04 里出了五次产物，
-最后一次（#131，#120 #130 那两条之后）就是仓库里那个 `dist/ChuanShu-0.1.0-linux-x64.tar.gz`
-（70,088,891 字节，一个目录两个可执行）。
+**真跑过 PyInstaller 的那半边**（#105）：`./build-linux.sh` 在 WSL Ubuntu-24.04 里出了六次产物，
+最后一次（#139，#137 那一条之后）就是仓库里那个 `dist/ChuanShu-0.1.0-linux-x64.tar.gz`
+（70,088,524 字节，一个目录两个可执行）。
 在这之前还有一次纯脚本层的实跑（`.probe/linux_build_probe.sh`，一次性探针，不进仓库）：把 `-m PyInstaller`
 与翻译三步换成桩，其余照原样，于是 `--exe-only` 那条分支（真构建没走它）与"解压回来还在 +x"是那次拿到的结论。
 装的东西：`python3-venv`/`python3-pip`、PySide6 6.12.0 跑起来要的 Qt 运行库（`libxcb-*`、`libxkbcommon`
@@ -446,8 +446,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Task all
    好排查；一个 `COLLECT` 里两个入口，Inno 的 `recursesubdirs` 自动把第二个一起收）
 3. `ISCC installer\setup.iss` → `dist\installer\ChuanShu-Setup-0.1.0-x64.exe`
 
-`dist\` 里现成那两套（Windows 的 `ChuanShu\` + 安装包、Linux 的 tar.gz）出在 #131，也就是「分块体落对了但
-回复没来，先问一次 `state`」那两条（#120 #130）之后；上一次出包是 #117 #118。出包这件事历史上连着一个动作
+`dist\` 里现成那两套（Windows 的 `ChuanShu\` + 安装包、Linux 的 tar.gz）出在 #139，也就是「那一问也没人答时
+一次都不重写」（#137）之后——出这一批时本机没有正在跑的实例，所以直接出在正式 `dist\` 上，`freeze_smoke.py`
+与 `.probe/linux_smoke.sh` 各复验了一遍；再往前是 #131（「分块体落对了但回复没来，先问一次 `state`」那两条
+#120 #130），上一次是 #117 #118。出包这件事历史上连着一个动作
 要做：#106 #109 #115 把 TLS 叶换成独立签发的那张以后，**存量那枚钉子对不上**——老包把这台机器的*身份*摘要
 当成了 TLS 叶记下来，新包递出来的是另一张叶，所以对端在握手那一步就停住了——`/v1/pair` 都到不了（#115 量过
 这个形状：把串里的 `f=` 改掉一个字符，钉不住的那一侧在配对之前就拒）。修它的动作是**重新扫一次码或重粘一份

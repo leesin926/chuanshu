@@ -40,7 +40,7 @@ Ed25519 叶、TLS 记录会乱序到达——这三条都是上机才知道的�
 | 发现 | 三条通道：mDNS 优先 → UDP 广播补充 → 扫码/手输兜底。**顺序不可颠倒，也不能只留 mDNS**；TXT 带 `ver/name/fp/ts`，announce 3 s，名单 15 s 过期；**Presence is not trust**（听见 ≠ 信任） |
 | 身份 | 一台设备**两个摘要**：Ed25519 身份密钥只签配对码；套接字递出的是独立签发的 **RSA-2048 自签叶**（`CN=peer_id`，20 年）。信任锚是叶的 SPKI SHA-256；二维码 `f=`、广播前缀、TLS 钉子钉的都是这个叶摘要。两个都**不是** `peer_id` |
 | 端点 | 七个：`GET /v1/hello`、`POST /v1/pair`、`POST /v1/offer`、`GET /v1/state`、`PUT /v1/offer/{id}/chunk/{idx}`、`POST /v1/finalize`、`DELETE /v1/offer/{id}`；鉴权走 `X-Chuanshu-Auth`，分块摘要 `X-Sha256`，声明长度 `X-File-Size` |
-| 分块 | 4 MiB，同一 offer 最多 2 块并行；`hello` 里接收方声明 `chunk_pace_ms`，发送方按节奏写记录（手机侧阶梯 `[0, 15, 40]`）。阶梯到底以后体仍被管道吐掉时，先读一次 `state`：对方说没到，那是**中继打嗝**不是"还太快"（这一档无档可升），发送方用剩下的尝试次数重写那一块；问不到答案或次数用尽才把原错误抛出去。这条**不分端**，因为合同说的是"发送方"：PC 走 #120/#130/#137，手机走共用那半边 `cs-client.uts`（#132）——一块最多三次写，`state` 只在一写的回复没来时问一次。**「问到了答案」才允许重写**：对方说没到是管道打嗝，重写有戏；那一问自己也没人答，就是对面真没了，再写两次只是往一个拨不通的套接字上 dial。PC 在 #137 之前把后者读成了前者（`_chunk_landed` 只有真假两值，问不到就返回"没到"），手机那一半边从 #132 起就是三态的。 |
+| 分块 | 4 MiB，同一 offer 最多 2 块并行；`hello` 里接收方声明 `chunk_pace_ms`，发送方按节奏写记录（手机侧阶梯 `[0, 15, 40]`）。阶梯到底以后体仍被管道吐掉时，先读一次 `state`：对方说没到，那是**中继打嗝**不是"还太快"（这一档无档可升），发送方用剩下的尝试次数重写那一块；问不到答案或次数用尽才把原错误抛出去。这条**不分端**，因为合同说的是"发送方"：PC 走 #120/#130/#137，手机走共用那半边 `cs-client.uts`（#132）——一块最多三次写，`state` 只在一写的回复没来时问一次。**「问到了答案」才允许重写**：对方说没到是管道打嗝，重写有戏；那一问自己也没人答，就是对面真没了，再写两次只是往一个拨不通的套接字上继续写。PC 在 #137 之前把后者读成了前者（`_chunk_landed` 只有真假两值，问不到就返回"没到"），手机那一半边从 #132 起就是三态的。 |
 | 落盘 | 接收根目录**按单建目录**：`接收根目录/<offer_id>/<relpath>`，两端同一个形状。平铺（`接收根目录/<relpath>`）时同一个名字被第二单送到，后一单 accept 里的预分配会把前一单**已经校验过**的字节截断重写（#128）。落点记在台账的 `land` 字段里；旧文档没有这个字段，读到空就按平铺解释——那一单的字节确实躺在平铺位置上 |
 | 恢复 | 状态文件只是提示，**结论只来自 `finalize` 的整文件摘要**；offer id 就是续传柄，接收方的 `missing` 列表决定还缺什么。被摘要推翻的那本台账当场作废：`finalize` 一旦「台账说全有、磁盘说没有」，接收方就抹掉这个文件的分块记录并改口说全缺——否则发送方整单重发会被逐块「已经存过」挡回来，一个字节也写不回去（这一条 #127 在安卓与鸿蒙模拟器上各量到一次，原文 `.probe/a_127.txt`、`.probe/h_127.txt`） |
 | 限额 | 一次 offer 2000 个文件、名字 255 字节、路径深度 16、offer 等待 60 s、会话闲置 900 s、offer 闲置 3600 s、配对码 120 s（6 位数字，口令 8 位大写+数字） |
@@ -57,7 +57,7 @@ Ed25519 叶、TLS 记录会乱序到达——这三条都是上机才知道的�
 |---|---|---|---|---|
 | 收发双向（7 端点、断点续传、路径清洗、多文件带目录） | `门禁`+`模拟器`+`真机` | `门禁`+`真机` | `门禁` | `门禁`+`真机` |
 | 发：节奏已在 40 ms 下限时体仍被管道吐掉 → 先问 `state`，对方说没到就重写那一块（#130，不判死整单） | `门禁`+`模拟器` | `门禁`+`模拟器` | `门禁` | `门禁` |
-| 发：上面那一次 `state` 问不到答案时**一次都不重写**、当场抛原错误（#137，合同 §4 后半句的前一种；手机那半边同一支的模拟器腿见 §3.2/§3.3 的 `mute`） | `门禁` | `门禁` | `门禁` | `门禁` |
+| 发：上面那一次 `state` 问不到答案时**一次都不重写**、当场抛原错误（#137，合同 §4 后半句的前一种；手机那半边同一支的模拟器腿见 §3.2/§3.3 的 `mute`） | `门禁` | `门禁` | `门禁` | `门禁`（这一支的证据是 `protocol_selftest.py` 那两条腿，跑在源码上；#139 那一批产物把它带进了两个包里，包内冒烟证的是"跑得起来、四条 CLI 腿还在"，不是这一支本身） |
 | 接收确认（谁在拨、几个文件、60/65 s 内必须回答） | `门禁` | `门禁` | `门禁` | `门禁` |
 | 落盘记录持久化（`arrivals.json`，重启后仍按磁盘真相说话） | `门禁` | `门禁` | `门禁` | `门禁` |
 | 固定对端管理 / 撤销（`unpair`） | `门禁` | `门禁` | — | `门禁` |
@@ -68,7 +68,7 @@ Ed25519 叶、TLS 记录会乱序到达——这三条都是上机才知道的�
 | 防火墙规则写入 | 安装器（per-exe，`netsh`，先清后放；本机实测过装完的判定） | 同左 | 不代跑：`fix_commands()` 给出 `firewall-cmd`/`ufw` 那两条命令，界面与 CLI 只打印 | 同左 |
 | 无边框自绘标题栏 / 深浅主题 / 托盘 / 开机自启 / 关闭询问 | `门禁`+`截图`+`真机`(窗口像素验收 #119) | — | `截图`(WSLg 实测)；托盘随桌面环境降级 | — |
 | i18n 8 语言（zh_CN/en/ja/ko/de/fr/es/ru）+ 错误码双语文案 | `门禁` | `门禁` | `门禁` | `门禁` |
-| 打包产物 | `exe` + Inno 安装包，`门禁`(freeze_smoke 复验) | 同一份 | `tar.gz`(0.1.0-linux-x64) | 同一份 |
+| 打包产物 | `exe` + Inno 安装包，`门禁`(freeze_smoke 复验)；#139 那一批出在 #137 之后 | 同一份 | `tar.gz`(0.1.0-linux-x64)，`.probe/linux_smoke.sh` 在 WSLg 真屏复验 | 同一份 |
 
 CLI 的八个子命令（[app/cli.py](../app/cli.py)）：`self`（本机身份与配对串）、`receive`、`send`、
 `peers`（发现的名单）、`pins`（固定的对端）、`firewall`（读平台判定）、`unpair`、`pair-code`。
@@ -203,13 +203,17 @@ py -X utf8 scripts/freeze_smoke.py          # 打完的 exe 冒烟
 
 ### PC（Linux / WSL）
 ```powershell
-wsl -d Ubuntu-24.04 -- bash /mnt/e/wowo3/scripts/linux_selftest.py   # 一次调用要跑完（/tmp 随调用消失）
-bash build-linux.sh                                                   # → dist/ChuanShu-0.1.0-linux-x64.tar.gz
+MSYS_NO_PATHCONV=1 wsl -d Ubuntu-24.04 -- bash /mnt/e/wowo3/scripts/linux_selftest.py  # 27 条断言；一次调用要跑完（/tmp 随调用消失）
+bash build-linux.sh                                                                    # 直接在 /mnt/e 里建——只当脚本门，不当产物
 ```
+最后那一条会和 Windows 的 `build.ps1` 抢同一个 `dist/ChuanShu`（两个 PyInstaller 都往那儿写，`--clean`
+开机先删），所以两条不许同时在跑；真正要出货的 Linux 包走下面那个 ext4 脚本。
+从 git-bash 调 `wsl` 时 `MSYS_NO_PATHCONV=1` 是必须的：不带它，`/mnt/e/...` 会被改写成
+`C:\...\git\mnt\e\...`，命令当场报 No such file，而外层 shell 照样退 0（2026-10-26 踩过一次，别信 rc）。
 ```bash
-# 真屏那半（WSLg）
-.probe/linux_build_real.sh   # PyInstaller 必须在 ext4，不能在 /mnt/e
-.probe/linux_smoke.sh
+# 产物那半：PyInstaller 必须在 ext4，不能在 /mnt/e
+.probe/linux_build_real.sh   # 拷进 $HOME/csbuild 建，tar.gz 拷回 dist/
+.probe/linux_smoke.sh        # 冻结包：CLI 四条腿 + WSLg 真屏那一趟
 .probe/linux_receive.sh
 ```
 
@@ -299,10 +303,11 @@ E:\android-sdk\emulator\emulator.exe -avd chuanshu34b -no-window -no-audio -no-b
    同一条 `putChunk`）。判据不在"停下得快不快"，在**对端只看见一个写块头**：#132 之后 `status == 0` 那一支会先
    问一次 `state`、问到"没到"还要重写那一块，取消如果被误读成"回复没来"，账本里就会多出第二次写块。两条都 `PASS`，
    原文 `.probe/a_124.txt`、`.probe/h_124.txt`，已记进 §3.2 / §3.3 取消那两行。
-7. **重出 PC 包** — `dist\ChuanShu` + 安装包 + `dist/ChuanShu-0.1.0-linux-x64.tar.gz` 还是 #131 那一批，
-   不含 #137 那一句（`_chunk_landed` 变三态，问不到答案就当场抛原错误）。Linux 那半边可以直接在 WSL 里重跑
-   `build-linux.sh`，不碰用户的东西；Windows 那半边要么请用户关掉正在跑的 `ChuanShu.exe`（它在锁 `dist\ChuanShu`），
-   要么先出到 scratch distpath 过 `freeze_smoke.py`，安装包仍然由用户自己双击装。
+7. ~~**重出 PC 包**~~（#139 已做）— 跑这次时本机没有正在跑的 `ChuanShu.exe`，43720 也空着，所以直接出在正式
+   `dist\` 上：`build.ps1 -Task all` → `dist\ChuanShu\ChuanShu.exe` + `dist\installer\ChuanShu-Setup-0.1.0-x64.exe`，
+   `freeze_smoke.py` 全过；Linux 那半边 `.probe/linux_build_real.sh`（在 ext4 里建，不碰 `dist/ChuanShu`）+
+   `.probe/linux_smoke.sh` 在 WSLg 真屏上 `ALL PASS`（第二次按下才亮出 27 行二维码定位点，与 #118 记的那条一致）。
+   这一批含 #137。**安装包还是由用户自己双击装**——写防火墙规则那一步是安装器干的，属于本机外的动作。
 8. **`mute` 那一支报哪句话**（#138，口径题不是代码题）——手机/H5 报那一问自己的错，PC 按合同字面报原来那次写的错，
    两边"一次都不重写"都做到了。要么把合同那句写成「抛掉这一块的失败（哪一支问不到就报哪一支）」并让 PC 跟上，
    要么维持字面、把手机那半边改成报写本身的错。**倾向第一种**（对人说得更准，而且不用重跑两台设备那四条腿），
