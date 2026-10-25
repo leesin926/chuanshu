@@ -71,9 +71,9 @@ export class LocalPeer {
 	served: string = ''
 	port: number = TRANSPORT_PORT
 	/** How slowly a sender should write a body larger than one TLS record at this device, in milliseconds
-	 *  per 4 KiB record. 0 (or absent from the answer) means "as fast as you can". A Harmony peer measured
-	 *  needing 15: below that a 4 MiB chunk arrives whole but wrong, and the receiving process can die on
-	 *  the attempt; see protocol/spec.md §4. */
+	 *  per 4 KiB record. 0 (or absent from the answer) means "as fast as you can". A Harmony peer needs 40:
+	 *  faster than that a 4 MiB chunk arrives with the right byte count and the wrong content, or the
+	 *  connection dies mid-body; see protocol/spec.md §4. */
 	chunkPaceMs: number = 0
 }
 

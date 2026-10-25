@@ -1292,9 +1292,15 @@ function declaredOf(head: string): number {
 }
 
 /** Where the header block ends: the index of the \r\n\r\n that the body starts one past, or -1 while
- *  the headers are still arriving. */
-function findHeadEnd(acc: Uint8Array): number {
-	for (let i = 3; i < acc.length; i++) {
+ *  the headers are still arriving. `from` is the offset the header block starts at, and it is not a
+ *  micro-optimisation - a body record can arrive before the one carrying its own request line, and a
+ *  \r\n\r\n inside such a body is not the end of anything the server should parse. */
+function findHeadEnd(acc: Uint8Array, from: number): number {
+	let i = from + 3
+	if (i < 3) {
+		i = 3
+	}
+	for (; i < acc.length; i++) {
 		if (acc[i - 3] == 0x0d && acc[i - 2] == 0x0a && acc[i - 1] == 0x0d && acc[i] == 0x0a) {
 			return i - 3
 		}
@@ -1599,7 +1605,7 @@ function httpRun(
 		try {
 			acc = cat(acc, new Uint8Array(info.message))
 			if (headEnd < 0) {
-				headEnd = findHeadEnd(acc)
+				headEnd = findHeadEnd(acc, 0)
 				if (headEnd < 0) {
 					return
 				}
@@ -2320,31 +2326,33 @@ function onBytes(c: Conn, info: socket.SocketMessageInfo): void {
 		if (c.declared < 0) {
 			const accLen = c.acc.length
 			const merged = cat(c.acc, chunk)
-			const at = findHeadEnd(merged)
+			/* A body record can arrive before the record carrying its own request line. This is not the
+			 *  sender writing backwards - http.client writes the header block and the body as two SSL_writes
+			 *  on one ordered stream - but the read pump handing the second one to JavaScript first, which
+			 *  the per-record log in this file caught on the wire (383 body bytes sitting in front of a
+			 *  217-byte request line, and the request never answered). So the header is located by its
+			 *  request line rather than by position 0, and the search for the end of the header block
+			 *  starts there instead of at the front of the buffer: a \r\n\r\n in the early body is not the
+			 *  end of anything, and parsing up to it produced a request with no head and a body made of
+			 *  the wrong bytes. Whatever came in front of the request line is handed back as the body it
+			 *  always was. */
+			c.recStarts.push(accLen)
+			let start = -1
+			for (let i = 0; i < c.recStarts.length; i++) {
+				if (startsRequest(c.recStarts[i], merged)) {
+					start = c.recStarts[i]
+					break
+				}
+			}
+			const at = start < 0 ? -1 : findHeadEnd(merged, start)
 			if (at < 0) {
 				if (merged.length > HEAD_HUNT_MAX) {
 					note('请求头一直没来：已经 ' + merged.length.toString() + ' 字节')
 					closeConn(c)
 					return
 				}
-				c.recStarts.push(accLen)
 				c.acc = merged
 				return
-			}
-			/* A body record can arrive before the record carrying its own request line. This is not the
-			 *  sender writing backwards - http.client writes the header block and the body as two SSL_writes
-			 *  on one ordered stream - but the read pump handing the second one to JavaScript first, which
-			 *  the per-record log in this file caught on the wire (383 body bytes sitting in front of a
-			 *  217-byte request line, and the request never answered). So the header is located by its
-			 *  request line rather than by position 0, and whatever came in front of it is handed back as
-			 *  the body it always was. */
-			c.recStarts.push(accLen)
-			let start = 0
-			for (let i = 0; i < c.recStarts.length; i++) {
-				if (startsRequest(c.recStarts[i], merged)) {
-					start = c.recStarts[i]
-					break
-				}
 			}
 			c.head = textOfBytes(merged.subarray(start, at))
 			const want = declaredOf(c.head)

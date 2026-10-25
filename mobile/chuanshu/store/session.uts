@@ -572,9 +572,12 @@ function receiverSelf(): LocalPeer {
 		made.served = servedFingerprint()
 		made.port = TRANSPORT_PORT
 		// Measured on this platform's TLS server: a 4 MiB body written faster than one 4 KiB record
-		// every 15 ms arrives whole and wrong, and the process can die on the attempt. Declaring it in
-		// /v1/hello is what keeps the sender from finding that out the hard way, once per transfer.
-		made.chunkPaceMs = 15
+		// every 40 ms either arrives whole and wrong (full speed) or dies mid-body (15 and 25 ms, both
+		// inside 1.5 s, on 2026-10-25). Declaring it in /v1/hello is what keeps the sender from finding
+		// that out the hard way, once per transfer. The number was measured on the emulator over
+		// `hdc fport`; the real phone has never been run at 40, so a phone that turns out to hold 15 on
+		// the LAN would be allowed to say so - until then this is the only floor with two passes behind it.
+		made.chunkPaceMs = 40
 		recvSelf = made
 	}
 	return recvSelf!
