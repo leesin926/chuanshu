@@ -13,6 +13,22 @@
 			<text class="badge" v-if="s.mocked">对端是模拟的</text>
 		</view>
 
+		<!-- 合同 §1 里身份五项中唯一「用户可改」的就是 name，所以这一端也得给一个能改它的地方。
+		     草稿和已生效的名字是两个状态：空名字被拒时，头像那行仍显示旧名字，输入框留着用户刚写的字。 -->
+		<view class="card16 card">
+			<view class="setrow">
+				<image class="icoMe" src="/static/icons/user-94a3b8.png"></image>
+				<text class="setlabel">设备名</text>
+				<text class="setval">{{ s.selfName }}</text>
+			</view>
+			<view class="row mt8 wrap">
+				<input class="input col1" v-model="s.nameDraft" placeholder="这台设备对别人叫什么" />
+				<button class="mini" @click="saveName">保存</button>
+			</view>
+			<text class="sub" v-if="s.nameMsg != ''">{{ s.nameMsg }}</text>
+			<text class="note">改名只是换个称呼：对端固定的是这台设备的密钥指纹，不会因为改名需要重新配对。名字存进本机的 settings.json，重启后还是它。</text>
+		</view>
+
 		<!-- 设计图这一页是三张卡（1 行 / 2 行 / 2 行），每行都是「灰线性图标 + 名字 + 右端值 + ›」。
 		     行内容按这一端真实有的功能排：账号、主题、通知这些这一端没有的东西不占行，免得做成点了没反应的开关。 -->
 		<view class="card16 card">
@@ -137,7 +153,7 @@
 </template>
 
 <script setup lang="uts">
-	import { s, initSession, refreshReceive, copyPairing, onRotatePairing, onDisconnect } from '@/store/session.uts'
+	import { s, initSession, refreshReceive, copyPairing, onRotatePairing, onDisconnect, renameSelf } from '@/store/session.uts'
 	// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
 	import { onRecvListen, onRecvListenStop } from '@/store/session.uts'
 	// #endif
@@ -154,6 +170,10 @@
 	/* 模板只点本页的函数：只被模板引用的 store 动作会被摇树丢掉，编译报“找不到名称 invoke”。 */
 	function copyPair() {
 		copyPairing()
+	}
+
+	function saveName() {
+		renameSelf(s.nameDraft)
 	}
 
 	function rotatePair() {

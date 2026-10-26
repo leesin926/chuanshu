@@ -4,7 +4,7 @@
  *  Every call leaves the main thread. The protocol itself lives in ../cs-client.uts and is the
  *  same code the browser runs; this file only moves bytes, which is why the two halves are able to
  *  disagree about what has been proven and agree about what is on the wire. */
-import { TRANSPORT_PORT, DISCOVERY_PORT, ANNOUNCE_INTERVAL_S, MDNS_SERVICE_SHORT } from '../cs-protocol.uts'
+import { TRANSPORT_PORT, DISCOVERY_PORT, ANNOUNCE_INTERVAL_S, MDNS_SERVICE_SHORT, nameWithDefault } from '../cs-protocol.uts'
 import Build from 'android.os.Build'
 import Activity from 'android.app.Activity'
 
@@ -30,7 +30,7 @@ import {
  *  browser's and the phone's copy of cs-protocol.uts literally the same file. */
 export {
 	TRANSPORT_PORT, PAIR_CODE_DIGITS, PASSPHRASE_CHARS, PAIR_CODE_STATIC, SESSION_IDLE_S,
-	codeReject, passReject, digitsOnly, formatSize, parsePairUrl
+	codeReject, passReject, nameReject, nameWithDefault, digitsOnly, formatSize, parsePairUrl
 } from '../cs-protocol.uts'
 export {
 	TransferOptions, PeerSession, connectPeer, sendFiles, cancelSend,
@@ -70,9 +70,45 @@ function ioFail(code: string, detail: string, cb: ReplyCb): void {
 	})
 }
 
+/** §1: the name this device answers with is the user's once they have given one, and the hardware's own
+ *  word until then. The composition is `cs-protocol.uts`'s so the phone and the browser agree on it
+ *  literally; `CsIdentity` therefore hands out the two halves separately. */
+function myName(): string {
+	return nameWithDefault(CsIdentity.storedName(), CsIdentity.hardwareName())
+}
+
+/** Keep a name the user chose. `cb` gets "" when it stuck, otherwise why not - and nothing is refreshed
+ *  until it has, because a screen that shows a name the private directory refused to keep is a screen
+ *  that will show the old one after a restart. */
+export function deviceNameSave(name: string, cb: (message: string) => void): void {
+	const kept = name.trim()
+	onIo(function () {
+		if (!CsIdentity.saveName(kept)) {
+			onMain(function () {
+				cb('设备名没写进去：这台机器给不出可写的私有目录')
+			})
+			return
+		}
+		// The two places this phone says its own name both read a copy taken when they opened, so a rename
+		// has to reach them or the peer keeps hearing the old one until the app restarts.
+		if (recvSelf != null) {
+			recvSelf!.name = kept
+		}
+		if (discOpen) {
+			discName = kept
+		}
+		onMain(function () {
+			cb('')
+		})
+	})
+}
+
 export function selfInfo(cb: (peerId: string, name: string, fingerprint: string) => void): void {
 	onIo(function () {
 		const text = CsIdentity.self()
+		// Read off the main thread with the rest of the identity: the name has to be looked up in
+		// `settings.json`, and a page that waits for a file is a page that can freeze.
+		const name = myName()
 		onMain(function () {
 			const made = JSON.parse(text) as UTSJSONObject | null
 			if (made == null) {
@@ -84,7 +120,7 @@ export function selfInfo(cb: (peerId: string, name: string, fingerprint: string)
 				cb('', why, '')
 				return
 			}
-			cb(made!.getString('peer_id', ''), made!.getString('name', ''), made!.getString('fingerprint', ''))
+			cb(made!.getString('peer_id', ''), name, made!.getString('fingerprint', ''))
 		})
 	})
 }
@@ -617,7 +653,7 @@ export function receiveStart(cb: (ok: boolean, message: string) => void): void {
 		}
 		const self = new LocalPeer()
 		self.peerId = made!.getString('peer_id', '')
-		self.name = made!.getString('name', '')
+		self.name = myName()
 		self.fingerprint = made!.getString('fingerprint', '')
 		// The other number for this machine: the RSA-2048 leaf CsServe answers with. A peer that dials this
 		// phone pins that digest, so hello has to say it (spec §3).
@@ -961,7 +997,7 @@ export function discoverStart(cb: (ok: boolean, message: string) => void): void 
 			return
 		}
 		discId = made!.getString('peer_id', '')
-		discName = made!.getString('name', '')
+		discName = myName()
 		// Spec §2: a candidate is verified by the digest read off the live TLS session, and this socket
 		// answers under the RSA leaf rather than the Ed25519 identity - so the announcement that has to be
 		// matchable is the leaf's prefix.

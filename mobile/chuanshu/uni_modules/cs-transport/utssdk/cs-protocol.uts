@@ -604,6 +604,23 @@ export function passReject(secret: string): string {
 	return ''
 }
 
+/** Why this name cannot be used, or "" when it can. §1 puts no shape on `name` and the PC accepts
+ *  whatever the user types (it only trims, and an empty answer means "nothing changed"), so a phone
+ *  that capped the length would be the odd one out - the one thing both ends have to agree on is that
+ *  a device cannot announce itself as nobody. */
+export function nameReject(raw: string): string {
+	return raw.trim() == '' ? '名字不能是空的：这台设备对别人总要有个称呼' : ''
+}
+
+/** §1: the name belongs to the user, and only once they have given one. Until then each platform falls
+ *  back on what the hardware calls itself (Android's `Build.MODEL`, Harmony's `marketName`, the browser
+ *  this page is open in). The fallback is a default, so it is never written into `settings.json` - a
+ *  person who resets the name gets the hardware's own word back, not a fossil of the last one. */
+export function nameWithDefault(stored: string, fallback: string): string {
+	const trimmed = stored.trim()
+	return trimmed == '' ? fallback : trimmed
+}
+
 function hexValue(c: string): number {
 	return HEX_DIGITS.indexOf(c.toLowerCase())
 }

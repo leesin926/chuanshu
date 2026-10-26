@@ -47,6 +47,11 @@ const RX_STATE_FILE = 'chuanshu-receiver-offers.json'
 /** The files that passed, kept apart from the offers because an offer is a transaction that closes and
  *  a receipt is a fact that stays. See #110: 收到的文件 has to survive the app ending. */
 const RX_ARRIVALS_FILE = 'chuanshu-receiver-arrivals.json'
+/** §1's own file. Of everything in the identity table only `name` is the user's to change, and the
+ *  contract names where it lives - so this one keeps the contract's spelling rather than the
+ *  `chuanshu-*` prefix every other file here carries. The directory is already this bundle's own. */
+const SETTINGS_FILE = 'settings.json'
+const NAME_KEY = 'device_name'
 const TRACE_FILE = 'chuanshu-serve.log'
 /** DER for SubjectPublicKeyInfo{ ed25519 OID, 32-byte key }. The pair message carries only the raw 32
  *  bytes, so this is what has to go back in front of them before the digest is taken. */
@@ -621,7 +626,19 @@ function peerIdOf(): string {
 	return id
 }
 
+/** §1's name for this device: what the user wrote into `settings.json`, or the hardware's own word until
+ *  they do. The composition is `cs-protocol.uts::nameWithDefault`, restated here in two lines because an
+ *  ArkTS plugin file cannot import a sibling `.uts` (see the header) - the same reason `TRANSPORT_PORT`
+ *  is restated above. A rename is not a re-key: the fingerprint a peer pinned says nothing about this
+ *  string, so the name may change as often as the user likes and nothing has to be re-paired. */
 function deviceName(): string {
+	const written = readTextFile(SETTINGS_FILE)
+	if (written != '') {
+		const kept = fieldOf(written, NAME_KEY).trim()
+		if (kept != '') {
+			return kept
+		}
+	}
 	const model = deviceInfo.marketName != '' ? deviceInfo.marketName : deviceInfo.productModel
 	return model == '' ? '鸿蒙手机' : '手机 · ' + model
 }
@@ -2693,6 +2710,22 @@ export function peerIdText(): string {
 
 export function deviceNameText(): string {
 	return deviceName()
+}
+
+/** Keep the name the user chose. `cb` gets "" when the write stuck.
+ *
+ *  Only the file is this end's: on Harmony the state machine runs beside the page, so the copies of the
+ *  name that hello and the announcement carry live in the store, and the store refreshes them once it
+ *  hears that the write did. */
+export function deviceNameSave(name: string, cb: (message: string) => void): void {
+	const body = new UTSJSONObject()
+	body[NAME_KEY] = name.trim()
+	try {
+		writeBytesOfFile(SETTINGS_FILE, bytesOf(JSON.stringify(body)))
+		cb('')
+	} catch (e) {
+		cb('设备名没写进去：' + errText(e))
+	}
 }
 
 export function identityFingerprint(): string {

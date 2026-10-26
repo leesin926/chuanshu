@@ -24,7 +24,7 @@ import {
 	BufferCallback,
 	HexCallback
 } from '@/uni_modules/cs-transport/utssdk/cs-client.uts'
-import { TRANSPORT_PORT, PAIR_CODE_DIGITS, PASSPHRASE_CHARS, SESSION_IDLE_S, codeReject, passReject, digitsOnly, formatSize, parsePairUrl } from '@/uni_modules/cs-transport/utssdk/cs-protocol.uts'
+import { TRANSPORT_PORT, PAIR_CODE_DIGITS, PASSPHRASE_CHARS, SESSION_IDLE_S, codeReject, passReject, nameReject, digitsOnly, formatSize, parsePairUrl } from '@/uni_modules/cs-transport/utssdk/cs-protocol.uts'
 import { selfInfo, signPair, request, prepareFile, readChunk, digestHex, transportMocked, transportNote, lanCheck } from '@/uni_modules/cs-transport'
 // #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
 import { pinnedFor, unpinPeer, receiveStart, receiveStop, receiveStatus } from '@/uni_modules/cs-transport'
@@ -33,6 +33,12 @@ import { pinnedFor, unpinPeer, receiveStart, receiveStop, receiveStatus } from '
 /** Only Android gets a mechanism for §6; Harmony and iOS have to fall back to the sentence, so the two
  *  names below exist on one platform and are reached from a branch that compiles away on the others. */
 import { receiveHoldStart, receiveHoldStop } from '@/uni_modules/cs-transport'
+// #endif
+// #ifdef APP-ANDROID || APP-HARMONY || WEB
+/** §1's one changeable identity field. Every target that still ships keeps it where the contract points -
+ *  a `settings.json` beside the key - and each one refreshes the copies of the name it owns, which is why
+ *  the store calls this rather than letting a page write the file. iOS is out of scope, so it has no half. */
+import { deviceNameSave } from '@/uni_modules/cs-transport'
 // #endif
 // #ifdef APP-ANDROID || APP-HARMONY
 /** Only the phones have a request that can be forty seconds into a body when the user presses 取消: both
@@ -161,6 +167,8 @@ import { storePrepareFile, storeWriteAt } from '@/uni_modules/cs-transport'
 export type SessionState = {
 	/* 本机 */
 	selfName: string
+	nameDraft: string
+	nameMsg: string
 	selfId: string
 	selfFpShort: string
 	mocked: boolean
@@ -249,6 +257,8 @@ export type SessionState = {
 /** The screen reads this object; nothing else has to be told to repaint. */
 export const s = reactive({
 	selfName: '读取中…',
+	nameDraft: '',
+	nameMsg: '',
 	selfId: '',
 	selfFpShort: '',
 	mocked: false,
@@ -1806,6 +1816,9 @@ export function initSession() {
 	selfInfo(function (peerId: string, name: string, fp: string): void {
 		s.selfId = peerId
 		s.selfName = name
+		// The draft starts as whatever this machine answered with, so the row shows the name the network
+		// already reads rather than an empty box that would be saved as a rename by accident.
+		s.nameDraft = name
 		// A device whose Ed25519 provider is missing has no fingerprint to show, and saying so here is
 		// better than a blank line the user reads as "still loading".
 		s.selfFpShort = fp == '' ? '读不出来：这台机器做不了本机密钥' : fp.substring(0, 16) + '…'
@@ -2212,4 +2225,51 @@ export function pickPeer(at: number): void {
 	syncSendable()
 	log('已选中 ' + s.discNames[at] + '（' + host + ':' + port.toString() +
 		'），照着它屏幕上的配对码和密码点连接')
+}
+
+/* ------------------------------------------------------------------ 这台设备的名字 */
+
+/** §1: of the five things that make up an identity, `name` is the one a person may change - and it is
+ *  what the rest of the network reads this device as: the pair body, our own hello, every announcement,
+ *  and the `from_name` on each manifest sent from here. The shape of the answer is the shared rule
+ *  (`cs-protocol.uts::nameReject`), so the browser self-check proves the same sentence the phone shows.
+ *
+ *  Nothing here re-keys or re-pairs. A peer pinned a digest of the key, and the key has not moved, so a
+ *  renamed device is still the device its list already trusts. */
+export function renameSelf(raw: string): void {
+	const why = nameReject(raw)
+	if (why != '') {
+		s.nameMsg = why
+		return
+	}
+	const kept = raw.trim()
+	deviceNameSave(kept, function (err: string): void {
+		if (err != '') {
+			// The screen keeps the old name: showing one the private directory refused to hold would show
+			// the other one again after a restart.
+			s.nameMsg = err
+			return
+		}
+		applySelfName(kept)
+		s.nameMsg = '已保存：对端在 hello、广播和清单上读到的都是它'
+		log('设备名改成 ' + kept + '：对端在 hello、广播和清单上读到的都是它')
+	})
+}
+
+/** Say the new name everywhere this end already said the old one. The copies are not in the same place on
+ *  every target, which is why this is branches rather than one rule the store pretends is uniform:
+ *  - Android and the browser own their self inside the plugin, and `deviceNameSave` there has already
+ *    rewritten the listener's and the announcement's copy before answering;
+ *  - on Harmony the state machine runs beside this page, so the hello copy and the announcement string
+ *    are the store's to refresh. Dropping `recvSelf` is enough: the next request rebuilds it off
+ *    `deviceNameText()`, which now reads what was just written. */
+function applySelfName(kept: string): void {
+	s.selfName = kept
+	s.nameDraft = kept
+	// #ifdef APP-HARMONY
+	recvSelf = null
+	if (discOpen) {
+		discName = kept
+	}
+	// #endif
 }

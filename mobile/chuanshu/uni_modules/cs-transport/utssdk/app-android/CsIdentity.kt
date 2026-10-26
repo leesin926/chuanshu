@@ -47,6 +47,11 @@ object CsIdentity {
     // A finished offer is left out of the resume ledger on purpose, so the receipts need their own file
     // or 收到的文件 only ever remembers this process (task #110).
     private const val RECEIVER_ARRIVALS_FILE = "chuanshu-receiver-arrivals.json"
+    // §1's own file: of everything in the identity table, `name` is the one field the user may change,
+    // and the contract names the place it lives - so this is `settings.json`, not another `chuanshu-*`.
+    // The directory is already this app's private one, exactly like the PC's user directory.
+    private const val SETTINGS_FILE = "settings.json"
+    private const val NAME_KEY = "device_name"
 
     private class Self(val peerId: String, val seed: ByteArray, val spki: ByteArray)
 
@@ -113,19 +118,35 @@ object CsIdentity {
         return made
     }
 
-    private fun deviceName(): String {
+    /** What the hardware calls itself - a default, not this device's name. §1 leaves the composition
+     *  ("the user's word, or this until they give one") to `cs-protocol.uts`, so the two halves are
+     *  handed out separately rather than merged here, where the rule would be a third copy of it. */
+    fun hardwareName(): String {
         val maker = Build.MANUFACTURER.orEmpty()
         val model = Build.MODEL.orEmpty()
         val named = if (model.contains(maker, true)) model else "$maker $model".trim()
         return if (named.isEmpty()) "Android 手机" else "手机 · $named"
     }
 
-    /** {"peer_id","name","fingerprint"} - or {"error"} if this device cannot make an Ed25519 key. */
+    /** The name the user gave this phone, or "" when they have not given one yet. A file that cannot be
+     *  read is the same answer as a file that is not there: the device falls back on its hardware name
+     *  rather than announcing itself as nobody. */
+    fun storedName(): String = try {
+        val raw = readText(SETTINGS_FILE)
+        if (raw.isEmpty()) "" else JSONObject(raw).optString(NAME_KEY, "")
+    } catch (e: Throwable) {
+        ""
+    }
+
+    fun saveName(name: String): Boolean =
+        writeText(SETTINGS_FILE, JSONObject().put(NAME_KEY, name).toString())
+
+    /** {"peer_id","fingerprint"} - or {"error"} if this device cannot make an Ed25519 key. The name is
+     *  not in here: every caller of this is on the UTS side, where §1's rule lives. */
     fun self(): String = try {
         val me = loadOrMake()
         JSONObject()
             .put("peer_id", me.peerId)
-            .put("name", deviceName())
             .put("fingerprint", fingerprintOf(me.spki))
             .toString()
     } catch (e: Throwable) {

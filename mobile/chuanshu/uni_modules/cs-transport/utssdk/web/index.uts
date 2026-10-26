@@ -16,7 +16,9 @@ import {
 	SESSION_IDLE_S,
 	OFFER_IDLE_S,
 	OFFER_WAIT_S,
-	unescapeChunk
+	unescapeChunk,
+	nameReject,
+	nameWithDefault
 } from '../cs-protocol.uts'
 import {
 	BufferCallback,
@@ -188,6 +190,7 @@ function b64(bytes: Uint8Array): string {
 /* ------------------------------------------------------------------ our own identity */
 
 let myPeerId = ''
+let myName = ''
 let myPub = new Uint8Array(0)
 let myRaw = new Uint8Array(32)
 let myFp = ''
@@ -207,10 +210,28 @@ function ensureSelf(): void {
 	myFp = hexOf(sha256Bytes(spki))
 }
 
+/** §1's fallback on this target: a browser tab has no hardware name, so the stand-in for
+ *  `Build.MODEL` is the browser itself. */
+function hardwareName(): string {
+	const info = uni.getSystemInfoSync()
+	return '浏览器 · ' + info.browserName
+}
+
+/** The name this page answers with - the user's once they have given one. It lives in this module rather
+ *  than in a file because the browser target has no private directory: like the stand-in keypair above,
+ *  it is born with the page and goes with it, which is why nothing here can be proven about a restart. */
+function myNameText(): string {
+	return nameWithDefault(myName, hardwareName())
+}
+
+export function deviceNameSave(name: string, cb: (message: string) => void): void {
+	myName = name.trim()
+	cb('')
+}
+
 export function selfInfo(cb: (peerId: string, name: string, fingerprint: string) => void): void {
 	ensureSelf()
-	const info = uni.getSystemInfoSync()
-	cb(myPeerId, '浏览器 · ' + info.browserName, myFp)
+	cb(myPeerId, myNameText(), myFp)
 }
 
 /** The page has to say plainly which peer it is talking to, so the answer lives next to the
@@ -857,10 +878,9 @@ function nowSeconds(): number {
 
 function receiverSelf(): LocalPeer {
 	ensureSelf()
-	const info = uni.getSystemInfoSync()
 	const self = new LocalPeer()
 	self.peerId = myPeerId
-	self.name = '浏览器 · ' + info.browserName
+	self.name = myNameText()
 	self.fingerprint = myFp
 	self.port = TRANSPORT_PORT
 	return self
@@ -1682,6 +1702,24 @@ export function receiveSelfReport(): string {
 	resolveOffer(qBox, qId3, true, recvPrepare, recvDrop)
 	askOn(qBox, SIM_PEER_ID, 'DELETE', '/v1/offer/' + qId3, '', qToken, new ArrayBuffer(0), '')
 	check('对方取消过的单，重发清单不再打扰用户', codeOfReply(qAsk(qManifest3)) == 'OFFER_UNKNOWN')
+
+	// 15. spec §1: of the five identity fields, `name` is the one the user owns. Hello answers with it, so
+	// the leg that matters is not that a string got stored but that the word this device says on the wire
+	// is the stored one - and that an empty attempt never reaches the storage at all.
+	const helloName: () => string = (): string => {
+		const said = jsonOf(ask('GET', '/v1/hello', '', new ArrayBuffer(0), ''))
+		return said == null ? '' : said!.getString('name', '')
+	}
+	check('没改名时 hello 的名字就是这端自己的称呼', helloName() == hardwareName())
+	check('空名字按规则拒掉，压根不给写', nameReject('') != '' && nameReject('   ') != '' && nameReject('小明') == '')
+	check('写过的名字顶掉默认，空的才回落', nameWithDefault(' 存过的 ', '默认') == '存过的' && nameWithDefault('', '默认') == '默认')
+	let savedMsg = '没听到回答'
+	deviceNameSave('  小字的手机  ', function (why: string): void { savedMsg = why })
+	check('改名存进去时把两端空格去掉', savedMsg == '' && helloName() == '小字的手机')
+	// The suite has just renamed the device the demo screen speaks as, so the name goes back: a card below
+	// this report must show the browser's own word, not a leftover from a test.
+	deviceNameSave('', function (why: string): void {})
+	check('改完收回，hello 又回落到这端自己的称呼', helloName() == hardwareName())
 
 	out.push(fail == 0 ? '接收自检 ' + pass.toString() + ' 项全部通过' : '接收自检失败 ' + fail.toString() + ' 项，通过 ' + pass.toString() + ' 项')
 	return out.join('\n')

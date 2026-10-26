@@ -198,6 +198,24 @@ py -X utf8 scripts/check_protocol.py
    `STORAGE_FULL` 回滚。三种回答各有各的形状——还在问 → `200 accepted:false`（不占第二个名额）、已经拒绝（含没人答而到期，
    那正是发送方 §4 超时的镜像）→ `403 DECLINED`、已经完了 → `404 OFFER_UNKNOWN`。宿主那两处 `settleOffer` 保留：
    函数自己按 id 去重，写两次不会多出第二行。
+11. **#146：这台设备的名字改不了**（代码已修，两道编译门 + `接收自检 71 项` 都过；**设备腿还欠**，
+   见 [docs/feature-matrix.md](../docs/feature-matrix.md) §6 第 16 条）。合同 §1 的身份五项里只有 `name` 写着
+   「用户可改，存 `settings.json`」，PC 早就有这一行，而手机这一端**根本没有能改它的地方**：名字是读出来的——
+   安卓 `Build.MANUFACTURER + Build.MODEL`、鸿蒙 `deviceInfo.marketName`、浏览器 `browserName`，屏幕上也就不存在
+   一个能让对端认出"这是我的那台手机"的入口。这一支要补的不是一个输入框，是四条线：这个名字会说四次——
+   发出去时的 `pairJson` 与清单的 `from_name`（每次发送现取）、自己 hello 与配对回复里的 `name`、局域网公告里的
+   `n=`，还有屏上头像那一行；只把变量换掉的话，监听已经抄走的那份和广播已经抄走的那份会一直念旧名字，直到进程重启。
+   所以规则与落点分三层：判据（`cs-protocol.uts::nameReject` / `nameWithDefault`）**只有一份**，PC 那条规则就是
+   trim 之后非空、合同不给长度，手机不许自己发明上限；组合（存过的顶掉默认、空的才回落）也在同一份里；
+   存储各家自己管——安卓 `CsIdentity.kt` 的 `storedName/saveName`（`self()` 从此不再附 `name`，因为 §1 那条规则
+   该由 UTS 那层说一次），鸿蒙 `app-harmony/index.uts::deviceName()` 先读 `settings.json` 的 `device_name`，
+   浏览器只能存在模块变量里（**这一端没有私有目录，所以关于重启的任何说法在这里都无法证明**，设备腿就是这么欠着的）。
+   刷副本的位置按平台不同，因而是分支而不是"一条统一规则"：安卓与浏览器在 `deviceNameSave` 里就把 hello 与公告
+   那两份改掉；鸿蒙的接收状态机跑在页面旁边（`harmonyReceive`），`recvSelf`/`discName` 是 store 的变量，于是由
+   `store/session.uts::applySelfName` 在写成功之后把 `recvSelf` 丢掉、下一次请求照 `deviceNameText()` 重建。
+   改名**不是**重新入网：对端钉的是密钥摘要，名字不在指纹里，所以旧固定照旧、留空配对码照样能 resume。
+   UI 那一行有两个状态而不是一个（`s.nameDraft` 是草稿、`s.selfName` 是已经生效的），因为被规则拒掉的那次要留得住
+   用户刚打的字，同时屏幕上那行还是旧名字——写进私有目录失败也是同一处理：不显示一个重启后会变回去的名字。
 
 M2a 的最小切口是"手机发、PC 收"：扫（或粘贴）PC 的二维码拿到地址与完整指纹，用户只核对同屏的
 一次性配对码——PC 侧接收端已经跑绿，手机只要把

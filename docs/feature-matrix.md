@@ -110,6 +110,7 @@ Linux 与 Windows 的三个真实分歧，都已落到代码分支：
 | 协议 §7：版本按**两个集合的交集**判，本端的集合处处都说得出（#144，与 PC 同一条规则） | 完成 | `编译门`（`.probe/c144_android.log`：`项目 chuanshu 编译成功。`；鸿蒙那一道见 §3.3 同一行）+ `浏览器`（`发送自检 20 项全部通过`、`接收自检 61 项全部通过`、`发现自检 22 项全部通过`，`bad=0`——三条数都在共用状态机上，见 §3.4 那一节新写的 F 腿与 5b 腿）。**这一支只有一份代码**：判据落在 `utssdk/cs-protocol.uts`（新导出 `COMPATIBLE_VERSIONS`、`versionsOverlap`、`versionsText`），`cs-client.uts` 的 hello、`cs-receive.uts` 的 pair 与 offer 都改成问同一个问题；改之前是两条各拿一半腿——发送方只看对端在 hello 里印出的那一个 `protocol_version`（一台印 1、集合却是 `[2]` 的机器被放行了），接收方自带的那个 `supports()` 只看对方报的集合（一台在这个字段之前就发清单的机器被当成陌生人拒了），而且**谁都交集不了**，因为发送方从来没把集合送到接收方读得到的地方——接收方不回拨去读对方的 hello。所以集合现在跟着 `pairJson`/`offerJson` 的请求体走，`pair` 的应答把它在 hello 里说过的话重述一遍（§3 那条 `served` 兜底的同一思路）。没报集合＝那是这个字段之前的一版，按它印出的那一个数当作整个集合，不是把它当陌生人的理由 |
 | UI 七页（首页/文件/传输/我的/发送/扫码连接/探针） | 完成 | `截图` + `模拟器`；自定义导航页让出状态栏安全区（#102） |
 | 收：同一个 `offer_id` 只问用户一次，答过的按 id 复述那一答（#145，与 PC 同一条规则） | 完成 | `编译门`（`.probe/c145_android.log`：`项目 chuanshu 编译成功。`；鸿蒙那一道见 §3.3 同一行）+ `浏览器`（`接收自检 66 项全部通过`，`bad=0`，原文 `.probe/c145_web_selftest.txt`；第 14 组那五条腿见 §3.4）。**这一支只有一份代码**：记答案的活儿从宿主收进共用状态机 —— `sweep` 里窗口到点没人答＝`DECLINED`、闲置回收与对方 `DELETE`＝`OFFER_UNKNOWN`、用户点拒绝与 `STORAGE_FULL`＝当场记下；改之前只有"用户点了拒绝"这一种答案是靠宿主记得调 `settleOffer`，宿主漏一次就再弹一次窗，而"这一单已经结束了"那两种根本没有记。`settleOffer` 自己按 id 去重，所以安卓宿主里那两处旧调用留着也不会记两遍 |
+| 身份：设备名是用户改得了的那一项，改完 hello / 广播 / 清单都念新的，落在私有目录 `settings.json`（#146，合同 §1） | 完成 | `编译门`（`.probe/c146_android2.log`：`项目 chuanshu 编译成功。`。第一趟 `.probe/c146_android.log` 是红的：`store/session.uts:27` 报 `找不到名称"nameReject"`——**Android 的插件只保留入口抵达得到的名字**，`app-android/index.uts` 顶上那串 `export { … } from '../cs-protocol.uts'` 没带新名字，补进去就过；这条坑 §7 已经写着，是新名字忘了挂号）+ `浏览器`（规则与 hello 那一份副本见 §3.4 的第 15 组五条腿，`接收自检 71 项全部通过`）+ `浏览器`（`我的` 页那张卡真的按过一次：改名后头像那行、输入框里的草稿（空格被吃掉）和「已保存…」那一行同时换，填一串空格再按保存则三样都不动、那一行改口说「名字不能是空的」；这一趟是在 H5 上按的，所以档位是 `浏览器` 而不是 `模拟器`）。本端改了四处：`CsIdentity.kt`（`storedName`/`saveName`/`hardwareName`，`self()` 不再附 `name`——§1 那条规则只该有一份）、`app-android/index.uts`（`myName()` 组合两份、`deviceNameSave` 写文件后顺手刷掉 `recvSelf.name` 与 `discName` 那两份**已经抄出去的**名字）、`store/session.uts`（`renameSelf` 走共用 `nameReject`，写不进就不改屏幕）。名字不进指纹：对端钉的是密钥摘要，所以改名不需要重新配对（设备腿见 §6 第 16 条） |
 | 收：接收中挂前台服务，挂不上时卡片自己说为什么（#143，`spec.md` §6） | 代码完成 + `模拟器`；**真挂上**要等自定义基座 | 落点是四处：`utssdk/app-android/CsKeepAlive.kt`（`Service` + 一个 `object`，`startForeground` 只在 API 34 带类型，读的是 `ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC`——合同 §6 原来写的 `dataTransfer` 是 14 预览期的叫法，正式版改名 `dataSync`，已用 HBuilderX 自带的 `android.jar` 逐字节查过那张常量表并把 §6 改口）、`utssdk/app-android/AndroidManifest.xml`（`android:foregroundServiceType="dataSync"`、`exported="false"`，组件只能进清单，代码里 `startService` 造不出一个 `<service>`）、`config.json` 补 `FOREGROUND_SERVICE`/`FOREGROUND_SERVICE_DATA_SYNC`/`POST_NOTIFICATIONS`、`app-android/index.uts::receiveHoldStart/receiveHoldStop`（13+ 那一句"要不要问"必须留在 UTS，运行时权限是 activity 上的 UI 线程调用）。**三件事都读设备、不假设**：`getServiceInfo` 抛 `NameNotFoundException` 就说明这个包的清单没带它，`checkSelfPermission` 少哪一项就报哪一项，`startForeground` 之后还要 `AtomicBoolean` 落定才算挂上——返回值走 `{ok, note}`，界面因此不需要匹配任何句子。`store/session.uts::armHold/disarmHold` 把结论写成卡片那一行（挂上=绿，挂不上=合同那句红字），关掉监听跟着收回。<br>证据：`编译门`（`.probe/c143_gates_final.log`：两道 `项目 chuanshu 编译成功。` + `运行包制作成功`）+ `模拟器`（`.probe/c143_device_legs.md`：标准调试基座 `targetSdk=32`、`POST_NOTIFICATIONS granted=false`，打开监听后卡片说「这台机器没让挂上保活（这个包的清单里没有保活服务这一项，所以保活挂不上：它要打进自定义基座才生效），退到后台可能被系统掐断：请保持传书在前台」，关掉后那行收回；`传输` 页日志同轮留着 `接收已打开…`/那句拒绝/`本来就没有保活挂着`）+ `浏览器`（接收 59 / 发送 17 / 发现 22 项全过，证明 store 那段条件编译没伤到 web）+ `截图`（`.probe/_c143_hold.png`：同一屏上「正在监听…」是绿的，下面那句保活拒绝是红的，开关在开位——挂上那句走的是同一个 `stateOk`）。**这一趟还真抓到一个只有设备能给的缺陷**：第一版按 `Build.VERSION.SDK_INT < 33` 决定要不要问通知权限，跑上去就在 `store/session.uts:997` 抛 `IllegalStateException: ... The targetSdkVersion SDK must be 33 or more`——问不问取决于**包**的 target 而不是系统的 API，现在读 `activity.getApplicationInfo().targetSdkVersion`（`mayAskNotify`）。至于"退到后台还收得到"这一条，只有把服务打进自定义基座才可能测（`pack --iscustom` 花用户的 DCloud 账号，等点头） |
 
 ### 3.3 HarmonyOS Next
@@ -135,6 +136,7 @@ Linux 与 Windows 的三个真实分歧，都已落到代码分支：
 | UI 七页与鸿蒙 design 一致、density 恢复手机值 | 完成 | `截图`（#101/#102/#114 改口：那条"被裁掉"是探针点了视口外节点） |
 | 协议 §7：版本按两个集合的交集判（#144） | 完成 | `编译门`（`.probe/c144_harmony.log`：`项目 chuanshu 编译成功。` + `运行包制作成功`）+ `浏览器`（`发送 20 / 接收 61 / 发现 22` 三项全过）。**本端没有第二份代码要改**：判据与集合都在共用的 `cs-protocol.uts` / `cs-client.uts` / `cs-receive.uts` 里（见 §3.2 那一行），`app-harmony/index.uts` 只负责把体里的 `compatible_versions` 原样递给状态机。发现那一条支仍在 `cs-discovery.uts` 里只比一个数——UDP 的公告只印得下一个版本，集合本身要等 hello，注释写在那里 |
 | 收：同一个 `offer_id` 只问用户一次（#145，与 PC、与安卓同一条规则） | 完成 | `编译门`（`.probe/c145_harmony.log`：`项目 chuanshu 编译成功。` + `运行包制作成功`）+ `浏览器`（`接收自检 66 项全部通过`）。**本端没有第二份代码要改**：记答案的五处都在共用的 `cs-receive.uts`（见 §3.2 那一行）。改之前鸿蒙这一头只记一种——用户在卡片上按的那一句由 `store/session.uts` 的 `receiveDecide`（`#ifdef APP-HARMONY` 那一段）补进 `settleOffer`，安卓对应的那一处在 `utssdk/app-android/index.uts`；而"这一单已经结束了"那两种（闲置回收、对方 `DELETE`）谁都没记，重发的清单于是会再弹一次卡片 |
+| 身份：设备名用户可改，改完 hello / 广播都念新的，落在沙箱 `settings.json`（#146，合同 §1，与安卓同一条规则） | 完成 | `编译门`（`.probe/c146_harmony.log`：`项目 chuanshu 编译成功。` + `运行包制作成功`）+ `浏览器`（共用规则与 hello 那份副本的腿见 §3.4 第 15 组）。本端只有两处：`app-harmony/index.uts` 里 `deviceName()` 先读 `settings.json` 的 `device_name`、读不到才回落 `marketName`/`productModel`（§1 那个文件名保留合同的写法，不加 `chuanshu-` 前缀；`fieldOf` 已经够用，不需要 JSON 库），新导出 `deviceNameSave` 同步写文件；**刷副本的活儿落在 `store/session.uts`**——这一端的接收状态机跑在页面旁边（`harmonyReceive`），hello 用的 `recvSelf` 与公告用的 `discName` 都是 store 的变量，不像安卓宿主那样自带缓存，所以改名成功后由 store 把 `recvSelf` 丢掉（下一次请求照 `deviceNameText()` 重建，读到的就是刚写进去的那一个）并顶掉 `discName`。ArkTS 侧不能 import 同目录的 `.uts`，`nameWithDefault` 那两行只能在 `deviceName()` 里照写一遍——与 `TRANSPORT_PORT` 同一个理由 |
 | 后台限制的产品处理（#143 的另一半：这一端没有机制，只有合同要求的那句话） | 完成 | `模拟器` + `截图`（`127.0.0.1:10001`：监听开着时「我的」页那行「这一端没有后台保活，退到后台或锁屏可能被系统冻住：请保持传书在前台」，点掉监听那行跟着收回；`.probe/_c143_hold_harmony.jpeg` 里它是红的，与同屏那句绿色的「正在监听 43720…」并排。原文 `.probe/c143_device_legs.md`。这句话过去只在文档里，`pages/` 与 `store/` 里一个字都没有——写它的人把口径当成了实现） |
 
 ### 3.4 浏览器（H5 目标）
@@ -204,6 +206,21 @@ Linux 与 Windows 的三个真实分歧，都已落到代码分支：
 手驱动版本，走的是屏上那套 UI 而不是探针：那一趟屏上打出
 `PC：这一块的回复没来，但对方说它已经有了：/v1/offer/e71fe3bc9f4fbe55/chunk/beb0ef3355096750/0`，随后
 `PC → 本机：完成 对方已收下 2 个文件 / 4.00 MB，最后落到 /模拟接收目录/e71fe3bc9f4fbe55/pc-大块.bin`。
+
+**#146 那一轮把合同 §1 的另一半也在这端验了**：`name` 是身份五项里唯一「用户可改」的，而这一端是唯一能把这条规则
+整套跑下来的地方。五条腿打在 `receiveSelfReport` 末尾（`接收自检 71 项全部通过`，原文 `.probe/c146_web_selftest.txt`，
+同批两道编译门 `.probe/c146_android2.log` / `c146_harmony.log`）：没改名时 `GET /v1/hello` 的 `name` 就是这端自己的称呼
+（浏览器 → `浏览器 · chrome`，安卓 → `Build.MODEL`，鸿蒙 → `marketName`，同一份 `nameWithDefault` 组合）、
+空名字在**规则层**就被 `nameReject` 拒掉（压根不给写，所以 hello 上一个字没变）、写过的名字顶掉默认而空的才回落、
+存进去时两端空格被去掉、把名字收回以后 hello 又回落。**判据看的是线上的那一句**，不是存储里的那一条：`name` 走的是
+`cs-receive.uts::handleReceive` 的 hello 分支，配对回复与清单的 `from_name` 读的是同一个 `self`，所以这一趟证的
+是"改一次，三处都跟着改"，而不是"改了一次、变量换了、没人读过"。
+这一趟还在 H5 屏上把 `我的` 页那张新卡真按过两次：填 `  小字的安卓  ` 点保存，头像那行、输入框里的草稿（空格被吃掉）
+和「已保存：对端在 hello、广播和清单上读到的都是它」同时换；填三个空格再点，那三样都不动，那一行改口说
+「名字不能是空的：这台设备对别人总要有个称呼」——草稿与已生效的名字是两个状态，这一支就是为了让被拒的那次不把旧名字冲掉。
+同一批的另一道门是红的过一次：安卓插件入口 `app-android/index.uts` 顶部那串 `export { … } from '../cs-protocol.uts'`
+没把 `nameReject` 挂号，`store/session.uts:27` 直接 `找不到名称"nameReject"`——§7 那条"Android 的插件只保留入口
+抵达得到的名字"对新加的名字同样成立，别只记得给 store 加 import。
 
 **这一端的档位要说清楚**：`state` 那条恢复支在浏览器里是快而全的行为证据（14 项、四条腿、几秒跑完），
 在两台手机上现在是 `模拟器`——#133 造了一个肯说真话的对端，四种喂法各上一趟，八条腿全 YES；编译门是另外两道
@@ -286,7 +303,7 @@ E:\android-sdk\emulator\emulator.exe -avd chuanshu34b -no-window -no-audio -no-b
 ### 端内自检（`我的` 页三个按钮，只有 H5 目标里跑得出结论）
 | 按钮 | 判的是哪份共用代码 | 最近一次结论 |
 |---|---|---|
-| `接收内核自检` | `cs-receive.uts`（66 项） | `接收自检 66 项全部通过`（2026-10-26 #145 那一趟，原文 `.probe/c145_web_selftest.txt`：§4 那一问的形状补五条腿，也打在一只新建的隔离收件箱上——还挂着时重发只回"还没人决定"、重发不占第二个待决名额、答过拒绝的重发拿回同一句 `DECLINED`（403）、窗口到点没人答算同一句拒绝、对方取消过的单重发是 `OFFER_UNKNOWN`；61 → 66，前面那 61 项一条没少。上一趟是 #144：新增两条腿打在隔离收件箱上——清单报的集合里没有我们这一版 → `UNSUPPORTED_PROTOCOL`，清单没报集合 → 按它自己那一个数判、照样回 `pending` 等人决定；59 → 61。再上一趟是 #141：给 `adoptPin` 加了第五个参数（叶摘要）并补了三条腿——桥接交身份摘要留空码能 resume、只交叶摘要仍 `BAD_PAIR_CODE`、验签后同一条记录同时长出密钥与叶；56 → 59） |
+| `接收内核自检` | `cs-receive.uts`（71 项） | `接收自检 71 项全部通过`（2026-10-26 #146 那一趟，原文 `.probe/c146_web_selftest.txt`：末尾第 15 组五条腿走的是 §1 里唯一「用户可改」那个字段——没改名时 hello 念的是这端自己的称呼、空名字在规则层就被拒（压根不给写）、写过的顶掉默认而空的才回落、存进去时空格被去掉、收回以后又回落；66 → 71，前面那 66 项一条没少。#145 那一趟，原文 `.probe/c145_web_selftest.txt`：§4 那一问的形状补五条腿，也打在一只新建的隔离收件箱上——还挂着时重发只回"还没人决定"、重发不占第二个待决名额、答过拒绝的重发拿回同一句 `DECLINED`（403）、窗口到点没人答算同一句拒绝、对方取消过的单重发是 `OFFER_UNKNOWN`；61 → 66，前面那 61 项一条没少。上一趟是 #144：新增两条腿打在隔离收件箱上——清单报的集合里没有我们这一版 → `UNSUPPORTED_PROTOCOL`，清单没报集合 → 按它自己那一个数判、照样回 `pending` 等人决定；59 → 61。再上一趟是 #141：给 `adoptPin` 加了第五个参数（叶摘要）并补了三条腿——桥接交身份摘要留空码能 resume、只交叶摘要仍 `BAD_PAIR_CODE`、验签后同一条记录同时长出密钥与叶；56 → 59） |
 | `发送内核自检` | `cs-client.uts`（20 项：四条吞回复的腿 + 第五条"先核前缀再配对"的腿 + 第六条"版本集合"的腿，见 §3.4） | `发送自检 20 项全部通过`（#144 新加 F 腿：对端在 hello 里不报集合→照常传成，报一个只含 v2 的集合→停在 hello 且对方名单里多不出那一条；17 → 20。`.probe/launch_web_135.log` 是补上第四条腿那一趟的编译门，原文 `.probe/web_135_selftest.txt`；#142 那趟的编译门是 `.probe/c142_android.log` / `.probe/c142_harmony.log`） |
 | `发现内核自检` | `cs-discovery.uts`（22 项） | `发现自检 22 项全部通过`：喂合成报文，验名单合并/过期/自过滤，不验网卡。#144 里这一支只把版本常量收回成共用那一份（`cs-protocol.uts` 的 `COMPATIBLE_VERSIONS`）——UDP 公告只印得下一个版本号，集合要等 hello 才取交集 |
 
@@ -347,7 +364,7 @@ E:\android-sdk\emulator\emulator.exe -avd chuanshu34b -no-window -no-audio -no-b
    （把对端的**叶**钉在地址上），再让那一台**不带配对码**拨回来，看手机答 `resumed=true` 而不是 `BAD_PAIR_CODE`。
    一台 AVD + 本机就当两台机器够用（发送方拨 `10.0.2.2`，回拨走 `adb forward tcp:<hostport> tcp:43720`），
    缺的是那个"已经固定过这台手机、于是留空码"的 Python 对端；旧的 `#88` 设备腿也是这么欠着的，这一次别再只停在编译门。
-10. **#140 那一轮逐条巡检剩下的三条**（已立案，未动手）：#146 手机端设备名不可改（§1 说 `settings.json` 里用户可改）；
+10. **#140 那一轮逐条巡检剩下的两条**（已立案，未动手）：
     #147 闲置回收删"半截文件"按单还是按文件（PC 连已校验的一起删，手机留着——口径题）；#148 鸿蒙 §5 的符号链接检查（`realpath` 确实没有，
     `lstatSync` + `Stat.isSymbolicLink()` 顶得上，那句"这平台做不到"的注释是错的）。
     （同批的 #142 已经落地，见 §3.2 / §3.3 那两行；它欠的那次上机是下面第 11 条。**#143 也落地了**，
@@ -359,7 +376,10 @@ E:\android-sdk\emulator\emulator.exe -avd chuanshu34b -no-window -no-audio -no-b
     **#145 也落地了**，见 §3.1 那一行与 §3.2 / §3.3 / §3.4 那三行：PC 三个"已经答过"的出口统一记进
     `_answered`（上限 64，与手机 `settleOffer` 那份定长台账同一条规矩），手机把记答案这件事从两个平台的
     宿主搬进了共用的 `cs-receive.uts`（五个了结处）。证据到 `门禁` + `编译门` + `浏览器`；
-    欠的那一次"重发真的落到一台活手机上"在第 15 条。）
+    欠的那一次"重发真的落到一台活手机上"在第 15 条。**#146 也落地了**，见 §3.2 / §3.3 / §3.4 那三行：合同 §1 那一
+    唯一「用户可改」的身份字段，手机这一端以前根本没有能改它的地方（名字是 `Build.MODEL` / `marketName` / 浏览器名读出来的），
+    现在三端共用一条规则、各端把名字存进自己私有目录的 `settings.json`、改名以后 hello / 广播 / 清单念的都是新的那一个。
+    证据到 `编译门` + `浏览器`；欠的那一次"重启后还是这个名字"在第 16 条。）
 11. **#142 的设备腿** — 顺序改对了，但两处都只有编译门与浏览器：一、从名单点中那一行，前缀得真的走到
     `pinPrefix`（`store/session.uts` 的 `#ifdef APP-*` 那一步，H5 走不到）；二、正常路径不能被这道核对误伤——
     两台模拟器互点一次，日志要出现「已核对：<前缀> 这台机器在 TLS 上就是它自己」并且配对照旧成。
@@ -387,6 +407,12 @@ E:\android-sdk\emulator\emulator.exe -avd chuanshu34b -no-window -no-audio -no-b
     所以欠的只是一次活的观察：手机（或 PC）开着接收，让对端把同一份清单投两遍，第一遍在窗口里点「拒绝」，判据是
     **屏幕上不再出现第二张卡片**、而对端拿回的仍是那句 `403 DECLINED`；另有一条"窗口放到点没人答"，重发同样不该把
     用户叫醒第二次。一台 AVD + 本机足够，两条腿共用那个已经建好的 60 s 窗口探针。
+16. **#146 的设备腿** — 三端规则与三份存储都落地了，但浏览器没有私有目录，所以"这个名字活得过一次重启"这一句
+    目前只有代码、没有观察。两台模拟器各一趟就够：`我的` 页改成一个新名字 → `run-as` / 沙箱里读回 `settings.json`
+    确认写的是那一个值 → 杀进程重开 → 头像那行与输入框里的草稿仍是新名字（不是回落成 `Build.MODEL`），
+    再让 PC 拨进来读一次 `GET /v1/hello`，`name` 要就是它。鸿蒙那一趟同一形：改名 → 杀 → 重开 → PC 读 hello。
+    另外顺手要验的一件事是旧的固定记录不受影响（改名不重新配对：对端钉的是密钥摘要），判据是重开后 PC 侧
+    那条固定还在、留空配对码也能 resume（#141 那条支已经在共用状态机上验过形状）。
 
 ### 需要用户点头才能做的三件事
 - 唤醒/解锁并使用那台个人鸿蒙真机（#45/#46 + 鸿蒙发现真机腿）。
