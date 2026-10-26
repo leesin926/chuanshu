@@ -72,9 +72,11 @@ export class TransferOptions {
 	/** The peer's passphrase as typed or scanned. '' leaves the key off the wire entirely, which is
 	 *  how a build without one still pairs (spec §3). */
 	secret: string = ''
-	/** The prefix this peer advertised - through discovery, or as the QR's `f=`. Either way it is a
-	 *  prefix of the certificate the socket hands out, not of the identity key. Empty means the user
-	 *  typed an address by hand, so the first hello is what pins it. */
+	/** What the peer announced about the certificate it serves - a QR's `f=` or a broadcast's `fp=` - and
+	 *  the phone hands it to its own TLS trust manager as a pin, which is where spec §2 says the weighing
+	 *  happens. Either shape is accepted: a whole digest compares as one, a shorter prefix has to be the
+	 *  beginning of what the socket presents (`pinAccepts`). Empty means the user typed an address by hand,
+	 *  so nothing was announced and this end's own pin store is what the transport compares against. */
 	pinPrefix: string = ''
 	/** This device's served TLS leaf, when the certificate it hands out is not signed by its own
 	 *  identity key. Every end now serves a separate leaf (spec §3, and #106 for the PC), so this is a
@@ -93,9 +95,6 @@ export class PeerSession {
 	peerName: string = ''
 	peerId: string = ''
 	peerFingerprint: string = ''
-	/** The digest the peer's socket presents - what a QR's `f=` or a broadcast prefix names. Held apart
-	 *  from `peerFingerprint`, which is who the machine is and what the pin store keys on. */
-	peerServed: string = ''
 	token: string = ''
 	pinPrefix: string = ''
 	secret: string = ''
@@ -167,16 +166,13 @@ function helloPeer(opts: TransferOptions, myFingerprint: string, call: Caller, w
 		session.peerName = hello.getString('name', '')
 		session.peerId = hello.getString('peer_id', '')
 		session.peerFingerprint = hello.getString('fingerprint', '')
-		// The digest the socket presents, which is what a prefix from a QR or a broadcast describes. A peer
-		// too old to have `served` is one whose identity key signs its own certificate, so for it the two
-		// numbers really are one - falling back keeps the check honest instead of turning it off.
-		const served = hello.getString('served', '')
-		session.peerServed = served == '' ? session.peerFingerprint : served
 		write('对端 ' + session.peerName + ' fp=' + session.peerFingerprint.substring(0, 16) + '…')
-		if (opts.pinPrefix != '' && !session.peerServed.startsWith(opts.pinPrefix)) {
-			done(false, '指纹前缀与广播不符，已中止：' + opts.pinPrefix, null)
-			return
-		}
+		/** spec §2: 「核对发生在套接字上，读回来的是对方实际递出的那张证书的摘要」 - so the announced
+		 *  prefix went to the transport as a pin (`pinAccepts`, before a byte of this body was read), and
+		 *  what this reply says about the peer's own leaf is not weighed here. It is a sentence a machine
+		 *  writes about itself: one that stole the announcement can copy it, and cannot copy the
+		 *  certificate. A stranger therefore costs this end one connection that never got a request, not
+		 *  a hello, a pair, and the single session slot the real peer then needs. */
 		if (session.peerFingerprint == myFingerprint) {
 			done(false, '对端指纹与本机相同：这是自己连自己，已中止', null)
 			return
@@ -241,7 +237,7 @@ export function connectPeer(
 		return
 	}
 	if (opts.pinPrefix != '') {
-		write('按二维码里的指纹前缀核对 ' + opts.host)
+		write((opts.pinPrefix.length == 64 ? '按二维码里的指纹钉住 ' : '按广播里的指纹前缀钉住 ') + opts.host)
 	}
 	takeSelf(function (peerId: string, name: string, myFingerprint: string) {
 		write('本机 ' + name + ' fp=' + myFingerprint.substring(0, 16) + '…')

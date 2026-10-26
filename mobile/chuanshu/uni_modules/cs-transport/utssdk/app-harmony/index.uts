@@ -1585,6 +1585,26 @@ export function abandonSend(why: string): number {
 	return list.length
 }
 
+/** spec §2's weighing, done on the socket: either the certificate this connection just presented is the
+ *  machine this end meant to talk to, or the request never goes out.
+ *
+ *  A pin arrives in two shapes - the whole digest a pin store or a QR's `f=` carries, and the shorter
+ *  prefix a LAN announcement has room for - and the announcement is exactly what the contract asks to be
+ *  checked here, so a short pin compares as a prefix. The PC states this rule for Python
+ *  (`identity.read_fingerprint`, comparing with `startswith`) and `../cs-protocol.uts::pinAccepts` states
+ *  it for the shared layers; it is restated in this file because a Harmony plugin cannot import a `.uts`. */
+function pinAccepts(pin: string, seen: string): boolean {
+	if (pin == '') {
+		return true
+	}
+	if (seen == '') {
+		return false
+	}
+	const want = pin.toLowerCase()
+	const got = seen.toLowerCase()
+	return want.length == 64 ? got == want : got.startsWith(want)
+}
+
 /** One request over one connection.
  *
  *  The order is the whole design: bind, connect without the platform's own certificate validation, read
@@ -1838,8 +1858,9 @@ function httpRun(
 			fail('TLS_PIN_MISMATCH', '对端证书的公钥段读不出来')
 			return
 		}
-		if (expected != '' && seen != expected) {
-			fail('TLS_PIN_MISMATCH', '已固定 ' + expected.substring(0, 16) + '…，这台是 ' + seen.substring(0, 16) + '…')
+		if (pinAccepts(expected, seen) == false) {
+			fail('TLS_PIN_MISMATCH', (expected.length == 64 ? '已固定 ' : '广播里报的是 ') + expected.substring(0, 16) +
+				'…，这台在 TLS 上递出来的是 ' + seen.substring(0, 16) + '…')
 			return
 		}
 		out.fp = seen

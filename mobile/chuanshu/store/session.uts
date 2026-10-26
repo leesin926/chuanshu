@@ -1062,10 +1062,11 @@ function buildOptions(): TransferOptions {
 	opts.secret = s.secret.trim()
 	opts.pinPrefix = s.scannedFp
 	// #ifdef APP-HARMONY || APP-ANDROID || APP-IOS
-	// §2's 先核对再配对 has a place to happen: helloPeer() weighs this prefix against the digest the
-	// peer reports and refuses before a pair is written. A row from the list carries only a prefix, so
-	// it comes from discPicked and not from scannedFp - that field is the transport's TLS pin, and the
-	// pin compares whole digests, so a 16-character one would fail every request of the session (#142).
+	// §2's 先核对再配对 happens on the socket: this prefix is handed to the transport as a TLS pin
+	// (callWire below) and `pinAccepts` compares it with what the certificate actually is, before a byte
+	// of a request leaves. A row from the 局域网设备 list carries only 16 characters, so it comes from
+	// discPicked - and unlike the scanned digest it is a prefix, which the pin now reads as one (#142 put
+	// the weighing in hello, #150 moved it to where the contract says it lives).
 	if (opts.pinPrefix == '') {
 		opts.pinPrefix = discPicked
 	}
@@ -1077,8 +1078,8 @@ function buildOptions(): TransferOptions {
 	return opts
 }
 
-/** Every request goes through here so the fingerprint the QR promised is the one the transport
- *  pins - a typed address has none, and that difference is exactly what the user is warned about.
+/** Every request goes through here so the number the peer announced is the one the transport pins -
+ *  a typed address has neither, and that difference is exactly what the user is warned about.
  *  A `const` rather than a `function` because the transport takes this as a value, and Kotlin only
  *  treats a top-level `fun` name as one with `::`, which UTS does not emit. */
 const callWire = (
@@ -1091,7 +1092,7 @@ const callWire = (
 	escape: string,
 	cb: ReplyCallback
 ): void => {
-	request(method, activeOptions.host, activeOptions.port, path, jsonBody, token, s.scannedFp, body, sha, escape, cb)
+	request(method, activeOptions.host, activeOptions.port, path, jsonBody, token, activeOptions.pinPrefix, body, sha, escape, cb)
 }
 
 /** The address the 「同一网络」 sentence under the button was answered for. The answer is about one
@@ -1193,18 +1194,23 @@ function refreshPinned() {
 function markConnected(session: PeerSession, message: string) {
 	// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
 	/* Spec §2's 先核对再配对 now runs where the contract puts it: buildOptions() hands the announced
-	   prefix to the shared client, and helloPeer() weighs it against the digest the peer reports and
-	   refuses there. So a machine that hijacked somebody's announcement costs one hello, not a pair -
-	   not a trust record on the real peer, and not the single session slot the real peer then needs.
-	   What is left here is the roster's own book: the candidate that advertised 16 characters now has
-	   the whole digest behind it, and that is the number a later connect can pin by. A row that expired
-	   while this phone was dialling simply loses its record - the prefix it announced was still weighed. */
+	   prefix to the transport as a TLS pin, and the pin is weighed against the certificate the socket
+	   presented - on every request, before this end spends a pair. So a machine that hijacked somebody's
+	   announcement costs one connection that never got a request line, not a pair, not a trust record on
+	   the real peer, and not the single session slot the real peer then needs (#142 put the weighing in
+	   the hello, #150 moved the number itself).
+	   What is left here is the roster's own book: the candidate that advertised 16 characters now has the
+	   whole digest behind it, and it is taken from the transport's own record of the handshake rather than
+	   from anything the peer wrote about itself. A row that expired while this phone was dialling simply
+	   loses its record - the prefix it announced was still weighed. */
 	if (discPicked != '') {
 		const wanted = discPicked
 		discPicked = ''
-		log(lanVerify(wanted, session.peerServed)
-			? '已核对：' + wanted + ' 这台机器在 TLS 上就是它自己（' + session.peerServed.substring(0, 16) + '…）'
-			: '广播里报的前缀 ' + wanted + ' 已经不在名单上，这一条不补完整指纹')
+		pinnedFor(activeOptions.host, activeOptions.port, function (seen: string): void {
+			log(lanVerify(wanted, seen)
+				? '已核对：' + wanted + ' 这台机器在 TLS 上就是它自己（' + seen.substring(0, 16) + '…）'
+				: '广播里报的前缀 ' + wanted + ' 已经不在名单上，这一条不补完整指纹')
+		})
 	}
 	// #endif
 	activeSession = session

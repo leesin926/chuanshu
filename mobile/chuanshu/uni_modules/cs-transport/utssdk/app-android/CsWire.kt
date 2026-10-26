@@ -109,6 +109,21 @@ object CsWire {
 
     // -------------------------------------------------------------------- pinning
 
+    /** The one question the pin store and an announcement both get answered with: is the certificate this
+     *  socket presented the one we meant to talk to?
+     *
+     *  A whole digest is what a pin entry and a QR's `f=` carry; a prefix is all a LAN announcement can
+     *  hold, so a short pin compares as one - spec §2 puts that weighing on the socket, which is why it
+     *  happens here rather than in a hello the peer wrote about itself. The same rule the shared layer
+     *  states (`cs-protocol.uts::pinAccepts`) and the PC states for Python (`read_fingerprint` comparing
+     *  with `startswith`); restated because a Kotlin trust manager cannot import a `.uts`. */
+    private fun pinAccepts(pinHex: String, got: String): Boolean {
+        if (pinHex.isEmpty()) return true
+        if (got.isEmpty()) return false
+        return if (pinHex.length == 64) got.equals(pinHex, ignoreCase = true)
+        else got.startsWith(pinHex, ignoreCase = true)
+    }
+
     /** A trust manager that answers one question: is this the key we pinned?
      *
      *  An empty pin means first contact, where the QR's own fingerprint has not been seen yet -
@@ -125,7 +140,7 @@ object CsWire {
             val leaf = chain?.firstOrNull() ?: throw CertificateException("对端没有交证书")
             val got = hexOf(sha256(leaf.publicKey.encoded))
             seen = got
-            if (pinHex.isNotEmpty() && !got.equals(pinHex, ignoreCase = true)) {
+            if (!pinAccepts(pinHex, got)) {
                 throw CertificateException("期望 $pinHex，收到 $got")
             }
         }

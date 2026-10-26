@@ -15,7 +15,8 @@ import {
 	PROTOCOL_VERSION,
 	PREFIX_CHARS,
 	PEER_EXPIRY_S,
-	isDigits
+	isDigits,
+	pinAccepts
 } from './cs-protocol.uts'
 
 /** protocol.json's compatible_versions, restated so this file stays pure. The PC reads it off the
@@ -477,6 +478,19 @@ export function selfReport(): string {
 	check('前缀只是摘要的前 16 位', prefixOf(PC + '2222333344445555') == PC)
 	check('对不上前缀的摘要不算核实', !markVerified(r, PC, 'ffffffffffffffff' + '000000000000000000000000000000000000000000000000'))
 	check('对得上前缀的摘要才落进候选', markVerified(r, PC, PC + '222233334444555566667777888899990000111122223333') && merged!.fingerprint.length == 64)
+
+	// 3b. where that weighing happens (spec §2, and #150 for the phones): on the socket, against the
+	// certificate the peer actually presented. It arrives in two shapes - the whole digest a pin store or
+	// a QR's `f=` carries, and the 16 characters an announcement has room for - and the rule accepts both,
+	// so a prefix can be handed to a TLS trust manager instead of being read back out of a hello.
+	const FULL = PC + '222233334444555566667777888899990000111122223333'
+	check('整摘要的钉要一模一样', pinAccepts(FULL, FULL))
+	check('整摘要的钉不比大小写', pinAccepts(FULL.toUpperCase(), FULL))
+	check('整摘要的钉不认只在开头相同的那一台', !pinAccepts(FULL, 'ffffffffffffffff4444555566667777888899990000111122223333'))
+	check('前缀形状的钉认它开头那一段', pinAccepts(PC, FULL))
+	check('前缀对不上就是另一台机器', !pinAccepts(PC, 'ffffffffffffffff000000000000000000000000000000000000000000000000'))
+	check('读不出证书不是放行', !pinAccepts(PC, ''))
+	check('空钉是第一面，那一程由配对码带信任', pinAccepts('', FULL))
 
 	// 4. self-filter: our own broadcast comes back to us and must not become a device.
 	const selfBox = newRoster(SELF)

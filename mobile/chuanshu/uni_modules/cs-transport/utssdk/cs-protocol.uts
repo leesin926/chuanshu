@@ -637,6 +637,30 @@ export function isFullFingerprint(text: string): boolean {
 	return true
 }
 
+/** Whether the certificate a socket actually presented is the one this end meant to talk to.
+ *
+ *  spec §2 hands an end two shapes of the same number: a whole digest, which is what a pin store keeps
+ *  and what a QR's `f=` carries, and a prefix, which is all a LAN announcement can hold. The PC already
+ *  weighs both off the socket - `identity.read_fingerprint` compares a discovered prefix with
+ *  `startswith`, `verify_pinned` the whole digest - so this is that one rule, for the phones, where the
+ *  same prefix has to be handed to the TLS trust manager instead of being read back out of a hello the
+ *  peer wrote about itself. A prefix is enough for what §2 asks before §3 spends a pair code: it tells
+ *  the machine we chose from the one that stole its broadcast, and it says nothing about trust.
+ *
+ *  An empty pin is first contact, where the pair code is what carries the trust; an empty `seen` is a
+ *  transport that could not read a certificate, which is never an answer that lets a peer through. */
+export function pinAccepts(pin: string, seen: string): boolean {
+	if (pin == '') {
+		return true
+	}
+	if (seen == '') {
+		return false
+	}
+	const want = pin.toLowerCase()
+	const got = seen.toLowerCase()
+	return isFullFingerprint(pin) ? got == want : got.startsWith(want)
+}
+
 /** The payload is built with urlencode on the PC, so read the escapes back. Hosts, ports, versions
  *  and fingerprints are all ASCII, which is why byte-by-byte decoding is enough here. */
 function decodeField(text: string): string {

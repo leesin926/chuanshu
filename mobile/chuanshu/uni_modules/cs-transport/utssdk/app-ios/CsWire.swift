@@ -69,6 +69,21 @@ public enum CsWire {
         return CsBytes.sha256Hex(CsBytes.data(spki))
     }
 
+    /** spec §2's weighing, on the socket. A pin arrives in two shapes: the whole digest a pin store or a
+     *  QR's `f=` carries, and the shorter prefix a LAN announcement has room for, which has to be the
+     *  beginning of what the peer presents. The same rule the other ends state
+     *  (`cs-protocol.uts::pinAccepts`, `CsWire.kt::pinAccepts`, and Python's `read_fingerprint`).
+     *
+     *  iOS is out of scope, so this half is read rather than run: it changes because the shared store now
+     *  hands a 16-character prefix to `request`, and a whole-digest comparison here would fail every
+     *  request of such a session. */
+    private static func matchesPin(_ expected: String, _ got: String) -> Bool {
+        if expected.count == 64 {
+            return got.compare(expected, options: .caseInsensitive) == .orderedSame
+        }
+        return got.range(of: expected, options: .caseInsensitive)?.lowerBound == got.startIndex
+    }
+
     /** An empty expectation means first contact: the QR's fingerprint has not been seen yet, the pair code
      *  is what carries the trust there, and §3 keeps this end from sending a file before the peer's
      *  fingerprint has been written to the trust store. */
@@ -84,7 +99,7 @@ public enum CsWire {
                 complete(false)
                 return
             }
-            if expected.isEmpty || got.compare(expected, options: .caseInsensitive) == .orderedSame {
+            if expected.isEmpty || matchesPin(expected, got) {
                 complete(true)
                 return
             }

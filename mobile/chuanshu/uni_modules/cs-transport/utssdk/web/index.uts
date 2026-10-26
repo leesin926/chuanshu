@@ -18,7 +18,8 @@ import {
 	OFFER_WAIT_S,
 	unescapeChunk,
 	nameReject,
-	nameWithDefault
+	nameWithDefault,
+	pinAccepts
 } from '../cs-protocol.uts'
 import {
 	BufferCallback,
@@ -786,13 +787,15 @@ export function request(
 	if (peer.code == '') {
 		resetPeer()
 	}
-	// The browser cannot pin, but the client still has to survive a peer whose key does not match:
-	// refuse the same way a failed SPKI comparison would on the phone.
-	if (pinFpHex != '' && pinFpHex != peer.fingerprint) {
+	// The browser cannot pin, but the client still has to survive a peer whose key does not match: refuse
+	// the same way a failed SPKI comparison would on the phone - which is also how an announced prefix is
+	// honoured now, because the phone hands that prefix to its trust manager and this file is the browser's
+	// stand-in for that socket (`pinAccepts`, spec §2).
+	if (!pinAccepts(pinFpHex, peer.fingerprint)) {
 		failure('TLS_PIN_MISMATCH', { expected: pinFpHex, got: peer.fingerprint } as UTSJSONObject, 0, cb)
 		return
 	}
-	if (pinnedFp != '' && pinnedFp != peer.fingerprint) {
+	if (!pinAccepts(pinnedFp, peer.fingerprint)) {
 		failure('TLS_PIN_MISMATCH', { pinned: pinnedFp, got: peer.fingerprint } as UTSJSONObject, 0, cb)
 		return
 	}
@@ -1748,6 +1751,9 @@ class ChunkSwallow {
 	helloVersions: number[] | null = null
 	chunksSeen: number = 0
 	stateAsks: number = 0
+	/** How many request lines this peer was actually shown. A transport that refused the certificate never
+	 *  got that far, so the §2 leg below reads this rather than trusting a sentence about order. */
+	hellosSeen: number = 0
 }
 
 class SenderRun {
@@ -1770,6 +1776,9 @@ function swallowed(reason: string): string {
 function swallowCaller(probe: ChunkSwallow): Caller {
 	return (method: string, path: string, jsonBody: string, token: string, body: ArrayBuffer, sha: string, escape: string, cb: ReplyCallback): void => {
 		const isChunk = method == 'PUT' && path.indexOf('/chunk/') >= 0
+		if (method == 'GET' && path == '/v1/hello') {
+			probe.hellosSeen = probe.hellosSeen + 1
+		}
 		const eat = isChunk && (probe.nth == -1 || probe.chunksSeen + 1 == probe.nth)
 		if (isChunk) {
 			probe.chunksSeen = probe.chunksSeen + 1
@@ -1816,6 +1825,22 @@ function swallowCaller(probe: ChunkSwallow): Caller {
 	}
 }
 
+/** The harness's stand-in for the socket, and the only place a browser can refuse a certificate: the
+ *  announced prefix is weighed here, before the request line reaches the peer, exactly as the phones'
+ *  TLS trust managers weigh it (`pinAccepts`, spec §2's 核对发生在套接字上). What the legs below then
+ *  measure is what the shared client does with a connection that never opened - `hellosSeen` is the
+ *  witness that the peer was not even asked. */
+function pinnedCaller(probe: ChunkSwallow, pin: string): Caller {
+	const wire = swallowCaller(probe)
+	return (method: string, path: string, jsonBody: string, token: string, body: ArrayBuffer, sha: string, escape: string, cb: ReplyCallback): void => {
+		if (!pinAccepts(pin, myFp)) {
+			failure('TLS_PIN_MISMATCH', { expected: pin, got: myFp } as UTSJSONObject, 0, cb)
+			return
+		}
+		wire(method, path, jsonBody, token, body, sha, escape, cb)
+	}
+}
+
 const noopWrite: Writer = (line: string): void => {}
 const noopProgress: ProgressCallback = (done: number, total: number): void => {}
 const noopFileEvent: FileEvent = (relpath: string, status: string, done: number, total: number): void => {}
@@ -1824,9 +1849,10 @@ const noopFileEvent: FileEvent = (relpath: string, status: string, done: number,
  *  inline, so a leg is over when this returns.
  *
  *  `pinPrefix` is what a candidate announced (spec §2): '' stands for a hand-typed address, and a
- *  mismatching one has to stop the run at hello - before this end spends a pair on the peer. */
+ *  mismatching one has to stop the run where the contract puts the check - on the connection, before the
+ *  peer is shown a request line and long before this end spends a pair on it. */
 function runSender(probe: ChunkSwallow, relpath: string, run: SenderRun, pinPrefix: string): void {
-	const call = swallowCaller(probe)
+	const call = pinnedCaller(probe, pinPrefix)
 	const link = new TransferOptions()
 	link.host = '自检对端'
 	link.port = TRANSPORT_PORT
@@ -1923,20 +1949,30 @@ export function senderSelfReport(): string {
 	check('问不到答案就不重写：对端只收到一次写块', d.chunksSeen == 1, d.chunksSeen.toString())
 	check('报出去的是那一问的错，不是写块自己的错', rd.summary.indexOf('这一问') >= 0, rd.summary)
 
-	// E. spec §2's order: 收到候选后必须先核对前缀再进入 §3 配对. The peer's trust table is the witness -
-	// a candidate that announced another machine's key is refused at hello, so a pair never reaches it,
-	// never pins a stranger, and never takes the single session slot the real peer needs (#142).
+	// E. spec §2's order and its place: 收到候选后必须先核对前缀再进入 §3 配对, and the 核对 happens on the
+	// connection. `pinnedCaller` is this harness's stand-in for the phone's TLS trust manager, so
+	// `hellosSeen` is the witness below - a candidate whose announced prefix does not describe the
+	// certificate was never even asked. A pair therefore never reaches it, never pins a stranger, and never
+	// takes the single session slot the real peer needs (#142 weighed the peer's own sentence about itself
+	// in the hello; #150 moved both the number and the place).
 	ensureSelf()
 	const promised = prefixOf(myFp)
 	const e = new ChunkSwallow()
 	const re = new SenderRun()
 	runSender(e, SIM_TEXT, re, promised)
 	check('对得上广播前缀的候选照常配对传成', re.done && re.ok, re.summary)
+	check('那一条的钉一路带到写块', e.hellosSeen == 1, e.hellosSeen.toString())
 	const f = new ChunkSwallow()
 	const rf = new SenderRun()
 	runSender(f, SIM_TEXT, rf, 'deadbeefdeadbeef')
-	check('前缀对不上时在 hello 就停，没有发配对', rf.done && !rf.ok && rf.summary.indexOf('前缀') >= 0, rf.summary)
+	check('前缀对不上时这一单判死', rf.done && !rf.ok, rf.summary)
+	check('说的是证书与钉不符，不是配对码的事', rf.summary.indexOf('不符') >= 0, rf.summary)
+	check('那一单连 hello 都没打到对方', f.hellosSeen == 0, f.hellosSeen.toString())
 	check('那一单一次 pair 都没打到对方的名单上', f.inbox.trusted.length == 0, f.inbox.trusted.length.toString())
+	const full = new ChunkSwallow()
+	const rfull = new SenderRun()
+	runSender(full, SIM_TEXT, rfull, myFp)
+	check('二维码那种整摘要的钉照常放行', rfull.done && rfull.ok, rfull.summary)
 
 	// F. spec §7 has two directions, and this end used to ask only one of them. A peer that prints our
 	// version while saying it speaks only another set must be refused at the hello; a peer that names no
