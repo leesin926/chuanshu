@@ -200,12 +200,16 @@ export function request(
 		const status = parsed!.getNumber('status') ?? 0
 		const resBody = parsed!.getString('body', '')
 		// A pair that succeeded is the moment the peer becomes someone we trust: record the key the
-		// handshake actually saw, together with what the peer said its id and name are.
+		// handshake actually saw, together with what the peer said its id and name are. The reply's
+		// `fingerprint` is recorded next to it because that second number - the identity key, not the
+		// certificate - is the one this phone's own receive half will look the caller up by when it
+		// dials back without a code (spec §1, and #141).
 		if (status == 200 && method == 'POST' && path == '/v1/pair') {
 			const seen = parsed!.getString('fp', '')
 			const ack = JSON.parse(resBody) as UTSJSONObject | null
 			if (seen != '' && ack != null) {
-				CsIdentity.pin(host, port, seen, ack!.getString('peer_id', ''), ack!.getString('name', ''))
+				CsIdentity.pin(host, port, seen, ack!.getString('peer_id', ''), ack!.getString('name', ''),
+					ack!.getString('fingerprint', ''))
 			}
 		}
 		onMain(function () {
@@ -544,8 +548,30 @@ const recvHandle: (reqJson: string) => string = (reqJson: string): string => {
 			// caller which keeps its pin over a restart sends no code, and this door asks for one it
 			// cannot get. Nothing is trusted on an address alone: pairReply still refuses the pair unless
 			// the key behind it signs its own claim.
-			const known = CsIdentity.pinFor(req.client, TRANSPORT_PORT)
-			if (known != '') adoptPin(recvInbox, known, '', '')
+			//
+			// The lookup has to hand pairReply the *identity* digest, because that is the number it
+			// matches a signature against; the address pin is the certificate digest this phone pinned
+			// on the way out, and since #47/#106 those are two different numbers for one machine. The
+			// leaf still goes along, as the entry's second name, so the one-peer-at-a-time slot recognises
+			// the caller as the device already on this phone's roster (#141). A pin written by an older
+			// build carries no identity, so this asks the pair in front of it to supply one: the caller
+			// names its own leaf inside the signed bytes (`pair|peer_id|nonce|tls_fingerprint`), and a
+			// declaration that matches what this phone saw at that address is as much proof as the bridge
+			// can get before the state machine has verified the signature.
+			const leaf = CsIdentity.pinFor(req.client, TRANSPORT_PORT)
+			let known = CsIdentity.identityFor(req.client, TRANSPORT_PORT)
+			if (known == '' && leaf != '') {
+				const made = JSON.parse(req.json) as UTSJSONObject | null
+				const declaredKey = made == null ? '' : made!.getString('public_key', '')
+				const declaredLeaf = made == null ? '' : made!.getString('tls_fingerprint', '')
+				if (declaredKey != '' && declaredLeaf == leaf) {
+					const healed = recvKeyFp(declaredKey)
+					if (healed != '' && CsIdentity.healIdentity(req.client, TRANSPORT_PORT, healed)) {
+						known = healed
+					}
+				}
+			}
+			if (known != '') adoptPin(recvInbox, known, '', '', leaf)
 		}
 		const reply = handleReceive(recvInbox, receiverSelf(), now, req,
 			recvHex, recvKeyFp, recvVerify, recvPrepare, recvWrite, recvDigestFile, recvDrop)

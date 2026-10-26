@@ -94,6 +94,7 @@ import {
 	serveReply,
 	servedFingerprint,
 	pinForAddress,
+	identityForAddress,
 	storePrepareFile,
 	storeWriteAt,
 	storeDigestFile,
@@ -628,8 +629,19 @@ function harmonyReceive(
 		// caller which keeps its pin over a restart sends no code, and this door asks for one it
 		// cannot get. Nothing is trusted on an address alone: pairReply still refuses the pair unless
 		// the key behind it signs its own claim.
-		const known = pinForAddress(client, TRANSPORT_PORT)
-		if (known != '') adoptPin(recvInbox, known, '', '')
+		//
+		// The bridge cannot be the address pin itself. What is pinned for an address is the TLS leaf
+		// this device saw while dialling out, and pairReply looks a peer up by its *identity* key -
+		// since #47 and #106 every end serves a separate RSA-2048 leaf, so those are always two
+		// different numbers and one is never the other. identityForAddress closes the gap from the
+		// request in front of it: the caller declares its own leaf inside the signed bytes
+		// (`pair|peer_id|nonce|tls_fingerprint`), so a pair whose declaration matches the pin and
+		// whose key has not been seen at this address before is as much proof as this end can ask for.
+		const made = JSON.parse(json) as UTSJSONObject | null
+		const declaredKey = made == null ? '' : made!.getString('public_key', '')
+		const declaredLeaf = made == null ? '' : made!.getString('tls_fingerprint', '')
+		const known = identityForAddress(client, TRANSPORT_PORT, declaredKey, declaredLeaf)
+		if (known != '') adoptPin(recvInbox, known, '', '', pinForAddress(client, TRANSPORT_PORT))
 	}
 	const reply = handleReceive(recvInbox, receiverSelf(), now, req,
 		digestBytes, fingerprintOfKey, verifySignature,

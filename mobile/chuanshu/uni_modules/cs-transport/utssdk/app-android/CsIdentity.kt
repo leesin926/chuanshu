@@ -235,8 +235,14 @@ object CsIdentity {
     fun saveArrivalStates(text: String): Boolean = writeText(RECEIVER_ARRIVALS_FILE, text)
 
     /** Pin a peer by the fingerprint its TLS certificate presented, tagged with the address it was
-     *  met at. peer_id is metadata only, exactly like the PC side: the digest is the anchor. */
-    fun pin(host: String, port: Number, fingerprint: String, peerId: String, name: String): String {
+     *  met at. peer_id is metadata only, exactly like the PC side: the digest is the anchor.
+     *
+     *  `identity` is the second number for the same machine - the digest of the key its pair message
+     *  signs, which is what the receive half looks a peer up by (spec §1's two digests). It comes from
+     *  the pair reply, so a pin written by an older build has none; `healIdentity` then fills that in
+     *  from a pair request that proves the two numbers belong to one machine. */
+    fun pin(host: String, port: Number, fingerprint: String, peerId: String, name: String,
+            identity: String = ""): String {
         if (fingerprint.length != 64) return fail("指纹不是完整的 64 位十六进制，没有固定")
         val list = readTrust()
         var replaced = false
@@ -244,13 +250,15 @@ object CsIdentity {
             val entry = list.optJSONObject(i) ?: continue
             if (entry.optString("fingerprint") == fingerprint) {
                 entry.put("host", host).put("port", port.toInt()).put("peer_id", peerId).put("name", name)
+                if (identity.length == 64) entry.put("identity", identity)
                 replaced = true
             }
         }
         if (!replaced) {
             list.put(JSONObject()
                 .put("fingerprint", fingerprint)
-                .put("host", host).put("port", port.toInt()).put("peer_id", peerId).put("name", name))
+                .put("host", host).put("port", port.toInt()).put("peer_id", peerId).put("name", name)
+                .put("identity", if (identity.length == 64) identity else ""))
         }
         return if (writeTrust(list)) JSONObject().put("count", list.length()).toString()
         else fail("固定指纹写不进本机存储")
@@ -267,6 +275,42 @@ object CsIdentity {
             }
         }
         return ""
+    }
+
+    /** The *identity* digest of whoever is pinned at this address, which is a different number from
+     *  `pinFor` since no end signs its served certificate with its identity key (spec §1, #47/#106).
+     *  The receive half looks a pair up by this one, so this is what an address bridge has to hand it.
+     *  '' means the record predates the second field: the receive bridge then tries `healIdentity` from
+     *  the pair request in front of it, and a peer that cannot be healed redeems a code once and is
+     *  pinned properly from then on. */
+    fun identityFor(host: String, port: Number): String {
+        val list = readTrust()
+        for (i in 0 until list.length()) {
+            val entry = list.optJSONObject(i) ?: continue
+            if (entry.optString("host") == host && entry.optInt("port") == port.toInt()) {
+                return entry.optString("identity")
+            }
+        }
+        return ""
+    }
+
+    /** Fill in the identity digest for an address pinned by an older build, which recorded only the
+     *  certificate. Called by the receive bridge with a number it did not take on faith: the caller
+     *  gets here only when the leaf it declared inside its own signed pair message is the leaf this
+     *  phone saw at that address. */
+    fun healIdentity(host: String, port: Number, identity: String): Boolean {
+        if (identity.length != 64) return false
+        val list = readTrust()
+        var changed = false
+        for (i in 0 until list.length()) {
+            val entry = list.optJSONObject(i) ?: continue
+            if (entry.optString("host") == host && entry.optInt("port") == port.toInt() &&
+                entry.optString("identity").length != 64) {
+                entry.put("identity", identity)
+                changed = true
+            }
+        }
+        return changed && writeTrust(list)
     }
 
     /** Forget the pin for one address so the next connection is a fresh first contact. */

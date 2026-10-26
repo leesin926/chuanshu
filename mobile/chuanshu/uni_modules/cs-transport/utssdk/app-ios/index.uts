@@ -526,8 +526,22 @@ const recvHandle: (reqJson: string) => string = (reqJson: string): string => {
 			// caller which keeps its pin over a restart sends no code, and this door asks for one it
 			// cannot get. Nothing is trusted on an address alone: pairReply still refuses the pair unless
 			// the key behind it signs its own claim.
-			const known = CsIdentity.pinFor(req.client, TRANSPORT_PORT)
-			if (known != '') adoptPin(recvInbox, known, '', '')
+			//
+			// What is pinned for an address is the TLS leaf, and pairReply looks a peer up by its
+			// *identity* key (#141); this end's store has no field for the second number, so it resolves
+			// it from the request in front of it instead of remembering it. The caller declares its own
+			// leaf inside the signed bytes (`pair|peer_id|nonce|tls_fingerprint`), so a declaration that
+			// matches the pin says whose key this is - and the pair still fails if that key cannot sign.
+			const leaf = CsIdentity.pinFor(req.client, TRANSPORT_PORT)
+			let known = ''
+			if (leaf != '') {
+				const made = JSON.parse(req.json) as UTSJSONObject | null
+				const declaredKey = made == null ? '' : made!.getString('public_key', '')
+				if (declaredKey != '' && made!.getString('tls_fingerprint', '') == leaf) {
+					known = CsIdentity.fpOfKeyB64(declaredKey)
+				}
+			}
+			if (known != '') adoptPin(recvInbox, known, '', '', leaf)
 		}
 		const answer = handleReceive(recvInbox, receiverSelf(), now, req,
 			recvHex, recvKeyFp, recvVerify, recvPrepare, recvWrite, recvDigestFile, recvDrop)

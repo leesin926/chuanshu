@@ -50,6 +50,7 @@ import {
 	WriteFn,
 	adoptAll,
 	adoptArrivals,
+	adoptPin,
 	arrivalsAll,
 	currentPairCode,
 	handleReceive,
@@ -1434,6 +1435,30 @@ export function receiveSelfReport(): string {
 	const repairObj = jsonOf(repair)
 	token = repairObj == null ? '' : repairObj!.getString('token', '')
 	check('留空配对码靠签名恢复会话', repair.status == 200 && repairObj != null && repairObj!.getBoolean('resumed', false))
+	// 7b. #141: the address bridge on a phone hands the receiver a number for a peer it met on the way
+	// *out*. Since #47/#106 every end signs with an identity key and serves a different certificate, so
+	// what is pinned at an address is the leaf, while pairReply matches a peer only by the identity -
+	// the one number its signature can be checked against. Adopting the leaf therefore left the caller
+	// that legitimately comes back without a code in the stranger branch. A bridge has to hand over the
+	// identity, and a box that only ever learned the leaf must still cost a code: that is the refusal
+	// which proves nothing here is trusted on an address alone.
+	const bridge = newInbox()
+	const bridgeLeaf = hexOf(sha256Bytes(utf8('served-leaf-of-' + SIM_PEER_ID)))
+	adoptPin(bridge, simFp, '', '', bridgeLeaf)
+	const healed = askPairOn(bridge, '203.0.113.20', '', '', simKey)
+	const healedObj = jsonOf(healed)
+	check('桥接交身份摘要：回拨的一台不配码也能resume',
+		healed.status == 200 && healedObj != null && healedObj!.getBoolean('resumed', false))
+	const leafOnly = newInbox()
+	adoptPin(leafOnly, bridgeLeaf, '', '', bridgeLeaf)
+	check('只按叶摘要桥接仍然要配对码 BAD_PAIR_CODE',
+		codeOfReply(askPairOn(leafOnly, '203.0.113.21', '', '', simKey)) == 'BAD_PAIR_CODE')
+	// The entry the bridge adopted with no key has to be the one that grows: pairReply fills in the
+	// public key only after the signature verified, and the leaf stays beside it, because spec §1's two
+	// digests name one machine and the single-session slot has to recognise it from either side.
+	const grown = healedObj == null || bridge.trusted.length == 0 ? null : bridge.trusted[0]
+	check('验签后补上密钥，叶摘要仍留在同一条上',
+		grown != null && grown!.publicKeyB64 == simKey && grown!.tlsFingerprint == bridgeLeaf)
 	const after = ask('GET', '/v1/offer/' + offerId + '/state', '', new ArrayBuffer(0), '')
 	const afterMissing = missingOf(after, bigId)
 	check('续传缺块与重启前一致', beforeMissing.length == afterMissing.length && beforeMissing.length == 1)

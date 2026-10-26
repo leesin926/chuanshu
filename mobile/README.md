@@ -157,6 +157,15 @@ py -X utf8 scripts/check_protocol.py
    上机结论：安卓 `.probe/a_128.py` 三条腿 `PASS`，鸿蒙 `.probe/h_128.py` 三条腿 `PASS`（同名两单各起一个目录、
    前一份摘要一个字没变、卡片为这两单各留一行），H5 那 56 项按新落点键重跑过。鸿蒙本端没改：
    `app-harmony/index.uts::storePrepare` 本来就 `mkdirSync(parent, true)` 再 `truncateSync`。
+7. **#141：手机收的"拨出去过"那座桥记错了号**（代码已修，两道编译门 + `接收自检 59 项` 都过；**设备腿还欠**）。
+   #116 那条反向腿证的是"先前被拨出去的那台现在也能当接收方"，它俩各自都带着配对码上线，所以没碰到 §3 里
+   真正留空码的那一支：已经固定过对方的一台**不再发配对码**（`pair|peer_id|nonce|tls_fingerprint` 的签名就是它的
+   凭证）。手机为拨出的地址钉的是那台机器**serve 的叶**，而 `cs-receive.uts::pairReply` 只按**身份摘要**认人——
+   #47/#106 以后每一端都serve独立 RSA 叶，这两个数从此不相等，于是回拨的一台掉进陌生人分支，被要一个它拿不到的码
+   （`403 BAD_PAIR_CODE`，现象是"明明连过对面，对面却连不回来"）。现在三个平台的地址钉都多存一格身份摘要
+   （Android `chuanshu-trusted.json` 的 `identity`、鸿蒙那行第 6 个字段），旧记录由 pair 请求自己补：调用方把
+   自家叶写在签过名的字节里，声明与钉住的叶一致才补这一格。留空码那条腿在设备上还没跑过，见 §6 第 9 条
+   （[docs/feature-matrix.md](../docs/feature-matrix.md)）。
 
 M2a 的最小切口是"手机发、PC 收"：扫（或粘贴）PC 的二维码拿到地址与完整指纹，用户只核对同屏的
 一次性配对码——PC 侧接收端已经跑绿，手机只要把

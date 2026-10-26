@@ -339,6 +339,11 @@ class Pinned {
 	port: number = 0
 	peerId: string = ''
 	name: string = ''
+	/** The peer's *identity* digest - the key its pair message signs, which is not this certificate
+	 *  (`fp`) since #47. The receive half matches a caller up by this number, so the address bridge
+	 *  needs it to say "whoever dials in from where we dialled out is the peer we already trust".
+	 *  '' on a record written before that was known. */
+	identity: string = ''
 }
 
 function pathOf(file: string): string {
@@ -482,6 +487,7 @@ function loadPins(): Pinned[] {
 		p.port = parseInt(parts[2])
 		p.peerId = parts[3]
 		p.name = parts.length > 4 ? parts[4] : ''
+		p.identity = parts.length > 5 ? parts[5] : ''
 		out.push(p)
 	}
 	return out
@@ -491,7 +497,7 @@ function savePins(list: Pinned[]): void {
 	let text = ''
 	for (let i = 0; i < list.length; i++) {
 		text = text + list[i].fp + '|' + list[i].host + '|' + list[i].port.toString() + '|' +
-			list[i].peerId + '|' + list[i].name + '\n'
+			list[i].peerId + '|' + list[i].name + '|' + list[i].identity + '\n'
 	}
 	writeBytesOfFile(TRUST_FILE, bytesOf(text))
 }
@@ -509,7 +515,7 @@ function pinFor(host: string, port: number): string {
 	return ''
 }
 
-function addPin(host: string, port: number, fp: string, peerId: string, name: string): void {
+function addPin(host: string, port: number, fp: string, peerId: string, name: string, identity: string): void {
 	if (fp.length != 64) {
 		return
 	}
@@ -527,11 +533,15 @@ function addPin(host: string, port: number, fp: string, peerId: string, name: st
 		p.port = port
 		p.peerId = peerId
 		p.name = oneLine(name)
+		p.identity = identity.length == 64 ? identity : ''
 		list.push(p)
 	} else {
 		found!.fp = fp
 		found!.peerId = peerId
 		found!.name = oneLine(name)
+		if (identity.length == 64) {
+			found!.identity = identity
+		}
 	}
 	savePins(list)
 }
@@ -1933,7 +1943,8 @@ export function request(
 		// A pair that succeeded is the moment the peer becomes someone we trust: record the key the
 		// handshake actually saw, together with what the peer said its id and name are.
 		if (r.status == 200 && method == 'POST' && path == '/v1/pair' && r.fp != '') {
-			addPin(host, port, r.fp, fieldOf(r.body, 'peer_id'), fieldOf(r.body, 'name'))
+			addPin(host, port, r.fp, fieldOf(r.body, 'peer_id'), fieldOf(r.body, 'name'),
+				fieldOf(r.body, 'fingerprint'))
 		}
 		cb(r.status, r.body)
 		trace('C ' + method + ' ' + path + ' 已交给调用方')
@@ -1998,11 +2009,46 @@ export function pinnedFor(host: string, port: number, cb: (fp: string) => void):
 }
 
 /** The same answer without the round trip, for the listener: a request dials in from an address, and
- *  the receive half decides about a pair code inside that one synchronous call. What is pinned for an
- *  address is the digest this device saw while dialling *out* to it - which for a peer that serves its
- *  identity key is also the digest its pair message signs, and the receiver only ever matches on that. */
+ *  the receive half decides about a pair code inside that one synchronous call. Note that this is the
+ *  digest of the certificate seen while dialling *out* - a leaf, not the identity key the pair message
+ *  is signed with, and since #47 the two are different numbers on every end. Use identityForAddress
+ *  when the receiver needs the one its pair table is keyed on; this stays for the TLS side. */
 export function pinForAddress(host: string, port: number): string {
 	return pinFor(host, port)
+}
+
+/** The *identity* digest of whoever is pinned at this address, which the receive half needs to open its
+ *  door on a signature alone (spec §3). A record written by an older build has only the certificate, so
+ *  before answering '' this asks the one pair message that proves the two digests are one machine: the
+ *  caller declares its own leaf inside the signed bytes (`pair|peer_id|nonce|tls_fingerprint`), so a
+ *  record whose `fp` equals that declaration - and whose key digest we have never seen at this address -
+ *  gets the identity filled in from the key this request already carries. Nothing is invented here: an
+ *  address alone still trusts no one, because the pair is refused unless that key signs its own claim. */
+export function identityForAddress(host: string, port: number, declaredKey: string, declaredLeaf: string): string {
+	const list = loadPins()
+	let leaf = ''
+	for (let i = 0; i < list.length; i++) {
+		if (list[i].host == host && list[i].port == port) {
+			leaf = list[i].fp
+			if (list[i].identity.length == 64) {
+				return list[i].identity
+			}
+		}
+	}
+	if (declaredKey == '' || declaredLeaf == '' || leaf == '' || declaredLeaf != leaf) {
+		return ''
+	}
+	const identity = fpOfKeyB64(declaredKey)
+	if (identity == '') {
+		return ''
+	}
+	for (let i = 0; i < list.length; i++) {
+		if (list[i].host == host && list[i].port == port) {
+			list[i].identity = identity
+			savePins(list)
+		}
+	}
+	return identity
 }
 
 /** Undo the pin for one address - the phone's half of the PC's "撤销已配对设备". The next connection

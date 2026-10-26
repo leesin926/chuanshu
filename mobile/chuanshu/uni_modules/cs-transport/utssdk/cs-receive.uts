@@ -539,8 +539,16 @@ export function sweep(inbox: Inbox, now: number, drop: DropFn, digestFile: Diges
  *  makes a resumed pair deadlock: the caller keeps its pin over a restart, so it sends no code, while
  *  this receiver - which met that caller on the way out, not on the way in - asks for one it cannot get.
  *  `publicKeyB64` stays empty on purpose: an address being known says nothing about the key behind it,
- *  and the code only ever stops demanding one after that key has signed something. */
-export function adoptPin(inbox: Inbox, fingerprint: string, peerId: string, name: string): void {
+ *  and the code only ever stops demanding one after that key has signed something.
+ *
+ *  `fingerprint` is the *identity* digest, because that is the only number pairReply ever looks a
+ *  peer up by: it is the hash of the key the pair message signs with (cs-receive.uts pairReply ->
+ *  keyFp(declared)), never the certificate the socket handed out. A caller that only knows the leaf
+ *  has to pass '' here and let the peer redeem a code - adopting by the leaf used to be exactly what
+ *  made this bridge miss, because since #47/#106 no end signs the certificate it serves with its
+ *  identity key, so the two digests are two different numbers. `leaf`, when known, is recorded on the
+ *  entry so samePeer can still tell the two halves of one machine apart for the single-session slot. */
+export function adoptPin(inbox: Inbox, fingerprint: string, peerId: string, name: string, leaf: string): void {
 	if (fingerprint.length != 64) {
 		return
 	}
@@ -548,6 +556,7 @@ export function adoptPin(inbox: Inbox, fingerprint: string, peerId: string, name
 	if (known != null) {
 		if (peerId != '') known.peerId = peerId
 		if (name != '') known.name = name
+		if (leaf != '' && known.tlsFingerprint == '') known.tlsFingerprint = leaf
 		return
 	}
 	const entry = new Trust()
@@ -555,6 +564,7 @@ export function adoptPin(inbox: Inbox, fingerprint: string, peerId: string, name
 	entry.peerId = peerId
 	entry.name = name
 	entry.publicKeyB64 = ''
+	entry.tlsFingerprint = leaf
 	inbox.trusted.push(entry)
 }
 
