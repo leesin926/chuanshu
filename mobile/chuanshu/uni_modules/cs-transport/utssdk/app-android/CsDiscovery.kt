@@ -206,6 +206,31 @@ object CsDiscovery {
 
     // ------------------------------------------------------------------- UDP path
 
+    /** The IPv4 address behind a source the platform wrapped, or null when it really is IPv6 - and a
+     *  v6 announcement is not usable, because the contract's hello path has no scope id to reach it. */
+    private fun asIPv4OrNull(from: InetAddress): Inet4Address? {
+        if (from is Inet4Address) {
+            return from
+        }
+        val bytes = from.address
+        if (from !is java.net.Inet6Address || bytes.size != 16) {
+            return null
+        }
+        for (index in 0 until 10) {
+            if (bytes[index] != 0.toByte()) {
+                return null
+            }
+        }
+        if (bytes[10] != 0xff.toByte() || bytes[11] != 0xff.toByte()) {
+            return null
+        }
+        return try {
+            InetAddress.getByAddress(bytes.copyOfRange(12, 16)) as? Inet4Address
+        } catch (e: Throwable) {
+            null
+        }
+    }
+
     private fun unbound(): DatagramSocket? =
         try {
             // Bound only after the options are set: SO_BROADCAST has to be on the socket before it can
@@ -266,17 +291,16 @@ object CsDiscovery {
                     }
                     break
                 }
-                val from = packet.address
-                if (from !is Inet4Address) {
-                    // An IPv6 announcement would need a scope id to be reachable, and the contract's
-                    // hello path has none. Ignored rather than dialled wrong.
-                    continue
-                }
+                // The socket is bound to `[::]`, so a v4 talker can arrive either as an Inet4Address -
+                // which is what the device answers on the emulator - or wrapped as ::ffff:a.b.c.d.
+                // Both mean the same machine; a real IPv6 source is the one that cannot be dialled,
+                // because the contract's hello path carries no scope id to reach a link-local peer.
+                val source = asIPv4OrNull(packet.address) ?: continue
                 bytesIn.addAndGet(packet.length)
                 val text = String(packet.data, packet.offset, packet.length, StandardCharsets.UTF_8)
                 deliver(inbound, JSONObject()
                     .put("via", "udp")
-                    .put("host", from.hostAddress ?: "")
+                    .put("host", source.hostAddress ?: "")
                     .put("text", text)
                     .toString())
             }

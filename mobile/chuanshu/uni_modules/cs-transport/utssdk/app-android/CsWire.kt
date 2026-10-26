@@ -141,7 +141,10 @@ object CsWire {
             val got = hexOf(sha256(leaf.publicKey.encoded))
             seen = got
             if (!pinAccepts(pinHex, got)) {
-                throw CertificateException("期望 $pinHex，收到 $got")
+                // Say which of the two numbers this is: a pin entry is a whole digest, an announcement
+                // only carries a prefix, and the reader needs to know which promise was broken.
+                val label = if (pinHex.length == 64) "已固定 " else "广播里报的是 "
+                throw CertificateException("$label$pinHex，收到 $got")
             }
         }
 

@@ -111,10 +111,15 @@ function range(count: number): number[] {
 }
 
 /** A refused certificate is decided by the transport before any endpoint runs, so it is not one
- *  of the contract's wire codes and has no msgid - it gets its own wording here instead. */
+ *  of the contract's wire codes and has no msgid - it gets its own wording here instead.
+ *
+ *  It must not name the kind of promise that broke: on a candidate picked from the LAN roster nothing
+ *  is pinned yet at all (the card says so on the line below), and the value that was checked came from
+ *  the announcement. Which of the two it was is the detail's job - each host prints 已固定 or
+ *  广播里报的是 next to the number it compared. */
 function pinText(code: string): string {
 	if (code == 'TLS_PIN_MISMATCH') {
-		return '对端证书与已固定的指纹不符，已中止'
+		return '对端证书与要核对的指纹不符，已中止'
 	}
 	return errorText(code)
 }
