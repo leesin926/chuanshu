@@ -111,6 +111,7 @@ import {
 	storeDigestFile,
 	storeDropFile,
 	storeFileExists,
+	storeLinkKind,
 	digestBytes,
 	fingerprintOfKey,
 	verifySignature,
@@ -2018,6 +2019,42 @@ export function lanVerify(prefix: string, fingerprint: string): boolean {
 
 export function lanSelfReport(): string {
 	return selfReport()
+}
+
+/** #148：接收路径那条守卫在这台机器上的读数。守的是合同 §5 最后一条（中间那一环是符号链接就不许写过去）。
+ *
+ *  这一平台的写法是 `lstatSync` + `isSymbolicLink()`：`@ohos.file.fs` 里没有 `realpath`，Android 那句
+ *  "算出 canonical 再比前缀"在这里没有对应的调用，只能一环一环自己问。屏幕上量的是几件读得到的事：接收根
+ *  不是链接（顺带说清它在落第一个文件之前本来就不存在）、普通路径照样落得下去（守卫不能顺手把正常写入
+ *  拦死）、新建出来的那一环和那个文件各自的读数、还没建出来的那一环是放行而不是拒绝——最后一条决定续传能不能
+ *  穿过一个刚被回收掉的目录。还有一件，"中间那一环真的是链接"，第三方应用在这台机器上造不出来：`fs.symlink` 从 API 11 起只留给系统应用，模拟器的 shell 又是
+ *  uid 2000、连这个沙箱都进不去。所以那句"造不出"是这一趟证据的边界，不是漏跑的一条腿。 */
+export function probeRecvGuard(): string {
+	const out: string[] = []
+	out.push('还没收过东西时的接收根：' + storeLinkKind('.') + '（none 是正常的：这一环是 prepare 落第一个文件时才建出来的）')
+	const rel = '_guard/plain.bin'
+	const bytes = new ArrayBuffer(8)
+	const view = new Uint8Array(bytes)
+	for (let i = 0; i < 8; i++) {
+		view[i] = 65 + i
+	}
+	const dest = storePrepareFile(rel, 8)
+	out.push('普通路径 prepare：' + (dest == '' ? '被拒（不该）' : '落得下去'))
+	out.push('新建出来的那一环读数：' + storeLinkKind('_guard') + '（守卫一环一环问的就是这种）')
+	const why = dest == '' ? '没落盘，这一支跳过' : storeWriteAt(rel, 0, bytes)
+	out.push('写 8 字节：' + (why == '' ? '成功' : why))
+	out.push('文件读数：' + storeLinkKind(rel) + '（要的是 file，不是 link）')
+	out.push('磁盘摘要：' + storeDigestFile(rel))
+	out.push('落过一个文件以后的接收根：' + storeLinkKind('.') + '（要的是 dir）')
+	const deep = storePrepareFile('_guard/deep/again.bin', 8)
+	out.push('还没建出来的一环：' + (deep == '' ? '被拒（不该，续传会死在这里）' : '放行，mkdir 把后面补上'))
+	const up = storePrepareFile('../escape.bin', 8)
+	out.push('往上跳的一环：' + (up == '' ? '拒掉' : '居然放行了（缺陷）'))
+	storeDropFile(rel)
+	storeDropFile('_guard/deep/again.bin')
+	out.push('清场：' + storeLinkKind('_guard') + '（要的是 none，drop 把空目录一起收掉）')
+	out.push('符号链接那一支：这台机器造不出链接（`fs.symlink` API 11 起只给系统应用，shell 是 uid 2000 进不了沙箱）——代码里读，设备上跑不到')
+	return out.join('\n')
 }
 // #endif
 

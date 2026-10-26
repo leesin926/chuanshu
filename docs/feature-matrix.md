@@ -137,6 +137,7 @@ Linux 与 Windows 的三个真实分歧，都已落到代码分支：
 | 协议 §7：版本按两个集合的交集判（#144） | 完成 | `编译门`（`.probe/c144_harmony.log`：`项目 chuanshu 编译成功。` + `运行包制作成功`）+ `浏览器`（`发送 20 / 接收 61 / 发现 22` 三项全过）。**本端没有第二份代码要改**：判据与集合都在共用的 `cs-protocol.uts` / `cs-client.uts` / `cs-receive.uts` 里（见 §3.2 那一行），`app-harmony/index.uts` 只负责把体里的 `compatible_versions` 原样递给状态机。发现那一条支仍在 `cs-discovery.uts` 里只比一个数——UDP 的公告只印得下一个版本，集合本身要等 hello，注释写在那里 |
 | 收：同一个 `offer_id` 只问用户一次（#145，与 PC、与安卓同一条规则） | 完成 | `编译门`（`.probe/c145_harmony.log`：`项目 chuanshu 编译成功。` + `运行包制作成功`）+ `浏览器`（`接收自检 66 项全部通过`）。**本端没有第二份代码要改**：记答案的五处都在共用的 `cs-receive.uts`（见 §3.2 那一行）。改之前鸿蒙这一头只记一种——用户在卡片上按的那一句由 `store/session.uts` 的 `receiveDecide`（`#ifdef APP-HARMONY` 那一段）补进 `settleOffer`，安卓对应的那一处在 `utssdk/app-android/index.uts`；而"这一单已经结束了"那两种（闲置回收、对方 `DELETE`）谁都没记，重发的清单于是会再弹一次卡片 |
 | 身份：设备名用户可改，改完 hello / 广播都念新的，落在沙箱 `settings.json`（#146，合同 §1，与安卓同一条规则） | 完成 | `编译门`（`.probe/c146_harmony.log`：`项目 chuanshu 编译成功。` + `运行包制作成功`）+ `浏览器`（共用规则与 hello 那份副本的腿见 §3.4 第 15 组）。本端只有两处：`app-harmony/index.uts` 里 `deviceName()` 先读 `settings.json` 的 `device_name`、读不到才回落 `marketName`/`productModel`（§1 那个文件名保留合同的写法，不加 `chuanshu-` 前缀；`fieldOf` 已经够用，不需要 JSON 库），新导出 `deviceNameSave` 同步写文件；**刷副本的活儿落在 `store/session.uts`**——这一端的接收状态机跑在页面旁边（`harmonyReceive`），hello 用的 `recvSelf` 与公告用的 `discName` 都是 store 的变量，不像安卓宿主那样自带缓存，所以改名成功后由 store 把 `recvSelf` 丢掉（下一次请求照 `deviceNameText()` 重建，读到的就是刚写进去的那一个）并顶掉 `discName`。ArkTS 侧不能 import 同目录的 `.uts`，`nameWithDefault` 那两行只能在 `deviceName()` 里照写一遍——与 `TRANSPORT_PORT` 同一个理由 |
+| 收：§5 最后一条——写出前把路径一环一环核到底，中间那一环是符号链接就不许写过去（#148） | 完成 | `编译门`（`.probe/c148_harmony2.log`：`项目 chuanshu 编译成功。` + 同一趟 `运行包制作成功`；另有一道 `.probe/c148_android2.log` 干净缓存复跑，证明那半边的 `#ifdef` 没被伤到）+ `模拟器`（`127.0.0.1:10001`，`我的` → `平台能力探针` → 新加的那一个按钮，原文 `.probe/h_148.txt`：「还没收过东西时的接收根：none」→ 落过一个文件以后「dir」；新建出来的那一环「dir」；那个文件「file（要的是 file，不是 link）」；写进去的 8 字节读回来磁盘摘要 `9ac2197d9258257b…`，宿主机上 `sha256("ABCDEFGH")` 是同一个数；`_guard/deep/again.bin` 那种"中间还没建出来"的放行，续传才可能穿过一个刚被回收掉的目录；`../escape.bin` 拒掉；清场后 `_guard` 读回 none）+ `截图`（`.probe/h_148_guard.jpg`：那十行就在屏上）。**规则只有一份**，落点是 `app-harmony/index.uts::recvPath`——这一端把 relpath 变成磁盘位置的地方只有它，六个调用点（prepare / write / digest / drop / `storeFileExists` / 台账那一个）全从它走，所以守卫不必抄第二遍，也不可能漏一处。这一平台确实没有 `realpath`（`@ohos.file.fs.d.ts` 里查不到这个导出），安卓那句 `File.canonicalFile` 算完再比前缀在这里没有对应的调用，能问的只有 `lstatSync(path): Stat`（同一份 d.ts 第 1755 行，文档原话就是 "Obtains information about a symbolic link"）和 `Stat.isSymbolicLink()`（5056），于是 `noLinkBelowRoot` 改成**从接收根往下的一环一环问**：任何一环是链接，整条路径不作数；问到不存在的那一环就停——不在＝后面更不会在，prepare 那句 `mkdirSync(parent, true)` 负责把剩下的补出来。用 lstat 而不是 access 是这一条的关键：`accessSync` 跟着链接走，一个悬空的链接它正好答"没有这个文件"，于是写入会顺着那条链接出去。**拒绝链接那一支在这台机器上造不出来**，这一点也写进了屏上那一行：`fs.symlink` 从 API 11 起只对系统应用开放（还是那份 d.ts 的注释），而模拟器的 shell 是 uid 2000、连这个沙箱都进不去（`ls /data/app/el2/100/base/` 报 Permission denied，也没有 `su`）——所以那一支的证据到 `编译门` + 代码读为止，档位不往上编。另外把 `relOk` 顶上那句注释改了口：它说"这一平台没有 canonical-path 调用"是实情，但被读成了"§5 这一条做不到"，而做得到 |
 | 后台限制的产品处理（#143 的另一半：这一端没有机制，只有合同要求的那句话） | 完成 | `模拟器` + `截图`（`127.0.0.1:10001`：监听开着时「我的」页那行「这一端没有后台保活，退到后台或锁屏可能被系统冻住：请保持传书在前台」，点掉监听那行跟着收回；`.probe/_c143_hold_harmony.jpeg` 里它是红的，与同屏那句绿色的「正在监听 43720…」并排。原文 `.probe/c143_device_legs.md`。这句话过去只在文档里，`pages/` 与 `store/` 里一个字都没有——写它的人把口径当成了实现） |
 
 ### 3.4 浏览器（H5 目标）
@@ -364,9 +365,8 @@ E:\android-sdk\emulator\emulator.exe -avd chuanshu34b -no-window -no-audio -no-b
    （把对端的**叶**钉在地址上），再让那一台**不带配对码**拨回来，看手机答 `resumed=true` 而不是 `BAD_PAIR_CODE`。
    一台 AVD + 本机就当两台机器够用（发送方拨 `10.0.2.2`，回拨走 `adb forward tcp:<hostport> tcp:43720`），
    缺的是那个"已经固定过这台手机、于是留空码"的 Python 对端；旧的 `#88` 设备腿也是这么欠着的，这一次别再只停在编译门。
-10. **#140 那一轮逐条巡检剩下的两条**（已立案，未动手）：
-    #147 闲置回收删"半截文件"按单还是按文件（PC 连已校验的一起删，手机留着——口径题）；#148 鸿蒙 §5 的符号链接检查（`realpath` 确实没有，
-    `lstatSync` + `Stat.isSymbolicLink()` 顶得上，那句"这平台做不到"的注释是错的）。
+10. **#140 那一轮逐条巡检剩下的一条**（已立案，未动手）：
+    #147 闲置回收删"半截文件"按单还是按文件（PC 连已校验的一起删，手机留着——口径题，要用户定）。
     （同批的 #142 已经落地，见 §3.2 / §3.3 那两行；它欠的那次上机是下面第 11 条。**#143 也落地了**，
     见 §3.2 那一行——顺带把合同 §6 里 `dataTransfer` 那个预览期叫法改成了正式版的 `dataSync`；
     它欠的那一次"退到后台还收得到"在第 13 条。**#144 也落地了**，见 §2 那一行与 §3.1 / §3.2 / §3.3 那三行：
@@ -379,7 +379,12 @@ E:\android-sdk\emulator\emulator.exe -avd chuanshu34b -no-window -no-audio -no-b
     欠的那一次"重发真的落到一台活手机上"在第 15 条。**#146 也落地了**，见 §3.2 / §3.3 / §3.4 那三行：合同 §1 那一
     唯一「用户可改」的身份字段，手机这一端以前根本没有能改它的地方（名字是 `Build.MODEL` / `marketName` / 浏览器名读出来的），
     现在三端共用一条规则、各端把名字存进自己私有目录的 `settings.json`、改名以后 hello / 广播 / 清单念的都是新的那一个。
-    证据到 `编译门` + `浏览器`；欠的那一次"重启后还是这个名字"在第 16 条。）
+    证据到 `编译门` + `浏览器`；欠的那一次"重启后还是这个名字"在第 16 条。**#148 也落地了**，见 §3.3 那一行：合同 §5
+    最后一条（写出前核到符号链接）在鸿蒙这一端补上了——这一平台确实没有 `realpath`，能问的只有 `lstatSync` +
+    `Stat.isSymbolicLink()`，所以守卫改成从接收根往下**一环一环问**，任何一环是链接就整条不作数；它是 `recvPath` 这一个
+    咽喉上的唯一一份，六个调用点全从它走。设备腿在 `127.0.0.1:10001` 跑过（`模拟器` + `截图`），但**"中间那一环真的是
+    链接"这一支在这台机器上造不出来**：`fs.symlink` 从 API 11 起只给系统应用，模拟器的 shell 是 uid 2000、进不了这个沙箱——
+    那一支只有代码读，档位不往上编，屏上那行也这么写着。）
 11. **#142 的设备腿** — 顺序改对了，但两处都只有编译门与浏览器：一、从名单点中那一行，前缀得真的走到
     `pinPrefix`（`store/session.uts` 的 `#ifdef APP-*` 那一步，H5 走不到）；二、正常路径不能被这道核对误伤——
     两台模拟器互点一次，日志要出现「已核对：<前缀> 这台机器在 TLS 上就是它自己」并且配对照旧成。

@@ -33,6 +33,9 @@
 		<view class="row">
 			<button class="btn" @click="runSendBatch">造多文件（中文子目录）发给对端</button>
 		</view>
+		<view class="row">
+			<button class="btn" @click="runGuard">接收路径守卫读数</button>
+		</view>
 		<!-- #endif -->
 		<!-- #ifdef APP-ANDROID -->
 		<view class="row">
@@ -83,6 +86,9 @@
 	// #endif
 	// #ifdef APP-ANDROID || APP-HARMONY
 	import { probeSendTestFile, probeSendTestBatch, onSend } from '@/store/session.uts'
+	// #endif
+	// #ifdef APP-HARMONY
+	import { probeRecvGuard } from '@/store/session.uts'
 	// #endif
 
 	const lines = ref('还没有运行。')
@@ -161,6 +167,14 @@
 		}
 		onSend()
 		lines.value = '已造好三个文件（含中文子目录）并发出。进度与「对方已收下」看发送文件页。'
+	}
+	// #endif
+
+	// #ifdef APP-HARMONY
+	/** #148：合同 §5 最后一条在这台设备上的读数——接收根、一个普通路径、还没建出来的那一环，以及守卫
+	 *  用的那个 `lstat` 到底说什么。只碰本机文件，不碰网络，所以监听关着也能按。 */
+	function runGuard() {
+		lines.value = probeRecvGuard()
 	}
 	// #endif
 

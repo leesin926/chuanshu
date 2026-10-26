@@ -975,9 +975,9 @@ function newId(): string {
 /** Whether a manifest's relative path may be joined onto the receive directory.
  *
  *  The state machine already refuses the escapes it knows about (`pathReject`); this is the second
- *  guard, because a receiver must not have to trust the code that calls it. There is no canonical-path
- *  call on this platform, so the rule is structural: nothing empty, nothing dotted, no separator or
- *  drive letter that could mean a different tree. */
+ *  structural guard, because a receiver must not have to trust the code that calls it: nothing empty,
+ *  nothing dotted, no separator or drive letter that could mean a different tree. The third guard - the
+ *  one for a component that is a link rather than a directory - is below, in `noLinkBelowRoot`. */
 function relOk(relpath: string): boolean {
 	if (relpath.length == 0) {
 		return false
@@ -999,8 +999,37 @@ function relOk(relpath: string): boolean {
 	return true
 }
 
+/** §5's last bullet, answered with the one call this platform has. There is no `realpath` in
+ *  `@ohos.file.fs`, so there is no "resolve, then compare the prefix" like Android's
+ *  `File.canonicalFile` (CsStore.kt:32): instead every component from the receive root down is
+ *  `lstat`'d and a link anywhere on the way ends the path. A link is the only way a component this end
+ *  did not create can point the sender's bytes at a file outside the offer directory, so refusing it is
+ *  that same containment rule stated from the other side - and it covers the dangling case, where the
+ *  target does not exist yet and `accessSync` would have answered "not there".
+ *
+ *  The walk stops at the first component that is not there at all: nothing deeper can be, and the
+ *  `mkdirSync(..., true)` the prepare does next is what makes the rest. */
+function noLinkBelowRoot(relpath: string): boolean {
+	const parts = relpath.split('/')
+	let path = RECV_DIR
+	for (let i = 0; i < parts.length; i++) {
+		path = path + '/' + parts[i]
+		try {
+			if (fs.lstatSync(path).isSymbolicLink()) {
+				return false
+			}
+		} catch (e) {
+			return true
+		}
+	}
+	return true
+}
+
 function recvPath(relpath: string): string {
-	return relOk(relpath) == false ? '' : RECV_DIR + '/' + relpath
+	if (relOk(relpath) == false) {
+		return ''
+	}
+	return noLinkBelowRoot(relpath) == false ? '' : RECV_DIR + '/' + relpath
 }
 
 /** Where the bytes go, or '' - which the state machine turns into STORAGE_FULL rather than a quiet
@@ -1035,7 +1064,7 @@ function storePrepare(relpath: string, size: number): string {
 function storeWrite(relpath: string, offset: number, data: ArrayBuffer): string {
 	const where = recvPath(relpath)
 	if (where == '') {
-		return '这个路径不在接收目录里'
+		return '这个路径不在接收目录里，或者它中间有一环是符号链接'
 	}
 	if (offset < 0) {
 		return '偏移是负数'
@@ -2683,6 +2712,24 @@ export function storeFileExists(relpath: string): boolean {
 		return fs.accessSync(where)
 	} catch (e) {
 		return false
+	}
+}
+
+/** What the receive root says about one of its own paths: `dir`, `file`, `link`, or `none`.
+ *
+ *  Diagnostic, for the 探针 page (#148) - and deliberately not run through `recvPath`, because the page
+ *  is asking what the guard would see. `lstatSync` is the call that answers: it does not follow a link,
+ *  so it is the only way to tell a link from whatever it points at. `accessSync`, which the arrival
+ *  ledger uses, follows and cannot. */
+export function storeLinkKind(relpath: string): string {
+	try {
+		const st = fs.lstatSync(RECV_DIR + '/' + relpath)
+		if (st.isSymbolicLink()) {
+			return 'link'
+		}
+		return st.isDirectory() ? 'dir' : 'file'
+	} catch (e) {
+		return 'none'
 	}
 }
 
