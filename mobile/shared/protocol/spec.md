@@ -252,6 +252,11 @@ park 到点之前。被回收之后，迟到的分块拿到 `404 OFFER_UNKNOWN`�
 `compatible_versions` 列出双方都能跑的版本集合，取交集非空才继续；否则
 `400 UNSUPPORTED_PROTOCOL`。字段只增不改语义；要改语义就升 `protocol_version`。
 
+这个集合出现在每一处"说自己"的场合：`hello`、`pair` 的应答，以及 `pair`/`offer` 的请求体。
+写在请求体里不是因为 hello 可以省——是因为接收方不会回拨去读对方的 hello，对方的集合只可能
+从这两个请求体里拿到。请求体不带这个字段，就按它印出的 `protocol_version` 那一个数当作整个
+集合：那是这个字段之前的一版，不是把它当陌生人的理由。
+
 ## 8. 云中转分支
 
 `cloud-relay` 分支不复制本契约，只替换寻址：peer 把七个端点当成对中继的调用，

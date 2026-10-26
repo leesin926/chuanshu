@@ -127,8 +127,11 @@ def verify_peer(proto: protocol_spec.Protocol, peer: Peer) -> Peer:
             raise protocol_spec.ProtocolError(str(body.get("code") or "UNSUPPORTED_PROTOCOL"), body)
     finally:
         conn.close()
-    if not proto.supports(int(body.get("protocol_version") or 0)):
-        raise protocol_spec.ProtocolError("UNSUPPORTED_PROTOCOL", {"peer_version": body.get("protocol_version")})
+    if not proto.intersects(body.get("compatible_versions"), int(body.get("protocol_version") or 0)):
+        raise protocol_spec.ProtocolError("UNSUPPORTED_PROTOCOL", {
+            "peer_version": body.get("protocol_version"),
+            "peer_compatible": body.get("compatible_versions"),
+        })
     adopt_hello(proto, peer, digest, body)
     return peer
 
@@ -350,6 +353,8 @@ class DiscoveryService:
             # record: you are not a device to pair with.
             return
         if not self.proto.supports(version):
+            # Broadcast and mDNS announce ONE version, so the roster only filters on that number;
+            # the sets meet in verify_peer(), which reads the hello before anything is paired.
             log.info("dropping %s (%s): protocol v%s is not compatible", prefix, name, version)
             return
         with self._lock:

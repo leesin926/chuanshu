@@ -217,6 +217,33 @@ def phase_in_process(proto: protocol_spec.Protocol, workspace: Path) -> None:
         status, payload = no_token._request("POST", "/v1/offer", json_body=conn._manifest)
         check("stale token rejected by the receiver", status == proto.http_status("NOT_PAIRED") and payload["code"] == "NOT_PAIRED", f"{status} {payload}")
         check("known key repairs its own session", conn.pair()["resumed"] is True)
+        check("pair reply restates the peer's version set", conn.peer.get("compatible_versions") == list(proto.compatible_versions), conn.peer)
+
+        # spec §7 decides from two version sets, not from the one number a peer prints: the set a sender
+        # speaks has to ride on its own bodies (a receiver never dials back for a hello), and a peer whose
+        # set holds nothing we speak is stopped at the hello - the direction this end read backwards.
+        check("offer carries this end's version set", conn._manifest.get("compatible_versions") == list(proto.compatible_versions), conn._manifest)
+        other = replace(conn.proto, compatible_versions=(2,))
+        single_version = ReceiveService(receiver, "Other-Version", decide, host="127.0.0.1", port=0, root=workspace / "v2-received")
+        single_version.proto = other
+        single_version.start()
+        try:
+            later = PeerConnection(sender, "PC-Sender", "127.0.0.1", single_version.port, receiver.served_fingerprint)
+            expect_error("a peer speaking only another set stops at the hello", "UNSUPPORTED_PROTOCOL", lambda: later.hello())
+        finally:
+            single_version.stop()
+
+        strays = dict(conn._manifest)
+        strays["offer_id"] = "strayversion"
+        strays["compatible_versions"] = [2]
+        status, payload = conn._request("POST", "/v1/offer", json_body=strays)
+        check("an offer whose set excludes us is refused", status == proto.http_status("UNSUPPORTED_PROTOCOL") and payload["code"] == "UNSUPPORTED_PROTOCOL", f"{status} {payload}")
+
+        legacy = dict(conn._manifest)
+        legacy["offer_id"] = "legacyversion"
+        legacy.pop("compatible_versions")
+        status, payload = conn._request("POST", "/v1/offer", json_body=legacy)
+        check("an offer naming no set is judged by its own number", status == 200, f"{status} {payload}")
 
         hostile = [
             ("../escape.txt", "PATH_REJECTED"),
@@ -805,6 +832,11 @@ def main() -> int:
         phase_shared_identity(proto, workspace)
     phase_catalogue(proto)
     check("chunks per file match the contract", proto.chunk_size == 4194304, proto.chunk_size)
+    # The four shapes §7 can arrive in; the wire legs above are what prove both ends consult them.
+    check("§7 a peer that can speak one of ours fits, whatever it is", proto.intersects([1, 2], 9))
+    check("§7 a peer whose set excludes us does not, whatever it prints", not proto.intersects([2], 1))
+    check("§7 a peer naming no set falls back to the number it printed", proto.intersects(None, 1) and proto.intersects([], 1))
+    check("§7 a legacy peer on another version is still refused", not proto.intersects(None, 9))
     print("\n".join(REPORT.read_text(encoding="utf-8").splitlines()))
     print("RESULT " + (f"FAILED {len(fails)}: " + " / ".join(fails) if fails else "ALL PASS"))
     return 1 if fails else 0

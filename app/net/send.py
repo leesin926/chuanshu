@@ -290,8 +290,13 @@ class PeerConnection:
         status, payload = self._request("GET", "/v1/hello")
         if status != 200:
             raise protocol_spec.ProtocolError(str(payload.get("code")), payload.get("detail"))
-        if not self.proto.supports(int(payload.get("protocol_version") or 0)):
-            raise protocol_spec.ProtocolError("UNSUPPORTED_PROTOCOL", {"peer_version": payload.get("protocol_version")})
+        peer_version = int(payload.get("protocol_version") or 0)
+        if not self.proto.intersects(payload.get("compatible_versions"), peer_version):
+            raise protocol_spec.ProtocolError("UNSUPPORTED_PROTOCOL", {
+                "peer_version": payload.get("protocol_version"),
+                "peer_compatible": payload.get("compatible_versions"),
+                "mine": list(self.proto.compatible_versions),
+            })
         self.peer = payload
         self.hello_read = True
         self.learn_pace()
@@ -328,6 +333,9 @@ class PeerConnection:
             "peer_id": self.identity.peer_id,
             "name": self.device_name,
             "protocol_version": self.proto.version,
+            # §7's intersection needs both sets, and the receiver never dials back to read mine - so
+            # the pair body carries it. A peer that predates the field reads no key and falls back.
+            "compatible_versions": list(self.proto.compatible_versions),
             "nonce": nonce,
             "public_key": base64.b64encode(self.identity.raw_public_key()).decode(),
             "signature": base64.b64encode(self.identity.key.sign(message)).decode(),
@@ -369,6 +377,8 @@ class PeerConnection:
         manifest = {
             "offer_id": secrets.token_hex(8),
             "protocol_version": self.proto.version,
+            # Same reason as in pair(): the receiver decides §7 from two sets, not from one number.
+            "compatible_versions": list(self.proto.compatible_versions),
             "total_size": sum(f.size for f in files),
             "from": {"peer_id": self.identity.peer_id, "name": self.device_name},
             "files": [f.manifest() for f in files],

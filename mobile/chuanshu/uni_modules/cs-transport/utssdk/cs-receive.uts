@@ -14,6 +14,7 @@
  *  resolveOffer(). On the wire nothing differs: the sender's POST /v1/offer simply takes longer. */
 import {
 	PROTOCOL_VERSION,
+	COMPATIBLE_VERSIONS,
 	CHUNK_SIZE,
 	TRANSPORT_PORT,
 	MAX_FILES_PER_OFFER,
@@ -29,10 +30,12 @@ import {
 	chunkSizeAt,
 	isFullFingerprint,
 	newPassphrase,
+	numList,
 	pairMessage,
 	parseJson,
 	pathReject,
-	randomHex
+	randomHex,
+	versionsOverlap
 } from './cs-protocol.uts'
 
 /** Constants from the PC receiver: the anti-replay window, and the lockout that stops a peer
@@ -40,7 +43,6 @@ import {
 const REPLAY_WINDOW_S: number = 300
 const CODE_LOCK_S: number = 60
 const CODE_MAX_FAILS: number = 5
-const COMPATIBLE_VERSIONS: number[] = [1]
 
 export type HexFn = (buf: ArrayBuffer) => string
 /** base64 of the raw 32-byte Ed25519 key -> hex SHA-256 of its SPKI DER, '' when the key is
@@ -312,15 +314,6 @@ function pendingReply(): WireReply {
 	const out = new WireReply()
 	out.pending = true
 	return out
-}
-
-function supports(version: number): boolean {
-	for (let i = 0; i < COMPATIBLE_VERSIONS.length; i++) {
-		if (COMPATIBLE_VERSIONS[i] == version) {
-			return true
-		}
-	}
-	return false
 }
 
 function newPairCode(): string {
@@ -777,8 +770,11 @@ function pairReply(
 		return failWith('NOT_PAIRED', { reason: 'tls_fingerprint is not a full SPKI digest' } as UTSJSONObject)
 	}
 	const version = Math.floor(body.getNumber('protocol_version', 0))
-	if (!supports(version)) {
-		return failWith('UNSUPPORTED_PROTOCOL', { peer_version: version } as UTSJSONObject)
+	// §7 is a set on each side, and this body is the only place a receiver can read the sender's set:
+	// it never dials back to ask for a hello.
+	const theirs = numList(body.getArray<number>('compatible_versions'))
+	if (!versionsOverlap(COMPATIBLE_VERSIONS, theirs, version)) {
+		return failWith('UNSUPPORTED_PROTOCOL', { peer_version: version, peer_compatible: theirs } as UTSJSONObject)
 	}
 	if (peerId == '' || nonce == '' || declared == '' || signature == '') {
 		return failWith('NOT_PAIRED', { reason: 'pair request is incomplete' } as UTSJSONObject)
@@ -861,6 +857,9 @@ function pairReply(
 		peer_id: self.peerId,
 		name: self.name,
 		protocol_version: PROTOCOL_VERSION,
+		// The pair reply restates what hello says (§3), and §7 needs the set: a sender that adopts this
+		// peer without a second hello would otherwise have one number to go on.
+		compatible_versions: COMPATIBLE_VERSIONS,
 		fingerprint: self.fingerprint,
 		resumed: resumed
 	} as UTSJSONObject)
@@ -873,8 +872,9 @@ function offerReply(inbox: Inbox, now: number, json: string, caller: string): Wi
 		return failWith('UNSUPPORTED_PROTOCOL', { reason: 'body is not a JSON object' } as UTSJSONObject)
 	}
 	const version = Math.floor(body.getNumber('protocol_version', 0))
-	if (!supports(version)) {
-		return failWith('UNSUPPORTED_PROTOCOL', { peer_version: version } as UTSJSONObject)
+	const theirs = numList(body.getArray<number>('compatible_versions'))
+	if (!versionsOverlap(COMPATIBLE_VERSIONS, theirs, version)) {
+		return failWith('UNSUPPORTED_PROTOCOL', { peer_version: version, peer_compatible: theirs } as UTSJSONObject)
 	}
 	const offerId = body.getString('offer_id', '')
 	const files = body.getArray<UTSJSONObject>('files')

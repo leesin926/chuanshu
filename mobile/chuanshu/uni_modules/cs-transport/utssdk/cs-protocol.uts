@@ -1,6 +1,10 @@
 /** Values mirrored from shared/protocol/protocol.json v1. That file is the contract both ends
  *  share; changing a number here without changing it there is a protocol fork. */
 export const PROTOCOL_VERSION: number = 1
+/** protocol.json's `compatible_versions`, restated so every module of this end asks the same
+ *  question of a peer. spec §7 decides from the two sets, not from one number, so each side has to
+ *  be able to say what it can speak as well as what the other one printed. */
+export const COMPATIBLE_VERSIONS: number[] = [PROTOCOL_VERSION]
 export const TRANSPORT_PORT: number = 43720
 export const CHUNK_SIZE: number = 4194304
 export const MAX_FILES_PER_OFFER: number = 2000
@@ -301,6 +305,9 @@ export function offerJson(offerId: string, files: CsFile[], peerId: string, name
 	const body: UTSJSONObject = {
 		offer_id: offerId,
 		protocol_version: PROTOCOL_VERSION,
+		// §7 is decided from two sets, and the receiver never dials back to read ours - so the
+		// manifest carries it. A peer that predates the field reads no key and falls back.
+		compatible_versions: COMPATIBLE_VERSIONS,
 		total_size: total,
 		from: from,
 		files: items
@@ -313,6 +320,7 @@ export function pairJson(peerId: string, name: string, nonce: string, publicKeyB
 		peer_id: peerId,
 		name: name,
 		protocol_version: PROTOCOL_VERSION,
+		compatible_versions: COMPATIBLE_VERSIONS,
 		nonce: nonce,
 		public_key: publicKeyB64,
 		signature: signature,
@@ -432,6 +440,41 @@ export function numList(value: number[] | null): number[] {
 		out.push(Math.floor(value[i]))
 	}
 	return out
+}
+
+/** spec §7: continue only when the two declared version sets overlap.
+ *
+ *  `theirs` empty is not an empty set - it is a peer that predates the field, and the single number
+ *  it printed is the only one it can be speaking, so that number stands in for the set. Refusing a
+ *  missing field would turn every older device into a stranger, which is the same reason §3 falls
+ *  back on `fingerprint` when a peer answers no `served`. */
+export function versionsOverlap(mine: number[], theirs: number[], peerVersion: number): boolean {
+	let declared: number[] = theirs
+	if (theirs.length == 0) {
+		const only: number[] = [peerVersion]
+		declared = only
+	}
+	for (let i = 0; i < declared.length; i++) {
+		for (let j = 0; j < mine.length; j++) {
+			if (declared[i] == mine[j]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+/** What a peer said it can speak, as the sentence a refusal shows. The same fallback as
+ *  versionsOverlap: a peer that named no set gets its own version printed in its place. */
+export function versionsText(theirs: number[], peerVersion: number): string {
+	let out = ''
+	if (theirs.length > 0) {
+		for (let i = 0; i < theirs.length; i++) {
+			out = out + (i > 0 ? ',' : '') + Math.floor(theirs[i]).toString()
+		}
+		return out
+	}
+	return Math.floor(peerVersion).toString()
 }
 
 export class ChunkPlan {

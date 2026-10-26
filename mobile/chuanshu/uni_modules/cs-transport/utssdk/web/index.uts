@@ -1391,6 +1391,29 @@ export function receiveSelfReport(): string {
 	const again = ask('POST', '/v1/offer', offerJsonText, new ArrayBuffer(0), '')
 	check('重复清单直接回当前进度', again.status == 200 && !again.pending)
 
+	// 5b. spec §7 is a set on each side, and a receiver reads the sender's only from this body - it never
+	// dials back for a hello. These two legs run on their own box, because an extra pending offer in the
+	// one below would move every count of it.
+	const vBox = newInbox()
+	const vPaired = askPairOn(vBox, SIM_PEER_ID, currentPairCode(vBox, nowSeconds()), passphraseOf(vBox, nowSeconds()), simKey)
+	const vObj = jsonOf(vPaired)
+	const vToken = vObj == null ? '' : vObj!.getString('token', '')
+	const vAsk = (text: string): WireReply => {
+		return askOn(vBox, SIM_PEER_ID, 'POST', '/v1/offer', text, vToken, new ArrayBuffer(0), '')
+	}
+	const strays = parseJson(offerJson(hexOf(randomBytes(8)), files, SIM_PEER_ID, SIM_NAME))
+	if (strays != null) {
+		const onlyTwo: number[] = [2]
+		strays!.set('compatible_versions', onlyTwo)
+		check('清单报的版本集合里没有我们这一版：拒', codeOfReply(vAsk(JSON.stringify(strays))) == 'UNSUPPORTED_PROTOCOL')
+	}
+	const noSet = parseJson(offerJson(hexOf(randomBytes(8)), files, SIM_PEER_ID, SIM_NAME))
+	if (noSet != null) {
+		const nothing: number[] = []
+		noSet!.set('compatible_versions', nothing)
+		check('清单没报版本集合时按它自己那一个数判，照样等人决定', vAsk(JSON.stringify(noSet)).pending)
+	}
+
 	// 6. chunks: store, reject a lying digest, reject the wrong length, and be idempotent.
 	const bigId = files[1].id
 	const bigSize = files[1].size
@@ -1642,6 +1665,10 @@ class ChunkSwallow {
 	/** How many `GET /state` questions this peer refuses to answer. Spec §4's third rule is about this
 	 *  shape - 问不到答案 - and it is the one leg the phones have evidence for and the browser did not. */
 	muteState: number = 0
+	/** Replace the version set this peer answers its hello with. `[]` is not an empty set - it is a peer
+	 *  that predates the field, so §7 has to read the number it printed instead. spec §7's two directions
+	 *  are what the two legs below measure. */
+	helloVersions: number[] | null = null
 	chunksSeen: number = 0
 	stateAsks: number = 0
 }
@@ -1685,6 +1712,16 @@ function swallowCaller(probe: ChunkSwallow): Caller {
 		}
 		const reply = askOn(probe.inbox, SIM_PEER_ID, method, path, jsonBody, token, unescapeChunk(body, escape), sha)
 		if (!reply.pending) {
+			if (probe.helloVersions != null && method == 'GET' && path == '/v1/hello') {
+				// The peer answers with its own set replaced, which is the only way to reach §7 from
+				// this side without a second device.
+				const said = parseJson(reply.body)
+				if (said != null) {
+					said!.set('compatible_versions', probe.helloVersions!)
+					cb(reply.status, JSON.stringify(said))
+					return
+				}
+			}
 			if (eat) {
 				// The bytes were served and stored; only the answer is taken back.
 				cb(0, swallowed('自检注入：体已落对端，回复被吞掉'))
@@ -1823,6 +1860,23 @@ export function senderSelfReport(): string {
 	runSender(f, SIM_TEXT, rf, 'deadbeefdeadbeef')
 	check('前缀对不上时在 hello 就停，没有发配对', rf.done && !rf.ok && rf.summary.indexOf('前缀') >= 0, rf.summary)
 	check('那一单一次 pair 都没打到对方的名单上', f.inbox.trusted.length == 0, f.inbox.trusted.length.toString())
+
+	// F. spec §7 has two directions, and this end used to ask only one of them. A peer that prints our
+	// version while saying it speaks only another set must be refused at the hello; a peer that names no
+	// set at all is one that predates the field, and refusing it would turn every older device into a
+	// stranger - the number it printed is then the whole set.
+	const g = new ChunkSwallow()
+	const noSetAtAll: number[] = []
+	g.helloVersions = noSetAtAll
+	const rg = new SenderRun()
+	runSender(g, SIM_TEXT, rg, '')
+	check('对端没报版本集合时按它印出的那一个数判，照常传成', rg.done && rg.ok, rg.summary)
+	const h = new ChunkSwallow()
+	h.helloVersions = [2]
+	const rh = new SenderRun()
+	runSender(h, SIM_TEXT, rh, '')
+	check('对端报的版本集合里没有我们这一版时在 hello 就停', rh.done && !rh.ok, rh.summary)
+	check('那一单也没打到对方的名单上', h.inbox.trusted.length == 0, h.inbox.trusted.length.toString())
 
 	out.push(fail == 0 ? '发送自检 ' + pass.toString() + ' 项全部通过' : '发送自检失败 ' + fail.toString() + ' 项，通过 ' + pass.toString() + ' 项')
 	return out.join('\n')

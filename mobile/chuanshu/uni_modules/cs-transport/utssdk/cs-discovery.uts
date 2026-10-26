@@ -20,8 +20,10 @@ import {
 
 /** protocol.json's compatible_versions, restated so this file stays pure. The PC reads it off the
  *  contract; a phone build ships the same list, and a candidate announcing anything else is dropped
- *  rather than shown, because pairing against it would fail later with a worse message. */
-const COMPATIBLE_VERSIONS: number[] = [1]
+ *  rather than shown, because pairing against it would fail later with a worse message.
+ *  A datagram names ONE version, so this end of §7 can only ask "is that number one we speak"; the
+ *  set itself is read from the hello, which is where both sides take the intersection. */
+const COMPATIBLE_VERSIONS: number[] = [PROTOCOL_VERSION]
 
 /** How many candidates one screenful of discovery can hold. Not a protocol value - a guard so a
  *  misbehaving announcer on the LAN cannot grow this array forever on a phone. */

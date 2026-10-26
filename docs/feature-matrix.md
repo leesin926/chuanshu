@@ -35,7 +35,7 @@ Ed25519 叶、TLS 记录会乱序到达——这三条都是上机才知道的�
 
 | 主题 | 口径 |
 |---|---|
-| 版本 | `protocol_version: 1`，`compatible_versions: [1]`；跨版本先握手再决定 |
+| 版本 | `protocol_version: 1`，`compatible_versions: [1]`。**§7 判的是两个集合的交集**，不是一个数：这个集合要出现在每一处"说自己"的场合——`hello`、`pair` 的应答，以及 `pair`/`offer` 的请求体。请求体也带它，是因为接收方不会回拨去读对方的 hello，对方的集合只可能从那两个体里拿到。哪一边没报集合，就按它印出的 `protocol_version` 那一个数当作整个集合——那是这个字段之前的一版，不是把它当陌生人的理由（与 §3 的 `served` 空值兜底同一条思路，#115）。**只有 UDP 公告和二维码不取交集**：那两处一个数都印不满一个集合，所以只筛数、把交集留给 hello（`app/net/discovery.py` 的 `_learn`、`app/net/spec.py` 的 `parse_qr`、手机的 `cs-discovery.uts`，三处都写着这条注释）。交集为空 → `400 UNSUPPORTED_PROTOCOL` |
 | 端口 | 传输 43720（TCP）、发现 43721（UDP） |
 | 发现 | 三条通道：mDNS 优先 → UDP 广播补充 → 扫码/手输兜底。**顺序不可颠倒，也不能只留 mDNS**；TXT 带 `ver/name/fp/ts`，announce 3 s，名单 15 s 过期；**Presence is not trust**（听见 ≠ 信任） |
 | 身份 | 一台设备**两个摘要**：Ed25519 身份密钥只签配对码；套接字递出的是独立签发的 **RSA-2048 自签叶**（`CN=peer_id`，20 年）。信任锚是叶的 SPKI SHA-256；二维码 `f=`、广播前缀、TLS 钉子钉的都是这个叶摘要。两个都**不是** `peer_id` |
@@ -56,6 +56,7 @@ Ed25519 叶、TLS 记录会乱序到达——这三条都是上机才知道的�
 | 功能点 | Windows GUI | Windows CLI | Linux GUI | Linux CLI |
 |---|---|---|---|---|
 | 收发双向（7 端点、断点续传、路径清洗、多文件带目录） | `门禁`+`模拟器`+`真机` | `门禁`+`真机` | `门禁` | `门禁`+`真机` |
+| 协议 §7：版本按**两个集合的交集**判，本端的集合在 `hello`、`pair` 应答与 `pair`/`offer` 体里都说得出（#144） | `门禁`（`ui_selftest.py` 那一趟 403 条全过，证的是"处处公开集合"没把正常配对/清单/落盘碰坏；交集那四条腿打在 `protocol_selftest.py` 上，跑在源码里、不分端） | `门禁`（`cli_selftest.py` 全过） | `门禁` | `门禁`（`linux_selftest.py` 27 条在 WSL Ubuntu-24.04 的 Python 3.12 上全过：这条支是平台无关的那一份 `spec.py`/`send.py`/`receive.py`，Linux 没有第二套判据） |
 | 发：节奏已在 40 ms 下限时体仍被管道吐掉 → 先问 `state`，对方说没到就重写那一块（#130，不判死整单） | `门禁`+`模拟器` | `门禁`+`模拟器` | `门禁` | `门禁` |
 | 发：上面那一次 `state` 问不到答案时**一次都不重写**、当场抛原错误（#137，合同 §4 后半句的前一种；手机那半边同一支的模拟器腿见 §3.2/§3.3 的 `mute`） | `门禁` | `门禁` | `门禁` | `门禁`（这一支的证据是 `protocol_selftest.py` 那两条腿，跑在源码上；#139 那一批产物把它带进了两个包里，包内冒烟证的是"跑得起来、四条 CLI 腿还在"，不是这一支本身） |
 | 接收确认（谁在拨、几个文件、60/65 s 内必须回答） | `门禁` | `门禁` | `门禁` | `门禁` |
@@ -105,6 +106,7 @@ Linux 与 Windows 的三个真实分歧，都已落到代码分支：
 | 取消两级：收回排队里的请求（A 级）+ 掐掉正在写的那一块（B 级） | 完成 | `模拟器`（#124 两条 leg 全 YES：半块断掉对端看得见、按下 2.2 s 停下、重发逐字节一致、取消不让节奏爬阶梯。**#136 在 #132 之后重跑过同一趟**，仍全 YES：按下取消 2.6 秒后屏上 `失败：本机取消了这次传输 用户按下了取消`，对端账本 `分块头 0→1 / 收完整块 0→0 / 断在半路 0→1`——**只上过线一次**，这就是这一趟真正要守的东西：#132 改的正是同一条 `putChunk`（`status == 0` 那一支现在会先问一次 `state`，问到"没到"还会重写那一块），而"本机自己收回"必须走不到那一支里去——它靠 `code != 'CANCELLED'` 把自己排除在外，对端因此只看见一个写块头。第二趟 2 块全落、`sha=6f25483fb457` 逐字节一致、逐块读体用时 `(0, 17.2) (1, 4.3)` 说明节奏还停在声明的那一档。原文 `.probe/a_124.txt`） |
 | 失败原因的渲染：同一支 `detailOf`（A 级那句也从 `detail.reason` 读） | 完成 | `模拟器`（#134：把 A 级那一句在安卓上真按出来了一次。做法是让对端**只对清单表态说不**——本机对 `POST /v1/offer` 每次都回 `{"accepted": false}`，这正是手机端接收方自己还没决定时答的那一句，于是发送方按合同每秒重投一次清单、一直投到 60 秒，这一秒一秒之间屏幕上按下去的就是 A 级而不是正在写的那一块。对端账本：`清单进来 8 次（每次都不表态），写块请求 0 次，真正收下 0 块，finalize 0 次，落盘 {}`；按下取消 5.3 秒后传输页说 `失败：本机取消了这次传输 这一单还没发出去就被本机收回了`——整句、没有 `{"reason"`、没有 `detail`，也没等满对方的 60 秒窗口。六条判据全 YES，原文 `.probe/a_134.txt`，对端账本 `.probe/a_134_peer_pick.txt`；#126 那一趟的改动在共用渲染层 `cs-protocol.uts::detailOf`，这一趟证的就是它读出的那一句） |
 | 发现：mDNS + UDP 广播 | 代码在，**卡在出包口径** | `编译门` + `浏览器`（模型共用）；上机要 `CHANGE_WIFI_MULTICAST_STATE`，而它必须打进自定义基座——`pack --iscustom` 花的是用户的 DCloud 账号 |
+| 协议 §7：版本按**两个集合的交集**判，本端的集合处处都说得出（#144，与 PC 同一条规则） | 完成 | `编译门`（`.probe/c144_android.log`：`项目 chuanshu 编译成功。`；鸿蒙那一道见 §3.3 同一行）+ `浏览器`（`发送自检 20 项全部通过`、`接收自检 61 项全部通过`、`发现自检 22 项全部通过`，`bad=0`——三条数都在共用状态机上，见 §3.4 那一节新写的 F 腿与 5b 腿）。**这一支只有一份代码**：判据落在 `utssdk/cs-protocol.uts`（新导出 `COMPATIBLE_VERSIONS`、`versionsOverlap`、`versionsText`），`cs-client.uts` 的 hello、`cs-receive.uts` 的 pair 与 offer 都改成问同一个问题；改之前是两条各拿一半腿——发送方只看对端在 hello 里印出的那一个 `protocol_version`（一台印 1、集合却是 `[2]` 的机器被放行了），接收方自带的那个 `supports()` 只看对方报的集合（一台在这个字段之前就发清单的机器被当成陌生人拒了），而且**谁都交集不了**，因为发送方从来没把集合送到接收方读得到的地方——接收方不回拨去读对方的 hello。所以集合现在跟着 `pairJson`/`offerJson` 的请求体走，`pair` 的应答把它在 hello 里说过的话重述一遍（§3 那条 `served` 兜底的同一思路）。没报集合＝那是这个字段之前的一版，按它印出的那一个数当作整个集合，不是把它当陌生人的理由 |
 | UI 七页（首页/文件/传输/我的/发送/扫码连接/探针） | 完成 | `截图` + `模拟器`；自定义导航页让出状态栏安全区（#102） |
 | 收：接收中挂前台服务，挂不上时卡片自己说为什么（#143，`spec.md` §6） | 代码完成 + `模拟器`；**真挂上**要等自定义基座 | 落点是四处：`utssdk/app-android/CsKeepAlive.kt`（`Service` + 一个 `object`，`startForeground` 只在 API 34 带类型，读的是 `ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC`——合同 §6 原来写的 `dataTransfer` 是 14 预览期的叫法，正式版改名 `dataSync`，已用 HBuilderX 自带的 `android.jar` 逐字节查过那张常量表并把 §6 改口）、`utssdk/app-android/AndroidManifest.xml`（`android:foregroundServiceType="dataSync"`、`exported="false"`，组件只能进清单，代码里 `startService` 造不出一个 `<service>`）、`config.json` 补 `FOREGROUND_SERVICE`/`FOREGROUND_SERVICE_DATA_SYNC`/`POST_NOTIFICATIONS`、`app-android/index.uts::receiveHoldStart/receiveHoldStop`（13+ 那一句"要不要问"必须留在 UTS，运行时权限是 activity 上的 UI 线程调用）。**三件事都读设备、不假设**：`getServiceInfo` 抛 `NameNotFoundException` 就说明这个包的清单没带它，`checkSelfPermission` 少哪一项就报哪一项，`startForeground` 之后还要 `AtomicBoolean` 落定才算挂上——返回值走 `{ok, note}`，界面因此不需要匹配任何句子。`store/session.uts::armHold/disarmHold` 把结论写成卡片那一行（挂上=绿，挂不上=合同那句红字），关掉监听跟着收回。<br>证据：`编译门`（`.probe/c143_gates_final.log`：两道 `项目 chuanshu 编译成功。` + `运行包制作成功`）+ `模拟器`（`.probe/c143_device_legs.md`：标准调试基座 `targetSdk=32`、`POST_NOTIFICATIONS granted=false`，打开监听后卡片说「这台机器没让挂上保活（这个包的清单里没有保活服务这一项，所以保活挂不上：它要打进自定义基座才生效），退到后台可能被系统掐断：请保持传书在前台」，关掉后那行收回；`传输` 页日志同轮留着 `接收已打开…`/那句拒绝/`本来就没有保活挂着`）+ `浏览器`（接收 59 / 发送 17 / 发现 22 项全过，证明 store 那段条件编译没伤到 web）+ `截图`（`.probe/_c143_hold.png`：同一屏上「正在监听…」是绿的，下面那句保活拒绝是红的，开关在开位——挂上那句走的是同一个 `stateOk`）。**这一趟还真抓到一个只有设备能给的缺陷**：第一版按 `Build.VERSION.SDK_INT < 33` 决定要不要问通知权限，跑上去就在 `store/session.uts:997` 抛 `IllegalStateException: ... The targetSdkVersion SDK must be 33 or more`——问不问取决于**包**的 target 而不是系统的 API，现在读 `activity.getApplicationInfo().targetSdkVersion`（`mayAskNotify`）。至于"退到后台还收得到"这一条，只有把服务打进自定义基座才可能测（`pack --iscustom` 花用户的 DCloud 账号，等点头） |
 
@@ -129,6 +131,7 @@ Linux 与 Windows 的三个真实分歧，都已落到代码分支：
 | 发现：`@ohos.net.mdns` + UDP 广播，名单接进既有连接流程 | 完成（模拟器） | `模拟器`（#91/#93/#115：`局域网设备` 卡片点一台就把 served-leaf 前缀填进连接卡；browse 不重发会静默，改成 9 s 一次） |
 | 真机腿：#45 传输半边 / #46 收发 runbook | 待用户点头 | 唯一剩下的真机设备 `2UCUT23C27052382` 是用户的个人机（装了银行/学信网/税务），开机解锁需要本人同意 |
 | UI 七页与鸿蒙 design 一致、density 恢复手机值 | 完成 | `截图`（#101/#102/#114 改口：那条"被裁掉"是探针点了视口外节点） |
+| 协议 §7：版本按两个集合的交集判（#144） | 完成 | `编译门`（`.probe/c144_harmony.log`：`项目 chuanshu 编译成功。` + `运行包制作成功`）+ `浏览器`（`发送 20 / 接收 61 / 发现 22` 三项全过）。**本端没有第二份代码要改**：判据与集合都在共用的 `cs-protocol.uts` / `cs-client.uts` / `cs-receive.uts` 里（见 §3.2 那一行），`app-harmony/index.uts` 只负责把体里的 `compatible_versions` 原样递给状态机。发现那一条支仍在 `cs-discovery.uts` 里只比一个数——UDP 的公告只印得下一个版本，集合本身要等 hello，注释写在那里 |
 | 后台限制的产品处理（#143 的另一半：这一端没有机制，只有合同要求的那句话） | 完成 | `模拟器` + `截图`（`127.0.0.1:10001`：监听开着时「我的」页那行「这一端没有后台保活，退到后台或锁屏可能被系统冻住：请保持传书在前台」，点掉监听那行跟着收回；`.probe/_c143_hold_harmony.jpeg` 里它是红的，与同屏那句绿色的「正在监听 43720…」并排。原文 `.probe/c143_device_legs.md`。这句话过去只在文档里，`pages/` 与 `store/` 里一个字都没有——写它的人把口径当成了实现） |
 
 ### 3.4 浏览器（H5 目标）
@@ -157,12 +160,20 @@ Linux 与 Windows 的三个真实分歧，都已落到代码分支：
 | C | 每次都吞回复、且对端永远说没到 | 判死而不是挂住或死循环；判死前只写 3 次、问 3 次（一块最多三次写，合同 §4），报出去的是那一次的真实原因 |
 | D | 吞掉第 1 块的回复、对端也没收字节，**且发送方为它问的那一次 `state` 也没人答**（#135 补的第四条腿，形状与设备上的 `mute` 同一支） | 判死；只问一次；**一次都不重写**（对端只收到 1 次写块）；报出去的是**那一问自己的错**而不是那次写的错 |
 | E | 对端在 `hello` 里报的摘要不是这一行广播的那个前缀（#142 补的第五条腿，直接调 `connectPeer`，不写文件） | **配对根本没发生**：这一单停在 hello，对方的固定名单还是空的（`inbox.trusted.length == 0`）；再拿一个对得上前缀的对照跑一遍，照常配对并传成——这条腿要证的是顺序，不是恢复 |
+| F | 对端在 `hello` 里**不报** `compatible_versions`（`helloVersions = []`，即"这个字段之前的一版"）；再报一个**只含 v2** 的集合（#144 补的第六条腿，同一支注入器换值） | 前者照常配对传成——没报集合按它印出的那一个数判；后者**停在 hello**，且那一单一次 pair 都没打到对方的固定名单上 |
 
 `发送自检 14 项全部通过`，同一趟重跑 `接收自检 56 项全部通过`（改 harness 不能把收的那半边碰坏）。
 原文 `.probe/web_135_selftest.txt`，那一趟的编译门 `.probe/launch_web_135.log`。
 #142 把第五条腿加进来以后是 `发送自检 17 项全部通过`（`.probe/c142_android.log` / `c142_harmony.log` 是同批的两道编译门），
 但要说清这一条证到哪：E 腿打在**共用发送方** `cs-client.uts::helloPeer` 上，而"从名单点中的那一行把前缀交到
 `pinPrefix`"这一步在 `store/session.uts` 的 `#ifdef APP-*` 里，浏览器根本走不到——那条线只有编译门。
+#144 又把第六条腿（F）加进来，同一趟重跑的是 `发送自检 20 项全部通过`；收的那一边在 `receiveSelfReport` 里加了两条，
+`接收自检 61 项全部通过`（原文 `.probe/c144_harmony.log` / `c144_android.log` 是同批的两道编译门）。这两条**故意打在
+一个新建的隔离收件箱上**，而不是共用那一只：多出来的一个 pending 清单会把后面几条判据读的计数（`stateAll`、
+`adopted`、`arrivalsAll`）顶歪——上一条错误要的是"这个 offer 被拒了"，不是"这一趟别人被拒过"。
+判据是 §7 的两个方向各一条：清单报的集合里没有我们这一版 → `UNSUPPORTED_PROTOCOL`（400，`detail` 带 `peer_version`
+与 `peer_compatible`）；清单压根没报集合 → **等人决定**（回的是 `pending` 那一形状，不是拒绝）。
+`发现自检 22 项` 那一趟只证一件事：UDP 公告里本来就只有一个版本号，这一支没被改动碰坏。
 这四条腿在设备上各跑过一次同一支故障：A = `held`、B = `blind`、C = `dead`、D = `mute`，两台全 YES
 （`a_133.py` / `h_133.py`，见 §3.2 / §3.3）。设备上 C 那条的机制略有不同——浏览器是"收下了但不答"，设备是"一个字节都不收
 也不答"——发送方看到的都一样：没有回复，且 `state` 说没到。两台报出去的最后一句也各自是本平台自己的词
@@ -253,7 +264,7 @@ E:\android-sdk\emulator\emulator.exe -avd chuanshu34b -no-window -no-audio -no-b
 ### 仓库门禁（`scripts/`）
 | 脚本 | 覆盖 |
 |---|---|
-| `protocol_selftest.py` | 合同镜像、七个端点、路径清洗（含中文目录）、多文件带目录、断点续传（含杀接收进程后 `reopen`）、整文件摘要推翻台账时台账作废（#127）、并发身份目录、节奏已在下限时的体中止只重写那一块（#130）、那一问也没人答时一次都不重写（#137） |
+| `protocol_selftest.py` | 合同镜像、七个端点、路径清洗（含中文目录）、多文件带目录、断点续传（含杀接收进程后 `reopen`）、整文件摘要推翻台账时台账作废（#127）、并发身份目录、节奏已在下限时的体中止只重写那一块（#130）、那一问也没人答时一次都不重写（#137）、§7 按两个集合的交集判版本 + 没报集合时按它印出的那一个数兜底，收发两个方向各两条腿（#144） |
 | `ui_selftest.py` | 图形界面四页、接收确认弹窗、设置窗口、7 语言 |
 | `cli_selftest.py` | CLI 八条子命令端到端（含 `receive` 的 offer 计时器） |
 | `linux_selftest.py` | Linux 侧 27 条断言，Qt-free（stdout **和** stderr 都要读：发现通道写的是 stderr） |
@@ -264,12 +275,13 @@ E:\android-sdk\emulator\emulator.exe -avd chuanshu34b -no-window -no-audio -no-b
 ### 端内自检（`我的` 页三个按钮，只有 H5 目标里跑得出结论）
 | 按钮 | 判的是哪份共用代码 | 最近一次结论 |
 |---|---|---|
-| `接收内核自检` | `cs-receive.uts`（59 项） | `接收自检 59 项全部通过`（2026-10-26 那一趟：#141 给 `adoptPin` 加了第五个参数（叶摘要）并补了三条腿——桥接交身份摘要留空码能 resume、只交叶摘要仍 `BAD_PAIR_CODE`、验签后同一条记录同时长出密钥与叶；56 → 59，前面那 56 项一条没少） |
-| `发送内核自检` | `cs-client.uts`（17 项：四条吞回复的腿 + 第五条"先核前缀再配对"的腿，见 §3.4） | `发送自检 17 项全部通过`（`.probe/launch_web_135.log` 是补上第四条腿那一趟的编译门，原文 `.probe/web_135_selftest.txt`；#142 那趟的编译门是 `.probe/c142_android.log` / `.probe/c142_harmony.log`） |
-| `发现内核自检` | `cs-discovery.uts` | 喂合成报文，验名单合并/过期/自过滤，不验网卡 |
+| `接收内核自检` | `cs-receive.uts`（61 项） | `接收自检 61 项全部通过`（2026-10-26 #144 那一趟：新增两条腿打在**隔离收件箱**上——清单报的集合里没有我们这一版 → `UNSUPPORTED_PROTOCOL`，清单没报集合 → 按它自己那一个数判、照样回 `pending` 等人决定；59 → 61，前面那 59 项一条没少。上一趟是 #141：给 `adoptPin` 加了第五个参数（叶摘要）并补了三条腿——桥接交身份摘要留空码能 resume、只交叶摘要仍 `BAD_PAIR_CODE`、验签后同一条记录同时长出密钥与叶；56 → 59） |
+| `发送内核自检` | `cs-client.uts`（20 项：四条吞回复的腿 + 第五条"先核前缀再配对"的腿 + 第六条"版本集合"的腿，见 §3.4） | `发送自检 20 项全部通过`（#144 新加 F 腿：对端在 hello 里不报集合→照常传成，报一个只含 v2 的集合→停在 hello 且对方名单里多不出那一条；17 → 20。`.probe/launch_web_135.log` 是补上第四条腿那一趟的编译门，原文 `.probe/web_135_selftest.txt`；#142 那趟的编译门是 `.probe/c142_android.log` / `.probe/c142_harmony.log`） |
+| `发现内核自检` | `cs-discovery.uts`（22 项） | `发现自检 22 项全部通过`：喂合成报文，验名单合并/过期/自过滤，不验网卡。#144 里这一支只把版本常量收回成共用那一份（`cs-protocol.uts` 的 `COMPATIBLE_VERSIONS`）——UDP 公告只印得下一个版本号，集合要等 hello 才取交集 |
 
 这三条都在浏览器里跑，所以档位只到 `浏览器`：它们证的是**平台无关那一半**，不代表某台设备的 socket 行为。
-编译门是另外两道，各编一次：`.probe/_and_gate_132b.log`（Kotlin）、`.probe/_h_gate_132b.log`（ArkTS）。
+编译门是另外两道，各编一次：`.probe/_and_gate_132b.log`（Kotlin）、`.probe/_h_gate_132b.log`（ArkTS）；
+#144 那一批改的是共用 `.uts`，所以两道都重跑过：`.probe/c144_android.log`、`.probe/c144_harmony.log`。
 
 ### 设备侧（`.probe/`，命名规则 `a_*` = Android、`h_*` = 鸿蒙、`*_peer.py` = 造出来的对端）
 | harness | 判的是什么 | 最近一次结论 |
@@ -324,14 +336,16 @@ E:\android-sdk\emulator\emulator.exe -avd chuanshu34b -no-window -no-audio -no-b
    （把对端的**叶**钉在地址上），再让那一台**不带配对码**拨回来，看手机答 `resumed=true` 而不是 `BAD_PAIR_CODE`。
    一台 AVD + 本机就当两台机器够用（发送方拨 `10.0.2.2`，回拨走 `adb forward tcp:<hostport> tcp:43720`），
    缺的是那个"已经固定过这台手机、于是留空码"的 Python 对端；旧的 `#88` 设备腿也是这么欠着的，这一次别再只停在编译门。
-10. **#140 那一轮逐条巡检剩下的五条**（已立案，未动手）：#144 §7 的 `compatible_versions` 交集各端只实现了一半（PC 的 `hello()` 只看对端的
-    `protocol_version`，从不读它的 `compatible_versions`）；#145 PC 对同一 `offer_id` 重投清单会再弹一次窗；
+10. **#140 那一轮逐条巡检剩下的四条**（已立案，未动手）：#145 PC 对同一 `offer_id` 重投清单会再弹一次窗；
     #146 手机端设备名不可改（§1 说 `settings.json` 里用户可改）；#147 闲置回收删"半截文件"按单还是按文件
     （PC 连已校验的一起删，手机留着——口径题）；#148 鸿蒙 §5 的符号链接检查（`realpath` 确实没有，
     `lstatSync` + `Stat.isSymbolicLink()` 顶得上，那句"这平台做不到"的注释是错的）。
     （同批的 #142 已经落地，见 §3.2 / §3.3 那两行；它欠的那次上机是下面第 11 条。**#143 也落地了**，
     见 §3.2 那一行——顺带把合同 §6 里 `dataTransfer` 那个预览期叫法改成了正式版的 `dataSync`；
-    它欠的那一次"退到后台还收得到"在第 13 条。）
+    它欠的那一次"退到后台还收得到"在第 13 条。**#144 也落地了**，见 §2 那一行与 §3.1 / §3.2 / §3.3 那三行：
+    一条规则两份实现都补齐了，但它的证据只到 `门禁` + `编译门` + `浏览器`——`pair`/`offer` 的请求体里
+    多了一个字段、`pair` 的应答里也多了一个，这是**上线上的字节**，一次真实的手机↔PC 互传还没跑过；
+    那一趟要的是两个方向都到位（手机发给 PC 收、PC 发给手机收），见下面第 14 条。）
 11. **#142 的设备腿** — 顺序改对了，但两处都只有编译门与浏览器：一、从名单点中那一行，前缀得真的走到
     `pinPrefix`（`store/session.uts` 的 `#ifdef APP-*` 那一步，H5 走不到）；二、正常路径不能被这道核对误伤——
     两台模拟器互点一次，日志要出现「已核对：<前缀> 这台机器在 TLS 上就是它自己」并且配对照旧成。
@@ -347,6 +361,13 @@ E:\android-sdk\emulator\emulator.exe -avd chuanshu34b -no-window -no-audio -no-b
     `<service>`，所以 `CsKeepAlive.begin()` 在这一台上必然报"挂不上"（那正是这一趟要证的诚实降级）。要证保活本身，
     得先 `pack --iscustom` 出自定义基座——它花的是用户的 DCloud 账号，所以这一步等点头；判据是：开着监听把应用退到
     后台，通知栏那条「传书在收」还在，对端接着发的那一块照样落盘。
+14. **#144 的设备腿** — §7 那一条规则两端都补齐了，但它的证据停在 `门禁`（PC 两个方向）+ `编译门` + `浏览器`
+    （手机两个方向，共用状态机）。这一支动的是**线上的字节**：`pair`/`offer` 的请求体各多一个 `compatible_versions`，
+    `pair` 的应答也多一个，而接收方从此要读它。所以欠的是**一次真实的手机↔PC 互传，两个方向各一趟**：
+    手机发 → PC 收（PC 的 `handle_pair`/`handle_offer` 读得到手机那份体里的集合）与 PC 发 → 手机收（手机的
+    `cs-receive.uts` 读得到 PC 那份体里的集合）。判据不需要新东西：两趟都逐字节校验通过、屏上没有 `UNSUPPORTED_PROTOCOL`
+    就是过。反向的那一条（故意让一台只报 v2 的机器发清单）在设备上要靠改 `protocol.json` 再重出包，值不值那一趟由下一次
+    动这一支的人判断——浏览器那两条腿（§3.4 的 F 腿与 5b 两条）已经把两个方向都判过了。
 
 ### 需要用户点头才能做的三件事
 - 唤醒/解锁并使用那台个人鸿蒙真机（#45/#46 + 鸿蒙发现真机腿）。

@@ -51,6 +51,22 @@ class Protocol:
     def supports(self, peer_version: int) -> bool:
         return peer_version in self.compatible_versions
 
+    def intersects(self, peer_versions: object, peer_version: int) -> bool:
+        """spec §7: the two declared sets have to overlap before anything else is attempted.
+
+        Reading only the peer's own ``protocol_version`` answers a different question - "which
+        version is that machine", not "can we both speak one". A peer that names no set at all is
+        one that predates the field, and the single number it prints is the only thing it can be
+        speaking, so that number stands in for the set; refusing a missing field would turn every
+        older device into a stranger, which is the same reason §3 falls back on ``fingerprint``
+        when a peer has no ``served``.
+        """
+        if isinstance(peer_versions, (list, tuple)) and len(peer_versions) > 0:
+            theirs = [int(one) for one in peer_versions]
+        else:
+            theirs = [peer_version]
+        return any(one in self.compatible_versions for one in theirs)
+
     def http_status(self, code: str) -> int:
         entry = self.error_codes.get(code)
         if entry is None:
@@ -197,6 +213,8 @@ def parse_qr(url: str) -> dict[str, str]:
     if not is_fingerprint(fields["f"]):
         raise ProtocolError("UNSUPPORTED_PROTOCOL", {"qr_fingerprint": fields["f"][:16]})
     if not fields.get("v", "").isdigit() or not proto.supports(int(fields["v"])):
+        # A QR payload carries ONE version, so this is not §7's intersection - that question is asked
+        # of the hello, which is the first thing read after the address in the payload is dialled.
         raise ProtocolError("UNSUPPORTED_PROTOCOL", {"peer_version": fields.get("v")})
     if "p" in fields and not fields["p"].isdigit():
         raise ProtocolError("UNSUPPORTED_PROTOCOL", {"qr_port": fields["p"]})

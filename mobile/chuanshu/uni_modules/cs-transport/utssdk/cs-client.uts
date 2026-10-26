@@ -8,7 +8,7 @@ import {
 	VerifyResult,
 	MAX_FILES_PER_OFFER,
 	OFFER_WAIT_S,
-	PROTOCOL_VERSION,
+	COMPATIBLE_VERSIONS,
 	CHUNK_SIZE,
 	chunkCount,
 	chunkSizeAt,
@@ -25,7 +25,9 @@ import {
 	parseJson,
 	pathReject,
 	randomHex,
-	statePlans
+	statePlans,
+	versionsOverlap,
+	versionsText
 } from './cs-protocol.uts'
 
 export type SelfCallback = (peerId: string, name: string, fingerprint: string) => void
@@ -151,14 +153,9 @@ function helloPeer(opts: TransferOptions, myFingerprint: string, call: Caller, w
 			return
 		}
 		const versions = numList(hello.getArray<number>('compatible_versions'))
-		let compatible = false
-		for (let i = 0; i < versions.length; i++) {
-			if (versions[i] == PROTOCOL_VERSION) {
-				compatible = true
-			}
-		}
-		if (!compatible) {
-			done(false, errorText('UNSUPPORTED_PROTOCOL') + '（对端 ' + Math.floor(hello.getNumber('protocol_version', 0)).toString() + '）', null)
+		const peerVersion = Math.floor(hello.getNumber('protocol_version', 0))
+		if (!versionsOverlap(COMPATIBLE_VERSIONS, versions, peerVersion)) {
+			done(false, errorText('UNSUPPORTED_PROTOCOL') + '（对端 ' + versionsText(versions, peerVersion) + '）', null)
 			return
 		}
 		const session = new PeerSession()

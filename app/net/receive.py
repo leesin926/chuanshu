@@ -505,8 +505,11 @@ class ReceiveService:
             if declared_leaf and not protocol_spec.is_fingerprint(declared_leaf):
                 raise protocol_spec.ProtocolError("NOT_PAIRED", {"reason": "tls_fingerprint is not a full SPKI digest"})
             version = int(body.get("protocol_version") or 0)
-            if not self.proto.supports(version):
-                raise protocol_spec.ProtocolError("UNSUPPORTED_PROTOCOL", {"peer_version": version})
+            if not self.proto.intersects(body.get("compatible_versions"), version):
+                raise protocol_spec.ProtocolError("UNSUPPORTED_PROTOCOL", {
+                    "peer_version": version,
+                    "peer_compatible": body.get("compatible_versions"),
+                })
             if not peer_id or not nonce or not declared or not signature:
                 raise protocol_spec.ProtocolError("NOT_PAIRED", {"reason": "pair request is incomplete"})
             if nonce in self._seen_nonces:
@@ -580,6 +583,9 @@ class ReceiveService:
                 "peer_id": self.identity.peer_id,
                 "name": self.device_name,
                 "protocol_version": self.proto.version,
+                # The pair reply restates what hello says (§3), and §7 needs the set - a sender that
+                # adopts this peer without a second hello would otherwise have one number to go on.
+                "compatible_versions": list(self.proto.compatible_versions),
                 "fingerprint": self.identity.fingerprint,
                 "resumed": known,
             }
@@ -621,8 +627,11 @@ class ReceiveService:
 
     def handle_offer(self, body: dict, caller: str) -> dict:
         version = int(body.get("protocol_version") or 0)
-        if not self.proto.supports(version):
-            raise protocol_spec.ProtocolError("UNSUPPORTED_PROTOCOL", {"peer_version": version})
+        if not self.proto.intersects(body.get("compatible_versions"), version):
+            raise protocol_spec.ProtocolError("UNSUPPORTED_PROTOCOL", {
+                "peer_version": version,
+                "peer_compatible": body.get("compatible_versions"),
+            })
         offer_id = str(body.get("offer_id", ""))
         files = list(body.get("files", []))
         if not offer_id or not files:
