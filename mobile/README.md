@@ -193,8 +193,8 @@ py -X utf8 scripts/check_protocol.py
    集合跟着 `pairJson`/`offerJson` 的请求体走，`pair` 的应答把它在 `hello` 里说过的话重述一遍；没报集合按它印出的
    那一个数当作整个集合，那是这个字段之前的一版，不是把它当陌生人的理由（与 §3 的 `served` 空值兜底同一条思路）。
    发现层只比一个数，因为 UDP 公告本来就只印得下一个版本号——集合要等 `hello`，那里的注释写着这件事。
-10. **#145：同一个 `offer_id` 重发清单会再弹一次窗**（代码已修，两道编译门 + `接收自检 66 项` 都过；**设备腿还欠**，
-   见 [docs/feature-matrix.md](../docs/feature-matrix.md) §6 第 15 条）。合同 §4 那句是「同一个 `offer_id` 只弹一次窗口；
+10. **#145：同一个 `offer_id` 重发清单会再弹一次窗**（代码已修，两道编译门 + `接收自检 66 项` 都过；**安卓的设备腿
+   已跑到 `模拟器`，鸿蒙那一端对着屏的同一趟还欠**，见 [docs/feature-matrix.md](../docs/feature-matrix.md) §6 第 15 条）。合同 §4 那句是「同一个 `offer_id` 只弹一次窗口；
    用户已经拒绝或这一单已经失败的回答按 `offer_id` 记在本场会话里，再问一遍就拿同一份回答，不会因此又去打扰用户」。
    手机确实把回答记进了台账（`settleOffer`），但记账的位置在**两个平台宿主各自的手里**，而它们只覆盖了自己那一支：
    鸿蒙的"拒绝"由 `store/session.uts::receiveDecide` 补写，安卓的那两处在 `app-android/index.uts`，而**两种"这一单已经完了"
@@ -204,6 +204,12 @@ py -X utf8 scripts/check_protocol.py
    `STORAGE_FULL` 回滚。三种回答各有各的形状——还在问 → `200 accepted:false`（不占第二个名额）、已经拒绝（含没人答而到期，
    那正是发送方 §4 超时的镜像）→ `403 DECLINED`、已经完了 → `404 OFFER_UNKNOWN`。宿主那两处 `settleOffer` 保留：
    函数自己按 id 去重，写两次不会多出第二行。
+   设备上跑的那一趟是 `.probe/a_145_leg.py`（原文 `.probe/a_145.txt`，截图 `.probe/a_145_card.png` /
+   `.probe/a_145_answered.png`）：本机对着一台正在监听的安卓模拟器，把**同一个 `offer_id`** 的清单连投几遍，
+   每一投之间读一次屏上卡片的张数。窗口里重投＝`200 accepted:false` 且卡还是一张；在卡上点一次「拒绝」，
+   之后两投都是 `403 DECLINED` 且卡为 0；另一条腿只投一次、六十八秒里一个请求都不发，那张卡自己收掉
+   （`receiveSnapshot()` 里带着一次 `sweep()`，而界面 1 秒一读），之后两投还是 `403 DECLINED`——重发没有把用户
+   叫醒第二次。两单都被拒，`files/chuanshu-receive` 腿前腿后一样空。三趟连过。
 11. **#146：这台设备的名字改不了**（代码已修，两道编译门 + `接收自检 71 项` 都过；**设备腿还欠**，
    见 [docs/feature-matrix.md](../docs/feature-matrix.md) §6 第 16 条）。合同 §1 的身份五项里只有 `name` 写着
    「用户可改，存 `settings.json`」，PC 早就有这一行，而手机这一端**根本没有能改它的地方**：名字是读出来的——
