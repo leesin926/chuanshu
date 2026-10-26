@@ -66,7 +66,10 @@ import {
 	snapshot,
 	stateAll
 } from '../cs-receive.uts'
-import { selfReport } from '../cs-discovery.uts'
+import {
+	prefixOf,
+	selfReport
+} from '../cs-discovery.uts'
 
 /** Web half of the transport. A browser has no TLS socket to a LAN peer, so this file stands in
  *  for the PC: it really checks the pair code, really digests every chunk and really reassembles and
@@ -1704,12 +1707,16 @@ const noopProgress: ProgressCallback = (done: number, total: number): void => {}
 const noopFileEvent: FileEvent = (relpath: string, status: string, done: number, total: number): void => {}
 
 /** One send through the real client, from pairing to finalize. Everything this harness injects answers
- *  inline, so a leg is over when this returns. */
-function runSender(probe: ChunkSwallow, relpath: string, run: SenderRun): void {
+ *  inline, so a leg is over when this returns.
+ *
+ *  `pinPrefix` is what a candidate announced (spec §2): '' stands for a hand-typed address, and a
+ *  mismatching one has to stop the run at hello - before this end spends a pair on the peer. */
+function runSender(probe: ChunkSwallow, relpath: string, run: SenderRun, pinPrefix: string): void {
 	const call = swallowCaller(probe)
 	const link = new TransferOptions()
 	link.host = '自检对端'
 	link.port = TRANSPORT_PORT
+	link.pinPrefix = pinPrefix
 	link.code = currentPairCode(probe.inbox, nowSeconds())
 	link.secret = passphraseOf(probe.inbox, nowSeconds())
 	connectPeer(link, simTakeSelf, simSignPair, call, noopWrite, function (ok: boolean, message: string, session: PeerSession | null): void {
@@ -1759,7 +1766,7 @@ export function senderSelfReport(): string {
 	const a = new ChunkSwallow()
 	a.nth = 1
 	const ra = new SenderRun()
-	runSender(a, big, ra)
+	runSender(a, big, ra, '')
 	check('吞掉第一块的回复后这单仍然传成', ra.done && ra.ok, ra.summary)
 	check('它为那块问过对方一次', a.stateAsks == 1, a.stateAsks.toString())
 	// Two writes, one per chunk: the eaten reply did not cost a rewrite.
@@ -1772,7 +1779,7 @@ export function senderSelfReport(): string {
 	b.nth = 1
 	b.peerBlind = true
 	const rb = new SenderRun()
-	runSender(b, big, rb)
+	runSender(b, big, rb, '')
 	check('对方说没到，这一块重写后这单传成', rb.done && rb.ok, rb.summary)
 	check('重写它也只问过对方一次', b.stateAsks == 1, b.stateAsks.toString())
 	// Three writes: the blind one, the rewrite, then the second chunk.
@@ -1783,7 +1790,7 @@ export function senderSelfReport(): string {
 	c.nth = -1
 	c.peerBlind = true
 	const rc = new SenderRun()
-	runSender(c, big, rc)
+	runSender(c, big, rc, '')
 	check('每次都吞掉回复时这单判死', rc.done && !rc.ok, rc.summary)
 	// Three writes (spec §4) and one question after each of them: the third answer is the one that says stop.
 	check('判死前只写了三次就收手', c.chunksSeen == 3 && c.stateAsks == 3, c.chunksSeen.toString() + '/' + c.stateAsks.toString())
@@ -1796,11 +1803,26 @@ export function senderSelfReport(): string {
 	d.peerBlind = true
 	d.muteState = 1
 	const rd = new SenderRun()
-	runSender(d, big, rd)
+	runSender(d, big, rd, '')
 	check('那一问也没人答时这单判死', rd.done && !rd.ok, rd.summary)
 	check('判死前只问过对方一次', d.stateAsks == 1, d.stateAsks.toString())
 	check('问不到答案就不重写：对端只收到一次写块', d.chunksSeen == 1, d.chunksSeen.toString())
 	check('报出去的是那一问的错，不是写块自己的错', rd.summary.indexOf('这一问') >= 0, rd.summary)
+
+	// E. spec §2's order: 收到候选后必须先核对前缀再进入 §3 配对. The peer's trust table is the witness -
+	// a candidate that announced another machine's key is refused at hello, so a pair never reaches it,
+	// never pins a stranger, and never takes the single session slot the real peer needs (#142).
+	ensureSelf()
+	const promised = prefixOf(myFp)
+	const e = new ChunkSwallow()
+	const re = new SenderRun()
+	runSender(e, SIM_TEXT, re, promised)
+	check('对得上广播前缀的候选照常配对传成', re.done && re.ok, re.summary)
+	const f = new ChunkSwallow()
+	const rf = new SenderRun()
+	runSender(f, SIM_TEXT, rf, 'deadbeefdeadbeef')
+	check('前缀对不上时在 hello 就停，没有发配对', rf.done && !rf.ok && rf.summary.indexOf('前缀') >= 0, rf.summary)
+	check('那一单一次 pair 都没打到对方的名单上', f.inbox.trusted.length == 0, f.inbox.trusted.length.toString())
 
 	out.push(fail == 0 ? '发送自检 ' + pass.toString() + ' 项全部通过' : '发送自检失败 ' + fail.toString() + ' 项，通过 ' + pass.toString() + ' 项')
 	return out.join('\n')

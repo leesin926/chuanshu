@@ -1004,6 +1004,13 @@ function buildOptions(): TransferOptions {
 	opts.secret = s.secret.trim()
 	opts.pinPrefix = s.scannedFp
 	// #ifdef APP-HARMONY || APP-ANDROID || APP-IOS
+	// §2's 先核对再配对 has a place to happen: helloPeer() weighs this prefix against the digest the
+	// peer reports and refuses before a pair is written. A row from the list carries only a prefix, so
+	// it comes from discPicked and not from scannedFp - that field is the transport's TLS pin, and the
+	// pin compares whole digests, so a 16-character one would fail every request of the session (#142).
+	if (opts.pinPrefix == '') {
+		opts.pinPrefix = discPicked
+	}
 	// This phone's TLS listener answers under an RSA leaf, not under the Ed25519 identity that
 	// signed the pair message, so §3 says both numbers: the peer pins the first and knows to
 	// expect the second on the socket. '' on the ends whose own key signs its certificate.
@@ -1127,21 +1134,19 @@ function refreshPinned() {
 
 function markConnected(session: PeerSession, message: string) {
 	// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
-	/* The re-check spec §2 asks for: a candidate in the list is only a machine that shouted a fingerprint
-	   prefix, and this is the first moment this phone holds the whole digest behind it. The prefix names the
-	   certificate the socket hands out - the transport pins that one while dialling - so the number it is
-	   compared against is the peer's declared leaf, not its identity key. A mismatch means whoever answered
-	   is not whoever announced, and the session is dropped rather than reported: the pair code would not
-	   have caught an on-LAN machine that hijacked the announcement and knows the code. */
+	/* Spec §2's 先核对再配对 now runs where the contract puts it: buildOptions() hands the announced
+	   prefix to the shared client, and helloPeer() weighs it against the digest the peer reports and
+	   refuses there. So a machine that hijacked somebody's announcement costs one hello, not a pair -
+	   not a trust record on the real peer, and not the single session slot the real peer then needs.
+	   What is left here is the roster's own book: the candidate that advertised 16 characters now has
+	   the whole digest behind it, and that is the number a later connect can pin by. A row that expired
+	   while this phone was dialling simply loses its record - the prefix it announced was still weighed. */
 	if (discPicked != '') {
 		const wanted = discPicked
 		discPicked = ''
-		if (!lanVerify(wanted, session.peerServed)) {
-			markDisconnected('这台对端在 TLS 上不是它广播的那把密钥，已断开')
-			log('连接被拒：广播里报的前缀是 ' + wanted + '，TLS 上递出来的证书对不上')
-			return
-		}
-		log('已核对：' + wanted + ' 这台机器在 TLS 上就是它自己（' + session.peerServed.substring(0, 16) + '…）')
+		log(lanVerify(wanted, session.peerServed)
+			? '已核对：' + wanted + ' 这台机器在 TLS 上就是它自己（' + session.peerServed.substring(0, 16) + '…）'
+			: '广播里报的前缀 ' + wanted + ' 已经不在名单上，这一条不补完整指纹')
 	}
 	// #endif
 	activeSession = session
@@ -1330,6 +1335,11 @@ export function applyConnectText(text: string): boolean {
 		s.secret = target.secret
 	}
 	s.scannedFp = target.fingerprint
+	// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
+	// A scanned QR is a whole digest, and it replaces whatever row was tapped a minute ago: keeping the
+	// old prefix would have this phone report the peer against an announcement it is no longer dialling.
+	discPicked = ''
+	// #endif
 	s.targetLabel = '来自配对二维码：' + target.host + ':' + s.port + '　指纹 ' + target.fingerprint.substring(0, 16) + '…'
 	s.showAdvanced = false
 	log(target.secret == ''
@@ -1957,9 +1967,9 @@ export function lanSelfReport(): string {
  *
  *  What is deliberately *not* here: a pair code. An announcement carries a name, an address and a
  *  fingerprint prefix (spec §2) and nothing that authorises a session, so picking a row only fills in
- *  where to dial - the code and the password still come off the other screen, and the digest is checked
- *  against the announced prefix in markConnected() once TLS has answered. A list you could connect to by
- *  tapping alone would be a list of things to trust because somebody shouted about them.
+ *  where to dial - the code and the password still come off the other screen, and the prefix is weighed
+ *  against the peer's own hello before this end spends a pair on it (#142). A list you could connect to
+ *  by tapping alone would be a list of things to trust because somebody shouted about them.
  *
  *  The browser has no part in that check and no sockets to hear the LAN with, so it supplies demo rows
  *  through the same model and says which of its two promises it cannot keep. */
@@ -2126,7 +2136,7 @@ function discPromise(): string {
 	return '　浏览器里的对端本来就是模拟的，这一步核对不到'
 	// #endif
 	// #ifndef WEB
-	return '，连上后按 TLS 上的完整指纹核对'
+	return '，点连接时先按它核对，对得上才发配对'
 	// #endif
 }
 
