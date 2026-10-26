@@ -5,6 +5,13 @@
  *  same code the browser runs; this file only moves bytes, which is why the two halves are able to
  *  disagree about what has been proven and agree about what is on the wire. */
 import { TRANSPORT_PORT, DISCOVERY_PORT, ANNOUNCE_INTERVAL_S, MDNS_SERVICE_SHORT } from '../cs-protocol.uts'
+import Build from 'android.os.Build'
+import Activity from 'android.app.Activity'
+
+/** The 13+ runtime permission behind the keep-alive notification. Named here so the ask and the
+ *  service's own reading of the package point at the same string. */
+const NOTIFY_PERMISSION = 'android.permission.POST_NOTIFICATIONS'
+
 import {
 	Roster, newRoster, candidatesOf, applyAnnounce, applyTxt, forgetMdns, sweepPeers,
 	channelNote, buildAnnounce, buildTxt, prefixOf, markVerified, VIA_UDP, selfReport
@@ -639,6 +646,54 @@ export function receiveStop(): string {
 		recvStartNote = closed > 0 ? ('不再监听，' + closed.toString() + ' 条还开着的连接一并断了') : '不再监听'
 	})
 	return recvStartNote
+}
+
+/* ------------------------------------------------------------------ 保活（spec §6） */
+
+/** spec §6 names Android's price for being a receiver: a foreground service of the data-transfer type,
+ *  and from API 33 a notification the user has agreed to show. The service itself is Kotlin
+ *  (CsKeepAlive.kt) because that is where the component lives; what has to be UTS is the ask, since a
+ *  runtime permission is a UI-thread call against the activity the page is running in.
+ *
+ *  `text` is the line the notification carries - the same sentence the card shows, so a person reading
+ *  the shade gets the same promise as the screen. */
+export function receiveHoldStart(text: string, cb: (ok: boolean, message: string) => void): void {
+	const activity = UTSAndroid.getUniActivity()
+	if (activity == null || !mayAskNotify(activity!) ||
+		UTSAndroid.checkSystemPermissionGranted(activity!, [NOTIFY_PERMISSION])) {
+		holdOn(text, cb)
+		return
+	}
+	// Both answers run the same next step: the service reads the permission off the package when it
+	// starts, so this dialog is the ask, never the evidence.
+	UTSAndroid.requestSystemPermission(activity!, [NOTIFY_PERMISSION], (_all: boolean, _p: string[]) => {
+		holdOn(text, cb)
+	}, (_denied: boolean, _q: string[]) => {
+		holdOn(text, cb)
+	})
+}
+
+/** The 13+ ask belongs to a package that *targets* 13 or later. On an older target the notification is an
+ *  install-time grant, and Android refuses the request outright — the debug base is one of those packages,
+ *  where asking costs an `IllegalStateException` instead of a dialog. So this reads the target off the
+ *  installed package, the same way the service reads its own manifest entry. */
+function mayAskNotify(activity: Activity): boolean {
+	return Build.VERSION.SDK_INT >= 33 && activity.getApplicationInfo().targetSdkVersion >= 33
+}
+
+function holdOn(text: string, cb: (ok: boolean, message: string) => void): void {
+	onIo(function () {
+		const made = JSON.parse(CsKeepAlive.begin(text)) as UTSJSONObject | null
+		const ok = made == null ? false : (made!.getBoolean('ok') ?? false)
+		const note = made == null ? '保活状态读不出来' : made!.getString('note', '')
+		onMain(function () {
+			cb(ok, note)
+		})
+	})
+}
+
+export function receiveHoldStop(): string {
+	return CsKeepAlive.end()
 }
 
 /** The pairing material is the receiver's decision but this device's storage: read it back, mint a

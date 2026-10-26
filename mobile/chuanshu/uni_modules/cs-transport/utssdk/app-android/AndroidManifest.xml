@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The phone's transport plugin, as the Android package sees it.
+     The permissions live in config.json; what can only live here is the component. spec §6 asks Android
+     for a foreground service of the data-transfer type, and the type is a manifest attribute, so the
+     service has to be declared for `startForeground` to accept it (Android 14 refuses a service whose
+     type the manifest does not name). `exported=false`: nothing outside this app may start it - it is
+     opened by the receiver's own 监听对端 switch and nothing else.
+     This file is read when the package is built, so it takes effect on a 自定义基座 or a release build;
+     DCloud's 标准调试基座 keeps its own manifest, and CsKeepAlive.begin() says so out loud when it finds
+     the component missing rather than letting the UI claim a keep-alive it does not have. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+	package="uts.sdk.modules.csTransport">
+	<application>
+		<service
+			android:name="uts.sdk.modules.csTransport.CsKeepAliveService"
+			android:exported="false"
+			android:foregroundServiceType="dataSync" />
+	</application>
+</manifest>

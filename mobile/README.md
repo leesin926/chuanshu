@@ -84,12 +84,14 @@ py -X utf8 scripts/check_protocol.py
 
 | 端 | 必须做 | 卡在哪 |
 |---|---|---|
-| Android | 接收中起前台服务（`dataTransfer` 类型）、13+ 通知权限、局域网权限 | 服务被杀 = 连接被掐 |
+| Android | 接收中起前台服务（合同 §6 写的 `dataTransfer` 在 Android 14 正式版改名 `dataSync`，权限是 `FOREGROUND_SERVICE_DATA_SYNC`）、13+ 通知权限、局域网权限 | 服务被杀 = 连接被掐；而这两项都要打进**自定义基座**才落得进安装包（标准调试基座是别人的 APK，清单里没有我们这个 `<service>`） |
 | ~~iOS~~ | **2026-10-24 终止**：出包要 Mac 与签名，这台机器没有。剩下两条事实记在这儿，别当待办 | Info.plist 里 `NSLocalNetworkUsageDescription` + `NSBonjourServices` 声明 `_chuanshu._tcp`；**退后台后监听 socket 不再接受新连接**，协议层绕不过 |
 | HarmonyOS Next | uni-app x 走 ArkTS 通道；mDNS 用 `@kit.NetworkKit` 的 `mdns` | 卓易通这类 APK 兼容层发不了 UDP 广播，发现只剩扫码 |
 
 鸿蒙（和被终止的 iOS）的后台限制属于产品事实，处理方式是在"接收中"界面直说"请保持传书在前台"，而不是
-让用户以为还在收。这是 `spec.md` §6 的口径，Android 与鸿蒙一致。
+让用户以为还在收。这是 `spec.md` §6 的口径。Android 有机制（前台服务），但机制不是保证：清单、类型权限、
+通知权限任何一项读不出来，那句话就同样回到 Android 的卡片上——挂不上的保活和不挂等价（#143，两端同一句
+文案在 `store/session.uts::armHold`）。
 
 手机这一端的接收有三份记忆，都写在本 App 的沙箱里：固定过的对端、没传完的单、以及传完且校验通过的文件
 （`chuanshu-receiver-trust.json` / `chuanshu-receiver-offers.json` / `chuanshu-receiver-arrivals.json`）。
@@ -124,6 +126,8 @@ py -X utf8 scripts/check_protocol.py
 2. ~~UTS 侧实现身份与 TLS 指纹固定~~（Android `java.security` + 手搓 DER，鸿蒙 `@kit.CryptoArchitectureKit`；
    两端各自的服务叶见 §1 的两个摘要。iOS 那条随 iOS 一起终止）
 3. ~~接收端服务~~（Android 前台服务 + pending 立即应答 + 重启不丢固定对端；鸿蒙仅前台可用，UI 按 §6 直说）
+   —— 这一条的"Android 前台服务"在 2026-10-26 之前只是账面上的：`CsKeepAlive.kt` 与它的清单、权限那天才落地
+   （#143），而它在这一台标准调试基座上必然挂不上，界面上因此显示的是那句退让的话。真挂上要等自定义基座。
 4. 发现：mDNS 优先、UDP 广播补充、扫码/手输兜底（顺序不可颠倒，也不能只留 mDNS）。两条通道的代码与
    设备侧规则都在（`cs-discovery.uts` 一份模型，三端共用），**卡在一件事**：Android 的组播锁要
    `CHANGE_WIFI_MULTICAST_STATE`，而它得打进自定义基座才生效——`pack --iscustom` 花的是用户的 DCloud

@@ -239,7 +239,8 @@ park 到点之前。被回收之后，迟到的分块拿到 `404 OFFER_UNKNOWN`�
 ## 6. 保活与后台（各端各自的坑，不在协议里却决定成败）
 
 - PC：常驻托盘即可，监听随进程存活。
-- Android：接收中需前台服务（`dataTransfer` 类型）+ 13+ 通知权限，否则系统会掐连接。
+- Android：接收中需前台服务（`dataTransfer` 类型，Android 14 正式版里这一类型改名为 `dataSync`；
+  对应权限 `FOREGROUND_SERVICE_DATA_SYNC`）+ 13+ 通知权限，否则系统会掐连接。
 - iOS：**App 退后台后监听 socket 不再接受新连接**。协议层无法绕过，UI 必须在"接收中"
   状态显示"请保持传书在前台"，而不是让用户以为在收。
 - 鸿蒙 Next：同 iOS 的后台限制口径，按真机实测结论写进 UI 文案。

@@ -29,6 +29,11 @@ import { selfInfo, signPair, request, prepareFile, readChunk, digestHex, transpo
 // #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
 import { pinnedFor, unpinPeer, receiveStart, receiveStop, receiveStatus } from '@/uni_modules/cs-transport'
 // #endif
+// #ifdef APP-ANDROID
+/** Only Android gets a mechanism for §6; Harmony and iOS have to fall back to the sentence, so the two
+ *  names below exist on one platform and are reached from a branch that compiles away on the others. */
+import { receiveHoldStart, receiveHoldStop } from '@/uni_modules/cs-transport'
+// #endif
 // #ifdef APP-ANDROID || APP-HARMONY
 /** Only the phones have a request that can be forty seconds into a body when the user presses 取消: both
  *  write a chunk at the peer's pace, and the browser's peer answers as fast as the loop asks. The name is
@@ -220,6 +225,9 @@ export type SessionState = {
 	recvListening: boolean
 	recvListen: string
 	recvListenClass: string
+	/** §6 said out loud: what this phone does about the system freezing a backgrounded receiver. */
+	recvHold: string
+	recvHoldClass: string
 	recvAddrs: string[]
 	recvSelfFp: string
 	recvServedFp: string
@@ -297,6 +305,8 @@ export const s = reactive({
 	recvListening: false,
 	recvListen: '还没开始监听',
 	recvListenClass: 'sub mt8',
+	recvHold: '',
+	recvHoldClass: 'sub mt8',
 	recvAddrs: [] as string[],
 	recvSelfFp: '',
 	recvServedFp: '',
@@ -963,12 +973,49 @@ export function onRecvListen() {
 	receiveStart(function (ok: boolean, message: string): void {
 		log((ok ? '接收已打开：' : '接收没能打开：') + message)
 		applyListen(receiveStatus())
+		if (ok) {
+			armHold(message)
+		}
 	})
 }
 
 export function onRecvListenStop() {
 	log(receiveStop())
+	disarmHold()
 	applyListen(receiveStatus())
+}
+
+/** §6 is a promise the card makes while 监听对端 is on, and a phone cannot make it alone.
+ *
+ *  Android's half is the mechanism the contract names: a foreground service, so the system keeps the
+ *  process that owns the listener scheduled and the peer's next body still arrives. Whether *this*
+ *  install can actually have one is read off the device (component in the manifest, the type's
+ *  permission, the 13+ notification), and a refusal lands on the card as the same sentence the other
+ *  platforms show, because a keep-alive that did not start is worth exactly as much as none. */
+function armHold(note: string): void {
+	// #ifdef APP-ANDROID
+	receiveHoldStart('正在监听：' + note, function (ok: boolean, message: string): void {
+		log(message)
+		s.recvHold = ok
+			? '已挂上保活：退到后台也继续收，通知栏那条就是它'
+			: '这台机器没让挂上保活（' + message + '），退到后台可能被系统掐断：请保持传书在前台'
+		s.recvHoldClass = ok ? 'sub mt8 stateOk' : 'sub mt8 stateBad'
+	})
+	// #endif
+	// #ifdef APP-HARMONY || APP-IOS
+	s.recvHold = '这一端没有后台保活，退到后台或锁屏可能被系统冻住：请保持传书在前台'
+	s.recvHoldClass = 'sub mt8 stateBad'
+	// #endif
+}
+
+function disarmHold(): void {
+	// #ifdef APP-ANDROID
+	log(receiveHoldStop())
+	// #endif
+	// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
+	s.recvHold = ''
+	s.recvHoldClass = 'sub mt8'
+	// #endif
 }
 
 export function unpin() {

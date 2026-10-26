@@ -48,6 +48,7 @@
 				</view>
 			</view>
 			<text class="sub" :class="s.recvListenClass">{{ s.recvListen }}</text>
+			<text class="sub" :class="s.recvHoldClass" v-if="s.recvHold != ''">{{ s.recvHold }}</text>
 			<text class="sub" v-for="(a, i) in s.recvAddrs" :key="i">本机地址 {{ a }}</text>
 			<!-- #endif -->
 			<text class="note" v-if="s.recvNote != ''">{{ s.recvNote }}</text>

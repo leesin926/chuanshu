@@ -106,7 +106,7 @@ Linux 与 Windows 的三个真实分歧，都已落到代码分支：
 | 失败原因的渲染：同一支 `detailOf`（A 级那句也从 `detail.reason` 读） | 完成 | `模拟器`（#134：把 A 级那一句在安卓上真按出来了一次。做法是让对端**只对清单表态说不**——本机对 `POST /v1/offer` 每次都回 `{"accepted": false}`，这正是手机端接收方自己还没决定时答的那一句，于是发送方按合同每秒重投一次清单、一直投到 60 秒，这一秒一秒之间屏幕上按下去的就是 A 级而不是正在写的那一块。对端账本：`清单进来 8 次（每次都不表态），写块请求 0 次，真正收下 0 块，finalize 0 次，落盘 {}`；按下取消 5.3 秒后传输页说 `失败：本机取消了这次传输 这一单还没发出去就被本机收回了`——整句、没有 `{"reason"`、没有 `detail`，也没等满对方的 60 秒窗口。六条判据全 YES，原文 `.probe/a_134.txt`，对端账本 `.probe/a_134_peer_pick.txt`；#126 那一趟的改动在共用渲染层 `cs-protocol.uts::detailOf`，这一趟证的就是它读出的那一句） |
 | 发现：mDNS + UDP 广播 | 代码在，**卡在出包口径** | `编译门` + `浏览器`（模型共用）；上机要 `CHANGE_WIFI_MULTICAST_STATE`，而它必须打进自定义基座——`pack --iscustom` 花的是用户的 DCloud 账号 |
 | UI 七页（首页/文件/传输/我的/发送/扫码连接/探针） | 完成 | `截图` + `模拟器`；自定义导航页让出状态栏安全区（#102） |
-| 前台服务接收中、Android 13+ 通知权限 | 设计口径在（`spec.md` §6：界面直说"请保持传书在前台"） | `未验`（服务被杀 = 连接被掐，这条只有真机能判） |
+| 收：接收中挂前台服务，挂不上时卡片自己说为什么（#143，`spec.md` §6） | 代码完成 + `模拟器`；**真挂上**要等自定义基座 | 落点是四处：`utssdk/app-android/CsKeepAlive.kt`（`Service` + 一个 `object`，`startForeground` 只在 API 34 带类型，读的是 `ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC`——合同 §6 原来写的 `dataTransfer` 是 14 预览期的叫法，正式版改名 `dataSync`，已用 HBuilderX 自带的 `android.jar` 逐字节查过那张常量表并把 §6 改口）、`utssdk/app-android/AndroidManifest.xml`（`android:foregroundServiceType="dataSync"`、`exported="false"`，组件只能进清单，代码里 `startService` 造不出一个 `<service>`）、`config.json` 补 `FOREGROUND_SERVICE`/`FOREGROUND_SERVICE_DATA_SYNC`/`POST_NOTIFICATIONS`、`app-android/index.uts::receiveHoldStart/receiveHoldStop`（13+ 那一句"要不要问"必须留在 UTS，运行时权限是 activity 上的 UI 线程调用）。**三件事都读设备、不假设**：`getServiceInfo` 抛 `NameNotFoundException` 就说明这个包的清单没带它，`checkSelfPermission` 少哪一项就报哪一项，`startForeground` 之后还要 `AtomicBoolean` 落定才算挂上——返回值走 `{ok, note}`，界面因此不需要匹配任何句子。`store/session.uts::armHold/disarmHold` 把结论写成卡片那一行（挂上=绿，挂不上=合同那句红字），关掉监听跟着收回。<br>证据：`编译门`（`.probe/c143_gates_final.log`：两道 `项目 chuanshu 编译成功。` + `运行包制作成功`）+ `模拟器`（`.probe/c143_device_legs.md`：标准调试基座 `targetSdk=32`、`POST_NOTIFICATIONS granted=false`，打开监听后卡片说「这台机器没让挂上保活（这个包的清单里没有保活服务这一项，所以保活挂不上：它要打进自定义基座才生效），退到后台可能被系统掐断：请保持传书在前台」，关掉后那行收回；`传输` 页日志同轮留着 `接收已打开…`/那句拒绝/`本来就没有保活挂着`）+ `浏览器`（接收 59 / 发送 17 / 发现 22 项全过，证明 store 那段条件编译没伤到 web）+ `截图`（`.probe/_c143_hold.png`：同一屏上「正在监听…」是绿的，下面那句保活拒绝是红的，开关在开位——挂上那句走的是同一个 `stateOk`）。**这一趟还真抓到一个只有设备能给的缺陷**：第一版按 `Build.VERSION.SDK_INT < 33` 决定要不要问通知权限，跑上去就在 `store/session.uts:997` 抛 `IllegalStateException: ... The targetSdkVersion SDK must be 33 or more`——问不问取决于**包**的 target 而不是系统的 API，现在读 `activity.getApplicationInfo().targetSdkVersion`（`mayAskNotify`）。至于"退到后台还收得到"这一条，只有把服务打进自定义基座才可能测（`pack --iscustom` 花用户的 DCloud 账号，等点头） |
 
 ### 3.3 HarmonyOS Next
 
@@ -129,7 +129,7 @@ Linux 与 Windows 的三个真实分歧，都已落到代码分支：
 | 发现：`@ohos.net.mdns` + UDP 广播，名单接进既有连接流程 | 完成（模拟器） | `模拟器`（#91/#93/#115：`局域网设备` 卡片点一台就把 served-leaf 前缀填进连接卡；browse 不重发会静默，改成 9 s 一次） |
 | 真机腿：#45 传输半边 / #46 收发 runbook | 待用户点头 | 唯一剩下的真机设备 `2UCUT23C27052382` 是用户的个人机（装了银行/学信网/税务），开机解锁需要本人同意 |
 | UI 七页与鸿蒙 design 一致、density 恢复手机值 | 完成 | `截图`（#101/#102/#114 改口：那条"被裁掉"是探针点了视口外节点） |
-| 后台限制的产品处理 | 设计口径在 | "接收中"界面直说保持前台（`spec.md` §6，与 Android 同口径） |
+| 后台限制的产品处理（#143 的另一半：这一端没有机制，只有合同要求的那句话） | 完成 | `模拟器` + `截图`（`127.0.0.1:10001`：监听开着时「我的」页那行「这一端没有后台保活，退到后台或锁屏可能被系统冻住：请保持传书在前台」，点掉监听那行跟着收回；`.probe/_c143_hold_harmony.jpeg` 里它是红的，与同屏那句绿色的「正在监听 43720…」并排。原文 `.probe/c143_device_legs.md`。这句话过去只在文档里，`pages/` 与 `store/` 里一个字都没有——写它的人把口径当成了实现） |
 
 ### 3.4 浏览器（H5 目标）
 
@@ -324,13 +324,14 @@ E:\android-sdk\emulator\emulator.exe -avd chuanshu34b -no-window -no-audio -no-b
    （把对端的**叶**钉在地址上），再让那一台**不带配对码**拨回来，看手机答 `resumed=true` 而不是 `BAD_PAIR_CODE`。
    一台 AVD + 本机就当两台机器够用（发送方拨 `10.0.2.2`，回拨走 `adb forward tcp:<hostport> tcp:43720`），
    缺的是那个"已经固定过这台手机、于是留空码"的 Python 对端；旧的 `#88` 设备腿也是这么欠着的，这一次别再只停在编译门。
-10. **#140 那一轮逐条巡检剩下的六条**（已立案，未动手）：#143 Android 前台服务 `dataTransfer` 与
-    13+ 通知权限（§6）；#144 §7 的 `compatible_versions` 交集各端只实现了一半（PC 的 `hello()` 只看对端的
+10. **#140 那一轮逐条巡检剩下的五条**（已立案，未动手）：#144 §7 的 `compatible_versions` 交集各端只实现了一半（PC 的 `hello()` 只看对端的
     `protocol_version`，从不读它的 `compatible_versions`）；#145 PC 对同一 `offer_id` 重投清单会再弹一次窗；
     #146 手机端设备名不可改（§1 说 `settings.json` 里用户可改）；#147 闲置回收删"半截文件"按单还是按文件
     （PC 连已校验的一起删，手机留着——口径题）；#148 鸿蒙 §5 的符号链接检查（`realpath` 确实没有，
-    但 `lstatSync` + `Stat.isSymbolicLink()` 顶得上，那句"这平台做不到"的注释是错的）。
-    （同批的 #142 已经落地，见 §3.2 / §3.3 那两行；它欠的那次上机是下面第 11 条。）
+    `lstatSync` + `Stat.isSymbolicLink()` 顶得上，那句"这平台做不到"的注释是错的）。
+    （同批的 #142 已经落地，见 §3.2 / §3.3 那两行；它欠的那次上机是下面第 11 条。**#143 也落地了**，
+    见 §3.2 那一行——顺带把合同 §6 里 `dataTransfer` 那个预览期叫法改成了正式版的 `dataSync`；
+    它欠的那一次"退到后台还收得到"在第 13 条。）
 11. **#142 的设备腿** — 顺序改对了，但两处都只有编译门与浏览器：一、从名单点中那一行，前缀得真的走到
     `pinPrefix`（`store/session.uts` 的 `#ifdef APP-*` 那一步，H5 走不到）；二、正常路径不能被这道核对误伤——
     两台模拟器互点一次，日志要出现「已核对：<前缀> 这台机器在 TLS 上就是它自己」并且配对照旧成。
@@ -342,10 +343,14 @@ E:\android-sdk\emulator\emulator.exe -avd chuanshu34b -no-window -no-audio -no-b
     `CsWire.kt` 的 `PinTrust.seen`、iOS 那半边同形），只是没交给调用方。最省的一条路是让 `request` 的钉接受
     "前缀形状"的值（长度不足 64 时按 `startsWith` 比），把广播前缀直接当 TLS 钉用——那样核对既发生在套接字上，
     也天然排在配对之前。
+13. **#143 的那一次"退到后台还收得到"** — 代码与卡片都落地了，但标准调试基座是别人的 APK，清单里没有我们那个
+    `<service>`，所以 `CsKeepAlive.begin()` 在这一台上必然报"挂不上"（那正是这一趟要证的诚实降级）。要证保活本身，
+    得先 `pack --iscustom` 出自定义基座——它花的是用户的 DCloud 账号，所以这一步等点头；判据是：开着监听把应用退到
+    后台，通知栏那条「传书在收」还在，对端接着发的那一块照样落盘。
 
 ### 需要用户点头才能做的三件事
 - 唤醒/解锁并使用那台个人鸿蒙真机（#45/#46 + 鸿蒙发现真机腿）。
-- 跑 `pack --iscustom`（Android 自定义基座，#36/#90 的钥匙）。
+- 跑 `pack --iscustom`（Android 自定义基座，#36/#90 的钥匙，也是 #143 那条"退到后台还收得到"的钥匙）。
 - 定 `mute` 那一支报哪句话（#138）：动的是冻结合同 §4 的措辞，改哪一边都能收口，但不该由实现各自留着两种说法。
 
 ## 7. 已知平台坑（写给下一次动手的人）
