@@ -302,6 +302,14 @@ class ReceiveService:
         self.proto = protocol_spec.load()
         self.root = Path(root or receive_root())
         self._offers: dict[str, OfferState] = {}
+        # §4: one offer_id is one question to the user. A manifest re-posted under an id this machine
+        # has already answered gets the same answer again, and one it is still asking about gets
+        # "not decided yet" instead of a second card. The sender re-posts on purpose (a poll whose
+        # reply could not be read tries again, §4's keep-alive trap says a closed connection resends
+        # once), so without this a person who already answered would be asked a second time - and
+        # a batch they declined could be accepted by an accident of the second dialog.
+        self._answered: dict[str, str] = {}
+        self._asking: set[str] = set()
         self._tokens: dict[str, str] = {}
         #: When each peer last said anything with a token, and when this machine last leaned on
         #: the session it dialled out. Both feed the idle reclaim; neither is ever sent anywhere.
@@ -457,6 +465,8 @@ class ReceiveService:
                     continue
                 log.info("offer %s reclaimed after %ds without a chunk", offer_id[:8], int(now - state.touched))
                 self._offers.pop(offer_id, None)
+                # §4: this id has ended, so a manifest re-posted under it must not reach the user again.
+                self._remember(offer_id, "ended")
                 if not state.complete:
                     # Same thing the sender's own 取消 does: the half-written batch is nobody's
                     # file, and leaving it would keep the sparse allocation the offer reserved.
@@ -645,14 +655,32 @@ class ReceiveService:
         restored = self._offers.get(offer_id)
         if restored is not None:
             return restored.payload()
+        # Not in the table any more, so this manifest has already been through a decision here -
+        # answered, or ended after it was accepted. Answer it the same way and leave the user alone.
+        with self._lock:
+            asking = offer_id in self._asking
+            outcome = self._answered.get(offer_id)
+        if asking:
+            return {"offer_id": offer_id, "accepted": False}
+        if outcome == "declined":
+            raise protocol_spec.ProtocolError("DECLINED", {"offer_id": offer_id, "reason": "already declined"})
+        if outcome is not None:
+            raise protocol_spec.ProtocolError("OFFER_UNKNOWN", {"offer_id": offer_id})
 
         targets = {str(f["id"]): sanitize_relpath(str(f["relpath"]), self.proto) for f in files}
         entry = self.identity.trusted_entry(caller) if caller else None
         # A peer may call itself anything inside the manifest, so the name the user sees
         # comes from the pin list; caller's fingerprint prefix is the only real anchor.
         who = str((entry or {}).get("name") or "")
-        answer = self.handler(body, who, caller)
+        with self._lock:
+            self._asking.add(offer_id)
+        try:
+            answer = self.handler(body, who, caller)
+        finally:
+            with self._lock:
+                self._asking.discard(offer_id)
         if not answer:
+            self._remember(offer_id, "declined")
             raise protocol_spec.ProtocolError("DECLINED")
         # One folder per transfer is what stops two offers of the same file name from truncating
         # each other, so the folder the user picked is the parent, never the destination.
@@ -744,10 +772,20 @@ class ReceiveService:
             (state.directory / STATE_FILE).unlink(missing_ok=True)
         return {"offer_id": offer_id, "verified": results}
 
+    def _remember(self, offer_id: str, outcome: str) -> None:
+        """Keep the last answers this session gave, bounded - the phone's end caps the same list."""
+        with self._lock:
+            self._answered[offer_id] = outcome
+            while len(self._answered) > 64:
+                self._answered.pop(next(iter(self._answered)), None)
+
     def handle_abort(self, offer_id: str) -> dict:
         state = self._offers.pop(offer_id, None)
         if state is None:
             raise protocol_spec.ProtocolError("OFFER_UNKNOWN", {"offer_id": offer_id})
+        # The sender walked away from this id. Same rule as the idle reclaim: it is ended here,
+        # and a manifest that still arrives under it gets that answer rather than a new dialog.
+        self._remember(offer_id, "ended")
         for child in sorted(state.directory.rglob("*"), reverse=True):
             if child.is_file():
                 child.unlink()

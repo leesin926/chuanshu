@@ -508,7 +508,11 @@ export function sweep(inbox: Inbox, now: number, drop: DropFn, digestFile: Diges
 				continue
 			}
 			// Never accepted, so nothing was allocated and there is no half-written batch to release -
-			// this is the one offer the card is allowed to stop showing on its own.
+			// this is the one offer the card is allowed to stop showing on its own. The answer it
+			// stopped with is recorded too (§4): a sender that re-posts on a fresh connection gets
+			// the same refusal instead of a second card for a window nobody answered.
+			const lapsed = failWith('DECLINED', null)
+			settleOffer(inbox, offer.offerId, lapsed.status, lapsed.body)
 			inbox.offers.splice(i, 1)
 			continue
 		}
@@ -520,6 +524,10 @@ export function sweep(inbox: Inbox, now: number, drop: DropFn, digestFile: Diges
 			// leaving it would keep the space the offer reserved when it was accepted.
 			releaseFiles(offer, drop, digestFile)
 		}
+		// This id is done asking, in either case: recorded so a manifest that still arrives under it
+		// hears that rather than waking the user again.
+		const ended = failWith('OFFER_UNKNOWN', { offer_id: offer.offerId } as UTSJSONObject)
+		settleOffer(inbox, offer.offerId, ended.status, ended.body)
 		inbox.offers.splice(i, 1)
 	}
 	return lost
@@ -1105,6 +1113,10 @@ function abortReply(inbox: Inbox, offerId: string, drop: DropFn, digestFile: Dig
 	}
 	releaseFiles(offer!, drop, digestFile)
 	dropOffer(inbox, offerId)
+	// The sender walked away from this id, which is the same fact the reclaim records: a manifest that
+	// still turns up under it - §4's closed connection resends once - gets that answer, not a new card.
+	const gone = failWith('OFFER_UNKNOWN', { offer_id: offerId } as UTSJSONObject)
+	settleOffer(inbox, offerId, gone.status, gone.body)
 	return okWith({ offer_id: offerId, dropped: true } as UTSJSONObject)
 }
 
@@ -1225,8 +1237,12 @@ export function resolveOffer(inbox: Inbox, offerId: string, accepted: boolean, p
 		return failWith('OFFER_UNKNOWN', { offer_id: offerId } as UTSJSONObject)
 	}
 	if (!accepted) {
+		const refused = failWith('DECLINED', null)
+		// Recorded here rather than only by whoever delivers it: the answer belongs to the offer id,
+		// and a host that answered the sender and forgot to write it down would ask the user again.
+		settleOffer(inbox, offerId, refused.status, refused.body)
 		dropOffer(inbox, offerId)
-		return failWith('DECLINED', null)
+		return refused
 	}
 	for (let i = 0; i < offer!.files.length; i++) {
 		const file = offer!.files[i]
@@ -1237,8 +1253,10 @@ export function resolveOffer(inbox: Inbox, offerId: string, accepted: boolean, p
 			for (let k = 0; k < i; k++) {
 				drop(offer!.files[k].land)
 			}
+			const full = failWith('STORAGE_FULL', { relpath: file.relpath } as UTSJSONObject)
+			settleOffer(inbox, offerId, full.status, full.body)
 			dropOffer(inbox, offerId)
-			return failWith('STORAGE_FULL', { relpath: file.relpath } as UTSJSONObject)
+			return full
 		}
 		file.dest = dest
 	}

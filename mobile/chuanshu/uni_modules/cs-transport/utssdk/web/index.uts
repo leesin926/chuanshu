@@ -15,6 +15,7 @@ import {
 	PASSPHRASE_CHARS,
 	SESSION_IDLE_S,
 	OFFER_IDLE_S,
+	OFFER_WAIT_S,
 	unescapeChunk
 } from '../cs-protocol.uts'
 import {
@@ -1643,6 +1644,44 @@ export function receiveSelfReport(): string {
 	// one shape where the reclaim above would be deleting a person's received file.
 	const finishedLedger = '{"offer_id":"' + finId + '","complete":true,"files":[{"id":"f1","relpath":"' + STALL_TEXT + '","size":1,"sha256":"00","type":"text/plain","verdict":1}],"received":{},"from_name":"PC"}'
 	check('写完的台账不会被当成续传接管', adoptAll(idle, [finishedLedger], nowSeconds()) == 0)
+
+	// 14. spec §4: one offer_id is one question to the person holding this phone. The sender re-posts the
+	// same manifest on purpose - a poll whose reply could not be read tries again (#96) - so every answer
+	// this end gives has to outlive that re-post. Its own box, for the same reason as 5b.
+	const qBox = newInbox()
+	const qPaired = askPairOn(qBox, SIM_PEER_ID, currentPairCode(qBox, nowSeconds()), passphraseOf(qBox, nowSeconds()), simKey)
+	const qObj = jsonOf(qPaired)
+	const qToken = qObj == null ? '' : qObj!.getString('token', '')
+	const qAsk = (text: string): WireReply => {
+		return askOn(qBox, SIM_PEER_ID, 'POST', '/v1/offer', text, qToken, new ArrayBuffer(0), '')
+	}
+	const qId = hexOf(randomBytes(8))
+	const qManifest = offerJson(qId, simFilesFor(SCRATCH_TEXT, SCRATCH_BIG), SIM_PEER_ID, SIM_NAME)
+	const qFirst = qAsk(qManifest)
+	const qReask = qAsk(qManifest)
+	check('还挂着的那一问，重发只回"还没人决定"', qFirst.pending && qReask.pending)
+	const qWaiting = snapshot(qBox, nowSeconds()).pendingOfferIds
+	check('重发没有多占一个待决名额', qWaiting.length == 1 && qWaiting[0] == qId)
+	const qDeclined = resolveOffer(qBox, qId, false, recvPrepare, recvDrop)
+	const qAfterNo = qAsk(qManifest)
+	check('答过拒绝的单，重发拿回同一句拒绝',
+		codeOfReply(qDeclined) == 'DECLINED' && codeOfReply(qAfterNo) == 'DECLINED' && qAfterNo.status == 403 && !qAfterNo.pending)
+	// A window that closes with nobody answering is the same refusal as far as §4 is concerned - the
+	// sender's own timeout is DECLINED - so the id keeps that answer instead of opening a second window.
+	const qId2 = hexOf(randomBytes(8))
+	const qManifest2 = offerJson(qId2, simFilesFor(SCRATCH_TEXT, SCRATCH_BIG), SIM_PEER_ID, SIM_NAME)
+	qAsk(qManifest2)
+	const qLapsed = nowSeconds() + OFFER_WAIT_S + 1
+	sweep(qBox, qLapsed, recvDrop, recvDigestFile)
+	check('窗口到点没人答，重发不再问第二遍',
+		codeOfReply(qAsk(qManifest2)) == 'DECLINED' && snapshot(qBox, qLapsed).pendingOfferIds.length == 0)
+	// …and an id this end is done with because the sender cancelled it is done asking as well.
+	const qId3 = hexOf(randomBytes(8))
+	const qManifest3 = offerJson(qId3, simFilesFor(SCRATCH_TEXT, SCRATCH_BIG), SIM_PEER_ID, SIM_NAME)
+	qAsk(qManifest3)
+	resolveOffer(qBox, qId3, true, recvPrepare, recvDrop)
+	askOn(qBox, SIM_PEER_ID, 'DELETE', '/v1/offer/' + qId3, '', qToken, new ArrayBuffer(0), '')
+	check('对方取消过的单，重发清单不再打扰用户', codeOfReply(qAsk(qManifest3)) == 'OFFER_UNKNOWN')
 
 	out.push(fail == 0 ? '接收自检 ' + pass.toString() + ' 项全部通过' : '接收自检失败 ' + fail.toString() + ' 项，通过 ' + pass.toString() + ' 项')
 	return out.join('\n')

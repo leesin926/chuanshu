@@ -16,6 +16,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -625,6 +626,112 @@ def phase_chunk_reply_lost(proto: protocol_spec.Protocol, workspace: Path) -> No
         service.stop()
 
 
+def phase_repeated_offer(proto: protocol_spec.Protocol, workspace: Path) -> None:
+    """#145: one offer_id is one question. §4 says the answer a user already gave is what a
+    re-posted manifest gets, so nobody is asked twice for one transfer.
+
+    The re-post is not a hypothetical: #96 makes the sender try again whenever a poll cannot be
+    read, §4's keep-alive trap says a closed connection resends once, and a Harmony peer answers
+    every poll of the same id. Before this, each of those re-posts reached the decision callback
+    again - a second dialog for one batch, and a batch somebody declined could be accepted by
+    whoever reached the second card.
+    """
+    corpus = build_corpus(workspace / "repeat-corpus")
+    sender = load_or_create(workspace / "repeat-sender")
+    receiver = load_or_create(workspace / "repeat-receiver")
+    files = plan(corpus, base=workspace / "repeat-corpus")
+    asks: list[str] = []
+
+    def dial(name: str) -> PeerConnection:
+        conn = PeerConnection(sender, name, "127.0.0.1", service.port, receiver.served_fingerprint)
+        conn.hello()
+        conn.pair(service.current_pair_code())
+        return conn
+
+    def declined(manifest: dict, who: str, caller: str) -> bool:
+        asks.append(str(manifest["offer_id"]))
+        return False
+
+    service = ReceiveService(receiver, "PC-Repeating", declined, host="127.0.0.1", port=0,
+                             root=workspace / "repeat-declined")
+    service.start()
+    try:
+        conn = dial("PC-Sender")
+        expect_error("a declined offer is refused", "DECLINED", lambda: conn.offer(files))
+        status, payload = conn._request("POST", "/v1/offer", json_body=conn._manifest)
+        check("the same id re-posted gets that refusal back, not a second question",
+              status == proto.http_status("DECLINED") and payload.get("code") == "DECLINED"
+              and len(asks) == 1, f"{status} {payload} asked={asks}")
+    finally:
+        service.stop()
+
+    # A poll that arrives while the first one is still in front of the user must not open a second
+    # card either - §4's other legal answer is "registered, nobody has decided yet".
+    gate = threading.Event()
+    settled = threading.Event()
+    answer_box: list[object] = []
+
+    def pondering(manifest: dict, who: str, caller: str) -> bool:
+        asks.append(str(manifest["offer_id"]))
+        gate.set()
+        settled.wait(10.0)
+        return bool(answer_box[0])
+
+    thinking = ReceiveService(receiver, "PC-Thinking", pondering, host="127.0.0.1", port=0,
+                             root=workspace / "repeat-pending")
+    thinking.start()
+    first: dict = {}
+    try:
+        manifest = {"offer_id": "thinkingoffer", "protocol_version": proto.version,
+                    "total_size": sum(f.size for f in files),
+                    "from": {"peer_id": sender.peer_id, "name": "PC-Sender"},
+                    "files": [f.manifest() for f in files]}
+        asks.clear()
+        worker = threading.Thread(target=lambda: first.update(
+            thinking.handle_offer(manifest, sender.fingerprint)), daemon=True)
+        worker.start()
+        check("the question reached the user once", gate.wait(5.0) and len(asks) == 1, asks)
+        polled = thinking.handle_offer(manifest, sender.fingerprint)
+        check("a poll while that card is open answers 'not decided yet'",
+              polled.get("accepted") is False and polled.get("offer_id") == "thinkingoffer", polled)
+        check("and it did not ask the user again", len(asks) == 1, asks)
+        answer_box.append(True)
+        settled.set()
+        worker.join(10.0)
+        check("the answer the user gave comes out of the connection that asked",
+              first.get("accepted") is True and bool(first.get("files")), first)
+        again = thinking.handle_offer(manifest, sender.fingerprint)
+        check("a third poll now reads the progress of that one transfer",
+              again.get("accepted") is True and len(asks) == 1, f"{again} asked={asks}")
+    finally:
+        thinking.stop()
+
+    # The other half of §4's sentence: an id that ended is not a new question either.
+    decided: list[str] = []
+
+    def accepting(manifest: dict, who: str, caller: str) -> bool:
+        decided.append(str(manifest["offer_id"]))
+        return True
+
+    service2 = ReceiveService(receiver, "PC-Ended", accepting, host="127.0.0.1", port=0,
+                              root=workspace / "repeat-ended")
+    service2.start()
+    try:
+        conn2 = PeerConnection(sender, "PC-Sender-2", "127.0.0.1", service2.port,
+                               receiver.served_fingerprint)
+        conn2.hello()
+        conn2.pair(service2.current_pair_code())
+        offered = conn2.offer(files)
+        check("an accepted id is one delivery", len(decided) == 1 and offered["state"].get("files"), decided)
+        conn2.abort()
+        status, payload = conn2._request("POST", "/v1/offer", json_body=conn2._manifest)
+        check("a manifest re-posted after that id ended is not asked again",
+              status == proto.http_status("OFFER_UNKNOWN") and payload.get("code") == "OFFER_UNKNOWN"
+              and len(decided) == 1, f"{status} {payload} asked={decided}")
+    finally:
+        service2.stop()
+
+
 def phase_discovery(proto: protocol_spec.Protocol, workspace: Path) -> None:
     """Two symmetric peers finding each other, then promoting a prefix to an anchor."""
     from app.net.discovery import DiscoveryService, Peer, adopt_hello
@@ -826,6 +933,7 @@ def main() -> int:
         phase_lying_ledger(proto, workspace)
         phase_stalled_offer(proto, workspace)
         phase_offer_poll(proto, workspace)
+        phase_repeated_offer(proto, workspace)
         phase_chunk_reply_lost(proto, workspace)
         phase_discovery(proto, workspace)
         phase_reverse_pin(proto, workspace)
