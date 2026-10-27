@@ -310,12 +310,26 @@ py -X utf8 scripts/check_protocol.py
    `.probe/a_154_card.png`，假公告由控制台 UDP 转发 `redir add udp:43722:43721` 喂进名单，点中、填**真**配对码与密码、按连接，
    11.7 秒后屏上「…广播里报的是 0badc0ffee000000，收到 3ae1fc93c61c7b73…」，对端那一段时间一条请求行都没有，只留
    `SSLV3_ALERT_CERTIFICATE_UNKNOWN`——`CsWire.kt` 那句 `CertificateException` 的文本没被平台吞成"连不上"，两个数都到了屏上）；
-   鸿蒙×广播里报的是（`.probe/a_153_harmony.txt`）。**没证到的那一格照实说**：鸿蒙×已固定（本机真有钉、对面换证书）
-   没有纹身上去，`index.uts:1862` 里 `expected.length == 64 → 已固定` 那一支是照安卓同一条规则抄的，只过了编译门。
+   鸿蒙×广播里报的是（`.probe/a_153_harmony.txt`）。~~**没证到的那一格照实说**：鸿蒙×已固定（本机真有钉、对面换证书）
+   没有纹身上去，`index.uts:1862` 里 `expected.length == 64 → 已固定` 那一支是照安卓同一条规则抄的，只过了编译门~~
+   ——**这一格 2026-10-27 补上了**（`.probe/h_153_pin_leg.py`，原文 `.probe/h_153_pin.txt`，截图
+   `.probe/h_153_real.jpeg` / `.probe/h_153_wrong.jpeg`，档位 `模拟器`，鸿蒙 `127.0.0.1:5557`）。钉不是这一趟摆的，
+   是 #150 真前缀那一趟留在设备上的，`state` 只用 `hdc file recv` 把它读回来核对：`chuanshu-trusted.json` 上
+   `10.0.2.2:43731` 那一条长 64、等于 `.probe/emu/id150/tls-leaf.pem` 那把 SPKI 的 sha256（`3b0108120c6000ee…`），
+   所以走的确实是 `expected.length == 64` 那一支。然后同一个地址、同一个端口两趟，每趟两个证人（屏上那句话 + 那个端口上的
+   监听自己说了什么）：对的证书 → 「已连接 PC-probe-receiver（沿用旧指纹）」且对端读到 `GET /v1/hello`、`POST /v1/pair`；
+   换一把当场生成的 RSA-2048 自签 → 「对端证书与要核对的指纹不符，已中止 **已固定 3b0108120c6000ee…**，这台在 TLS 上递出来的是
+   b2abfbfb23a2323a…」，而那一侧自己说「handshake ok, 0 字节应用数据：b''」（`.probe/h_153_foreign.txt`）——握完了手，
+   请求头一个字节都没写，这句判死因此不是"没连上"蒙对的。判死之后 `state` 再读一次，钉表还是三行，那匹新马没被钉进去。
    这一趟顺手量出安卓发现腿的三条 harness 规则（`.probe/a_153.txt` 末尾）：控制台那条 UDP 转发会**静默失效**，每一趟都要
    先 `redir del` 再 `redir add`；guest 本机 `nc -u` 打自己的 43721 一个包都不到（`UdpNoPorts` +2、`UdpInDatagrams` 不动）；
    转发包以 `Inet4Address` 原样到达，所以「名单听不到外机」从来不是 `CsDiscovery.kt` 里那个 `is Inet4Address` 筛的——
    先前那句注释怀疑错了对象，已按实测改掉，`asIPv4OrNull` 留着只做 v4-mapped 归一化。
+   鸿蒙这一边另量出三条（原因记在 `.probe/h_153_pin_leg.py` 里那几处注释）：手输那行的两个框要按"同一排的两个 TextInput"认，
+   填过的框会在 `dumpLayout` 里丢掉 `hint`、端口框又预填着，按 `hint=端口` 找不到它那一趟就拨在默认的 43720 上；
+   `dumpLayout` 不报软键盘底下的行，照"滚进可点带再点"的规矩按「连接」会打在数字键上（一趟跑完端口框写着 `43731888888`，
+   屏上却还是上一趟的「已连接」），所以按下前后都要把两个框读回来比对；扫码卡片那句状态是进程内存里的，上一趟的会话会让
+   这一趟根本不拨号却报「已连接」，`清除对端` 顶不掉它——每一趟先 `aa force-stop` 再起，钉表在磁盘上，跨得过这次重启。
 
 M2a 的最小切口是"手机发、PC 收"：扫（或粘贴）PC 的二维码拿到地址与完整指纹，用户只核对同屏的
 一次性配对码——PC 侧接收端已经跑绿，手机只要把
