@@ -1,6 +1,5 @@
 package uts.sdk.modules.csTransport
 
-import android.os.Build
 import android.util.Log
 import io.dcloud.uts.UTSAndroid
 import java.io.ByteArrayInputStream
@@ -106,12 +105,12 @@ object ServedLeaf {
         return der(0x17, f.format(Date(millis)).toByteArray(Charsets.US_ASCII))
     }
 
-    private fun commonName(): String {
-        val maker = Build.MANUFACTURER.orEmpty()
-        val model = Build.MODEL.orEmpty()
-        val named = if (model.contains(maker, true)) model else "$maker $model".trim()
-        return if (named.isEmpty()) "chuanshu-android" else named
-    }
+    /** §1 says the service leaf carries CN=peer_id, and the PC's and Harmony's both do. Nothing on the
+     *  wire reads a subject - a peer names this device from the pair request - but the leaf is written
+     *  down once and the subject is the one part of it a log shows, so this end answered with the
+     *  hardware name while the other two answered with the id. The hardware name stays only as the
+     *  answer when the identity layer itself cannot speak. */
+    private fun commonName(): String = CsIdentity.peerId().ifEmpty { CsIdentity.hardwareName() }
 
     private fun parseCert(der: ByteArray): X509Certificate? = try {
         CertificateFactory.getInstance("X.509")
@@ -157,12 +156,12 @@ object ServedLeaf {
             Log.w(TAG, "stored cert does not parse: " + der.size + " bytes")
             return null
         }
-        try {
-            parsed.checkValidity()
-        } catch (e: Throwable) {
-            Log.w(TAG, "stored cert rejected by the clock: $e")
-            return null
-        }
+        // The dates are not read, on purpose: §1 mints this leaf once and says a device that ends up
+        // with a different leaf has to be re-paired by hand (the pins are on the certificate). Asking
+        // the clock whether the stored one is still current turns a backward-set clock into a new key
+        // pair, a new SPKI digest, and every peer that pinned this phone silently losing its pin on the
+        // next restart - which is exactly what the note on derTime measured once already. The PC keeps
+        // a leaf whose files exist; Harmony reads the bytes back and never looks at the dates.
         val key = try {
             KeyFactory.getInstance("RSA").generatePrivate(PKCS8EncodedKeySpec(pri.readBytes()))
         } catch (e: Throwable) {
@@ -181,9 +180,11 @@ object ServedLeaf {
         return Leaf(key, spkiBytes, der, hexOf(MessageDigest.getInstance("SHA-256").digest(spkiBytes)))
     }
 
-    /** The leaf, made once and then reused: a peer that pinned this address has to see the same bytes
-     *  tomorrow, and a file that expired or whose key no longer matches is rebuilt without asking.
-     *  Thrown at the caller rather than answered with an empty key: the listener cannot start without it. */
+    /** The leaf, made once and then kept: a peer that pinned this address has to see the same bytes
+     *  tomorrow, so only a file that does not parse or a cert whose key is gone gets rebuilt - never a
+     *  date. Rebuilding is the loud half of losing every peer's pin, and it is not a thing this function
+     *  is allowed to decide on its own. Thrown at the caller rather than answered with an empty key:
+     *  the listener cannot start without it. */
     @Synchronized
     private fun leaf(): Leaf {
         cached?.let { return it }

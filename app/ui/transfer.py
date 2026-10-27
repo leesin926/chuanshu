@@ -71,7 +71,7 @@ from app.net import spec as protocol_spec
 from app.net.discovery import DiscoveryService, Peer, local_ipv4, verify_peer
 from app.net.identity import load_or_create
 from app.net.receive import ReceiveService
-from app.net.send import PairNeeded, PeerConnection, Throttle, plan
+from app.net.send import PairNeeded, PeerConnection, PeerIdentityMismatch, Throttle, plan
 from app.paths import identity_dir, receive_root, user_data_dir
 from app.ui import theme
 
@@ -2056,6 +2056,9 @@ class TransferPanel(QWidget):
                     n=self.proto.pair_code_digits, m=self.proto.passphrase_chars
                 )
             )
+        except PeerIdentityMismatch:
+            self._close_quietly(conn)
+            self._connect_failed.emit(_("配对应答里的指纹和 hello 不一致，已中止"))
         except protocol_spec.ProtocolError as error:
             self._close_quietly(conn)
             detail = error.detail if isinstance(error.detail, dict) else {}
@@ -2517,6 +2520,8 @@ class TransferPanel(QWidget):
             )
         except PairNeeded:
             self._finished.emit(False, _("对方不再认识本机的密钥。选中它，输入它屏幕上新显示的配对码再连接。"))
+        except PeerIdentityMismatch:
+            self._finished.emit(False, _("配对应答里的指纹和 hello 不一致，已中止"))
         except protocol_spec.ProtocolError as error:
             self._finished.emit(False, _("对方说：{text}").format(text=proto_errors.describe(error.code)))
         except FileNotFoundError as error:

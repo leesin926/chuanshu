@@ -2438,7 +2438,11 @@ function dispatch(c: Conn): void {
 	serveFn!(index, method, path,
 		headerOf(head, 'x-chuanshu-auth:'),
 		headerOf(head, 'x-sha256:'),
-		c.ip == '' ? c.id.toString() : c.ip,
+		// '?' and not the connection number: §3 counts five failed codes per *source*, and an address
+		// that has not arrived yet is a source nobody can name. A per-connection number would hand a
+		// guesser a fresh allowance every attempt, so the lockout could never fill. Shared bucket, the
+		// same one the Android end uses. No real peer is named '?': a lookup either answered or has not.
+		c.ip == '' ? '?' : c.ip,
 		json,
 		method == 'PUT' && size > 0 ? body : null)
 }
@@ -2581,7 +2585,8 @@ function onAccept(conn: socket.TLSSocketConnection): void {
 	openConns.push(c)
 	note('连接进来 ' + c.id.toString() + '，当前开着 ' + openConns.length.toString())
 	// The address is what the failed-code lockout counts per, so it is worth one promise even though
-	// nothing on this wire needs it before the request does.
+	// nothing on this wire needs it before the request does. Until it lands - or forever, if it never
+	// does, which is the empty catch below - the request is booked under the shared unnamed-source key.
 	conn.getRemoteAddress().then((where: socket.NetAddress): void => {
 		c.ip = where.address
 	}).catch((e: Error): void => {

@@ -40,7 +40,7 @@ from app.net import spec as protocol_spec
 from app.net.discovery import DiscoveryService, Peer, verify_peer
 from app.net.identity import load_or_create
 from app.net.receive import ReceiveService
-from app.net.send import PairNeeded, PeerConnection, plan
+from app.net.send import PairNeeded, PeerConnection, PeerIdentityMismatch, plan
 from app.paths import identity_dir, receive_root, user_data_dir
 
 log = logging.getLogger(__name__)
@@ -497,6 +497,9 @@ def cmd_send(args: argparse.Namespace, out: Terminal) -> int:
     except PairNeeded:
         out.say(f"对方不认识这把钥匙。把它屏幕上那 {proto.pair_code_digits} 位配对码用 --code 传给我，"
                 "或者重新贴一份它现在的串。")
+        return 1
+    except PeerIdentityMismatch:
+        out.say("配对应答里的指纹和 hello 不一致，已中止。")
         return 1
     except protocol_spec.ProtocolError as error:
         out.say(f"传输失败：{proto_errors.describe(error.code)}")

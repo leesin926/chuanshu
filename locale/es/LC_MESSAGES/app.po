@@ -1459,3 +1459,7 @@ msgstr "Recibidos {n} archivos de {who} ({size})"
 #~ msgid "这个时间里没有收到的文件。"
 #~ msgstr "No hay archivos recibidos en este periodo."
 
+
+#: app/ui/transfer.py:2061 app/ui/transfer.py:2524
+msgid "配对应答里的指纹和 hello 不一致，已中止"
+msgstr "La huella de la respuesta de emparejamiento no coincide con la de hello; se ha abortado."

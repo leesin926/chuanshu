@@ -1466,3 +1466,7 @@ msgstr "Received {n} file(s) from {who} ({size})"
 #~ msgid "这个时间里没有收到的文件。"
 #~ msgstr "No received files in this time range."
 
+
+#: app/ui/transfer.py:2061 app/ui/transfer.py:2524
+msgid "配对应答里的指纹和 hello 不一致，已中止"
+msgstr "The pair reply named a fingerprint that does not match hello; stopped."

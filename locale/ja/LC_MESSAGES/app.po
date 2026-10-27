@@ -1338,3 +1338,7 @@ msgstr "{who} から {n} ファイル（{size}）を受信"
 #~ msgid "这个时间里没有收到的文件。"
 #~ msgstr "この期間に受信したファイルはありません。"
 
+
+#: app/ui/transfer.py:2061 app/ui/transfer.py:2524
+msgid "配对应答里的指纹和 hello 不一致，已中止"
+msgstr "ペアリング応答の指紋が hello のものと一致しないため、中止しました。"

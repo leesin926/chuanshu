@@ -1353,3 +1353,7 @@ msgstr "收到 {who} 发来的 {n} 个文件（{size}）"
 #~ msgid "这个时间里没有收到的文件。"
 #~ msgstr "这个时间里没有收到的文件。"
 
+
+#: app/ui/transfer.py:2061 app/ui/transfer.py:2524
+msgid "配对应答里的指纹和 hello 不一致，已中止"
+msgstr "配对应答里的指纹和 hello 不一致，已中止"

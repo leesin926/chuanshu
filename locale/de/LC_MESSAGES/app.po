@@ -1473,3 +1473,7 @@ msgstr "{n} Datei(en) von {who} empfangen ({size})"
 #~ msgid "这个时间里没有收到的文件。"
 #~ msgstr "In diesem Zeitraum keine empfangenen Dateien."
 
+
+#: app/ui/transfer.py:2061 app/ui/transfer.py:2524
+msgid "配对应答里的指纹和 hello 不一致，已中止"
+msgstr "Der Fingerabdruck der Pairing-Antwort passt nicht zu dem aus hello; abgebrochen."

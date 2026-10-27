@@ -1332,3 +1332,7 @@ msgstr "{who}에서 파일 {n}개({size}) 받음"
 #~ msgid "这个时间里没有收到的文件。"
 #~ msgstr "이 기간에 받은 파일이 없습니다."
 
+
+#: app/ui/transfer.py:2061 app/ui/transfer.py:2524
+msgid "配对应答里的指纹和 hello 不一致，已中止"
+msgstr "페어링 응답의 지문이 hello와 일치하지 않아 중단했습니다."

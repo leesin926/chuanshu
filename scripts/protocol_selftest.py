@@ -28,7 +28,7 @@ from app.net import errors  # noqa: E402
 from app.net import spec as protocol_spec  # noqa: E402
 from app.net.identity import load_or_create  # noqa: E402
 from app.net.receive import STATE_FILE, ReceiveService, sanitize_relpath  # noqa: E402
-from app.net.send import PACE_MS_LADDER, PairNeeded, PeerConnection, plan  # noqa: E402
+from app.net.send import PACE_MS_LADDER, PairNeeded, PeerConnection, PeerIdentityMismatch, plan  # noqa: E402
 
 REPORT = Path(os.environ.get("CHUANSHU_REPORT", str(ROOT / ".probe" / "protocol_report.txt")))
 REPORT.parent.mkdir(parents=True, exist_ok=True)
@@ -219,6 +219,24 @@ def phase_in_process(proto: protocol_spec.Protocol, workspace: Path) -> None:
         check("stale token rejected by the receiver", status == proto.http_status("NOT_PAIRED") and payload["code"] == "NOT_PAIRED", f"{status} {payload}")
         check("known key repairs its own session", conn.pair()["resumed"] is True)
         check("pair reply restates the peer's version set", conn.peer.get("compatible_versions") == list(proto.compatible_versions), conn.peer)
+
+        # spec §1: the pair reply carries the same identity hello did, and this end keys its trust store
+        # by that number. A peer that says one thing on the socket and another in the reply gets stopped
+        # - the mobile client has always done this; the PC used to write down whatever it was told.
+        honest = service.handle_pair
+        service.handle_pair = lambda body, client_ip: {**honest(body, client_ip), "fingerprint": "0" * 64}
+        try:
+            liar = PeerConnection(sender, "PC-Sender", "127.0.0.1", service.port, receiver.served_fingerprint)
+            liar.hello()
+            liar.pair()
+            check("a pair reply naming another identity is refused", False, "the reply was believed")
+        except PeerIdentityMismatch:
+            check("a pair reply naming another identity is refused", not sender.is_trusted("0" * 64))
+        finally:
+            service.handle_pair = honest
+            # A pair mints a token for the key, and the receiver keeps one per peer: the refused reply
+            # still took conn's session away, so the phase's later offers need the token back.
+            conn.pair()
 
         # spec §7 decides from two version sets, not from the one number a peer prints: the set a sender
         # speaks has to ride on its own bodies (a receiver never dials back for a hello), and a peer whose

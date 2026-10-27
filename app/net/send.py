@@ -60,6 +60,16 @@ class PairNeeded(RuntimeError):
         self.reason = reason
 
 
+class PeerIdentityMismatch(RuntimeError):
+    """The pair reply named a different identity than the hello read off the same socket.
+
+    Spec §1 says both answers carry the same number, and the mobile client stops when they do not.
+    This end used to write whatever the reply said straight into the trust store, so a peer whose
+    certificate this machine pinned could be recorded under a second identity - the one the next
+    connection is looked up by.
+    """
+
+
 class Throttle:
     """A bytes-per-second budget shared by everything one connection writes.
 
@@ -184,6 +194,7 @@ class PeerConnection:
         self.proto = protocol_spec.load()
         self.token = ""
         self.peer: dict = {}
+        self.peer_identity = ""
         self.offer_id = ""
         self.pace_ms = PACE_MS_LADDER[0]
         #: None means the wire runs as fast as the peer will take it. The UI owns this value: it is
@@ -298,6 +309,7 @@ class PeerConnection:
                 "mine": list(self.proto.compatible_versions),
             })
         self.peer = payload
+        self.peer_identity = str(payload.get("fingerprint") or "")
         self.hello_read = True
         self.learn_pace()
         return payload
@@ -350,12 +362,19 @@ class PeerConnection:
             raise PairNeeded()
         if status != 200:
             raise protocol_spec.ProtocolError(str(payload.get("code") or "NOT_PAIRED"), payload.get("detail"))
+        # §1: the pair reply restates the identity hello announced, and the mobile client stops when it
+        # does not. Nothing below this line may run on a reply that failed the sentence, because the
+        # reply's own number is what the trust store is keyed by.
+        peer_identity = str(payload["fingerprint"])
+        if self.peer_identity and peer_identity != self.peer_identity:
+            log.warning("peer %s:%d answered pair with %s, hello said %s", self.host, self.port,
+                        peer_identity[:12], self.peer_identity[:12])
+            raise PeerIdentityMismatch(f"pair reply {peer_identity} does not match hello {self.peer_identity}")
         self.token = str(payload["token"])
         self.peer = payload
         # Two numbers for one device: this end pinned the certificate it got out of TLS, the
         # signature names an identity key. Recording both is what stops a peer whose leaf is
         # not its identity from being trusted under one key and dialled under another.
-        peer_identity = str(payload["fingerprint"])
         self.identity.trust(peer_identity, str(payload["peer_id"]), str(payload.get("name", "")),
                             tls_fingerprint="" if peer_identity == self.fingerprint else self.fingerprint)
         log.info("paired with %s (resumed=%s)", payload.get("name"), payload.get("resumed"))

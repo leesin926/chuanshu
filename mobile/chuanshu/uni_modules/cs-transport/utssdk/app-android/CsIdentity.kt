@@ -173,6 +173,15 @@ object CsIdentity {
         ""
     }
 
+    /** This device's own 32-hex id (§1), or '' when the identity layer cannot answer. The service leaf
+     *  puts it in the certificate subject, so the other Kotlin file needs it as a value, not as a
+     *  field of the JSON string above. */
+    fun peerId(): String = try {
+        loadOrMake().peerId
+    } catch (e: Throwable) {
+        ""
+    }
+
     // ------------------------------------------------------------------ trust store
 
     private fun trustFile(): File? = filesDir()?.let { File(it, TRUST_FILE) }

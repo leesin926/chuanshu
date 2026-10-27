@@ -65,6 +65,7 @@ Ed25519 叶、TLS 记录会乱序到达——这三条都是上机才知道的�
 | 固定对端管理 / 撤销（`unpair`） | `门禁` | `门禁` | — | `门禁` |
 | 单会话名额 + 第三方连接拒 | `门禁` | `门禁` | `门禁` | `门禁` |
 | 配对码 + 口令展示（同屏可核对） | `门禁` | `门禁` | `门禁` | `门禁` |
+| 发：配对应答里那个身份摘要与**同一条连接**的 hello 不一致时，就地停住、不把它记进信任表（#162，合同 §1 那句"配对回复和 hello 的 `fingerprint` 字段是同一个数"；手机共用发送方 `cs-client.uts:218-222` 早就这么做，PC 这一端过去是把应答里说什么就照抄什么） | `门禁` | `门禁` | `门禁` | `门禁` |
 | 发现：mDNS + UDP 广播（`_chuanshu._tcp`，名单 15 s 过期） | `门禁` | `门禁` | `门禁`(脚本读 stdout) | `门禁` |
 | 防火墙状态读取与自述（被挡时界面自己说） | `门禁`+`真机`(WSLg 侧为 `模拟器`) | `门禁` | `门禁` | `门禁` |
 | 防火墙规则写入 | 安装器（per-exe，`netsh`，先清后放；本机实测过装完的判定） | 同左 | 不代跑：`fix_commands()` 给出 `firewall-cmd`/`ufw` 那两条命令，界面与 CLI 只打印 | 同左 |
@@ -91,12 +92,13 @@ Linux 与 Windows 的三个真实分歧，都已落到代码分支：
 
 | 功能点 | 状态 | 证据 |
 |---|---|---|
-| 身份：纯 BigInteger Ed25519 签名 + 手搓 236 字节 X.509 DER（RSA-2048 叶） | 完成 | `模拟器`（不引 BouncyCastle：三方依赖要云打包才拉得到，这台机器验不了那条路） |
+| 身份：纯 BigInteger Ed25519 签名 + 手搓 236 字节 X.509 DER（RSA-2048 叶） | 完成 | `模拟器`（不引 BouncyCastle：三方依赖要云打包才拉得到，这台机器验不了那条路）。**§1 那两句这一端各欠过一半，#162 两处都补了并上了机**（见 §6 第 19 条）：一、叶的主题 `CN` 过去写 `Build.MANUFACTURER + Build.MODEL`，而 PC（`app/net/identity.py::ensure_leaf`）与鸿蒙（`app-harmony/index.uts::servedPair`）写的都是 `peer_id`——现在 `ServedLeaf.kt::commonName()` 读 `CsIdentity.peerId()`（这次新导出的取值口），读不到才回落硬件那句；二、`stored()` 里那道 `checkValidity()` 删掉了，日期**故意不读**：§1 说这张叶只铸一次、换了叶就要人工重新配对（钉子钉在证书上），问时钟就等于让一次倒退的时钟重铸出一把新钥匙、一个新 SPKI 摘要，把每一台钉过这手机的机器在下一次重启时静默地丢掉钉子。这一支在设备上发作过：`.probe/and_persist.txt` 152-155 那两行 `stored cert rejected by the clock: CertificateExpiredException`（#109 那回的年份编码把有效期写成了 1976，于是每次重启都被判死、叶重铸）。腿与读数在 `.probe/a_162_leaf.py`（`clock`/`cn`/`restore` 三段，改期是靠重写 TBS 里那两个 UTCTime 再重新签、逐字节拼回 718 字节的原 DER，`adb root` 推回私有目录后按 `stat -c %u:%g` 补属主再 `restorecon`）：`clock` 段 verdict PASS「一张被日期判死的叶留在架上也照样递出去，摘要三个地方都是同一个数，日志没开口」，`cn` 段 verdict PASS「首次运行铸的那张叶，主题就是 §1 说的 peer_id」（`CN=「e813141dd9020102047c620538899a20」 == peer_id`，notAfter 2046-10-27，架上/套接字/hello 三处 `885c8d70489c514e…` 相同）。编译门 `.probe/c162_android.log` |
 | TLS 服务 + 指纹固定（拨入/拨出都钉得住） | 完成 | `模拟器`；`真机`（#106 手机发→PC 收就是这条路的真机证据） |
 | 发：同一单多个文件 + 中文子目录（一块整 / 零头 / 带空格与括号） | 完成 | `模拟器`（#125 安卓腿：4 MiB + 1023 B + 1 MiB 三份一次发出，PC 侧逐字节比对三份全对、目录层级保住、单里三行都报完成） |
 | 发：`pair/offer/chunk/finalize` + 4 MiB 分块 + 0x00 转义 | 完成 | `模拟器`（5 MB / 2 块，接收方逐字节比对） |
 | 发：一写的回复没来时先问一次对方的 `state`，对方说齐了就算这块成了；说没到就用剩下的次数重写那一块（#132，与 PC 的 #120/#130 同一条） | 完成 | `模拟器`（#133：`.probe/a_133.py` 造四种喂法，同一台 AVD 四条腿全 YES。`held`＝体收下、回复不发、连接关掉 → 对端账本 `写块请求 2 次，真正收下 2 块，state 询问 1 次，吞回复 1 次，finalize 1 次`，落盘 `sha=6f25483fb457` 逐字节一致，屏上 `完成：对方已收下 1 个文件 / 5.00 MB`；`blind`＝体的一个字节都不收 → 同样问一次 `state`， 对方答"没到"，于是写第 3 次、仍逐字节一致；`dead`＝每块都收、每次都不答 → 写满 3 次、问满 3 次就判死，屏上 `失败：协议错误：CONN_RESET Broken pipe` + `推送失败 0/2 块`，没有挂住；`mute`＝体不收、连那一次 `state` 也不答 → 问不到答案就**一次都不重写**（`写块请求 1 次，state 询问 1 次（其中 1 次没答）`），报的是那一问自己的错（屏上 `失败：协议错误：PROTOCOL 对端没答话`），而不是原来那次 PUT 的错（对比 `dead` 那趟屏上是 `CONN_RESET Broken pipe`——那一趟问到了答案，所以抛的是写本身的错）。原文 `.probe/a_133_held.txt`、`a_133_blind.txt`、`a_133_dead.txt`、`a_133_mute.txt`）+ `浏览器`（H5 那 14 项同一支）+ `编译门`（`.probe/_and_gate_132b.log`） |
 | 收：立即应答 + 轮询 `state` + 落盘后本地重算 | 完成 | `模拟器`（PC 发→手机收；中文子目录保留） |
+| 收：§3 那句「同一来源 5 次失败锁 60s」的**来源**是地址，不是连接（#162，与鸿蒙那端同一轮对齐） | 完成 | `浏览器`（锁 60 s 那三条腿一直在共用状态机上——`接收自检 71 项全部通过`，`cs-receive.uts::failCount/pushFail` 按调用方交来的 `client` 字符串分桶，它自己不认地址）。安卓读的是 `CsServe.kt:233-236`：`sk.inetAddress?.hostAddress ?: "?"`，两条路都交得出一个"来源"而不是"这一条连接"——地址到手就按地址记，一时读不到就全落进 `'?'` 那一格，一个猜码的人因此最多只有 5 次（宁可和陌生人同桶，也不给它发新额度）。同一轮里鸿蒙那一端交的是连接序号，等于每条新连接一格新额度、这把锁永远填不满，已改掉（§3.3 同一行）；PC 按 `client_ip` 记，见 `app/net/receive.py:564`。三端现在各自有一份屏或一条腿说同一句话，细节见 §6 第 19 条 |
 | 收：接收途中杀掉进程，重启后接管同一单只补缺的尾巴；台账被磁盘推翻时当场作废 | 完成 | `模拟器`（#127 两条腿：第一条 `接管以后的台账：received=1 missing=[1]` → 收尾 `sha=6f25483fb457…` 逐字节一致；第二条两块写完先不 finalize、杀掉、把文件删掉，手机自称 `received=2 missing=[]`，`finalize` 拦住并当场改口缺 `[0, 1]`，整单重发后 `verified_ok=True`。原文 `.probe/a_127.txt`） |
 | 收：一单一个目录，同名两单不互相截断 | 完成 | `模拟器`（#128 三条腿：第一单落 `files/chuanshu-receive/858f6665df09342f/chuanshu-probe-5mb.bin`，逐字节一致；第二单送**同一个名字**、只写第一块，根目录里 `find` 出两份，第一单那份 sha 仍是 `6f25483fb457…`；第二单补完后两份都逐字节一致，卡片从「已验证 2 个（2 个已经不在了）」变成「已验证 4 个（2 个已经不在了）」——多出来的两行都还在。原文 `.probe/a_128.txt`） |
 | 收：本机**拨出过**的对端不带配对码回拨时认成同一台（#141） | 完成 | `编译门`（`.probe/c141_android.log`：`项目 chuanshu 编译成功。`）+ `浏览器`（`接收自检 59 项全部通过`，其中新加的三条腿就是这一支：桥接交**身份摘要**时留空配对码能 `resumed=true`、只交**叶摘要**仍然 `BAD_PAIR_CODE`、验签后那条记录同时长出了密钥与叶）。修的是 `app-android/index.uts` 的入站桥：`CsIdentity.pinFor` 给的是拨出时钉住的**服务叶**，而 `cs-receive.uts::pairReply` 只按**身份摘要**认人——#47/#106 以后每一端都serve独立叶，这两个数再也不相等，所以旧桥把号递错了地址，回拨的一台落到陌生人分支被要一个它拿不到的码。现在 `pin()` 多存一个 `identity`（配对成功那一步从应答里拿 `fingerprint` 写进去），旧记录由 `healIdentity` 在**验签前**从那条 pair 里补：调用方把自家叶写在**签过名的字节里**（`pair|peer_id|nonce|tls_fingerprint`），声明与钉住的叶对上才认。设备腿跑过了（`模拟器`，`.probe/a_149.txt`：两台从零开始，手机先拨 `10.0.2.2:43720` 钉住那台，再由**出货的 PC 命令行**不带配对码回拨——线上 `code` 就是空串、`secret` 是 `null`，手机答 `resumed=true`，200 000 字节逐字节落在 `files/chuanshu-receive/<offer_id>/a149.bin`；同一份状态换成 `adb forward` 进来（手机上看起来是 `127.0.0.1`）就是另一句：`对方不认识这把钥匙…用 --code 传给我`，一个字节都没落。详见 §5 那两行与 §7「宿主机拨进 Android 模拟器有两条门」） |
@@ -120,6 +122,7 @@ Linux 与 Windows 的三个真实分歧，都已落到代码分支：
 | 身份：`@kit.CryptoArchitectureKit` 出 Ed25519 签名；服务叶仍是 RSA-2048 | 完成 | `真机`（平台 TLS 签不出 Ed25519 叶，这是上机才发现的） |
 | 收：0x00 截断 → `X-Chunk-Escape` 转义、TLS 记录乱序到达仍解析得出、立即应答 + 轮询 | 完成 | `真机` + `模拟器`（#56/#59/#94/#61） |
 | 收：对端已消失的 offer 不再谎报"还没收到分块" | 完成 | `模拟器`（#95） |
+| 收：§3 那句「同一来源 5 次失败锁 60s」按**来源**计数（#162；共用状态机一直是对的，缺的是这一端递给它的号） | 完成 | `编译门`（`.probe/c162_harmony.log`：`项目 chuanshu 编译成功。` + `运行包制作成功`）+ `浏览器`（`接收自检 71 项全部通过`——锁 60 s 那三条腿都在共用状态机上，`cs-receive.uts::failCount/pushFail`）。改的是一个参数：`app-harmony/index.uts::dispatch` 原来交 `c.ip == '' ? c.id.toString() : c.ip`，地址还没读出来就把**连接序号**当成来源交了出去，而这一端的每条请求都开一条新连接，于是一个猜码的人每试一次都分到一格全新的 5 次额度——这把锁在这条路上永远填不满，屏上那句「配对码连错 5 次会锁 60 秒」在说一件不发生的事。现在交 `'?'`：一个还没落到手的地址就是"一个没人叫得出名字的来源"，全部记进同一格，安卓那一端（`CsServe.kt:236` 的 `?: "?"`）本来就是这样。共用状态机按 `client` 这个字符串分桶，它不认得任何一端怎么读地址，所以三个宿主各自交一个号；这条句子只有一份，落在哪一格由宿主说了算。细节见 §6 第 19 条 |
 | 收：整文件摘要推翻台账时当场作废 + 写入不再拦"文件已经不在了" | 完成 | `模拟器`（#127 鸿蒙两条腿全 YES。第一条：落第一块后 `aa force-stop`，重启靠固定接管同一单，`接管以后的台账：received=1 missing=[1]`——没从 0 重写，收尾 `sha=6f25483fb457…` 逐字节一致。第二条：两块写完先不 finalize、杀掉、只删那个文件（`<offer_id>/` 目录留着，与 `a_127.py` 同形），手机自称 `received=2 missing=[]`，`finalize` 拦住并当场改口缺 `[0, 1]`，整单重发后 `verified_ok=True`、磁盘摘要仍是 `6f25483fb457…`。原文 `.probe/h_127.txt`。本端那一处改动是 `app-harmony/index.uts::storeWrite` 里的 `写入超出文件末尾` 拦截去掉了：续传写进一个已被删掉的文件走 `openSync(READ_WRITE \| CREATE)`，落回上一块之后的偏移，不是从零重写） |
 | 收：一单一个目录，同名两单不互相截断 | 完成 | `模拟器`（#128 鸿蒙三条腿全 YES：第 1 单落 `files/chuanshu-receive/c090222556d40a5b/同名两单.bin`（`ef73ba275276…`），第 2 单送**同一个名字**另起一个目录 `23628597861315ff/`（`e4d4f54ad031…`），第 1 单那份摘要一个字没变；文件页同一屏上写着这个名字的 7 行里，标「已收到」的正好是这两行（195.3 KB 与 293.0 KB），计数行从「已验证 0 个（11 个已经不在了）」变成「已验证 2 个（11 个已经不在了）」。原文 `.probe/h_128.txt`。这一条不需要改鸿蒙本端：`app-harmony/index.uts::storePrepare` 本来就是先 `mkdirSync(parent, true)` 再 `truncateSync`，多出来的那一级目录是它已经会建的） |
 | 发：同单第二块不再写出几 KB 就停摆；串包（往正在关闭的连接里写字节）修掉 | 完成 | `模拟器`（#99/#121，全程无串包） |
@@ -579,6 +582,74 @@ Xcode，够不到任何一档编译门**——它改的原因只是共用的 sto
     而且框里的旧字不清（有一回读出 745 字符，`fill()` 于是照着一堆垃圾算删除次数），于是 leg2 报的 `(没读到)` 是探针
     没把字送进去，不是页面拒了合法密码（10-26 07:35 那一趟 `both` 三条都过，所以这是**会翻脸**而不是**必然坏**）。
     一条腿一趟进程，每趟开头都有 `基座重启` 那一行——这就是这一格现在的花费，也是它的账。
+19. **#162：合同逐条巡检第二轮——四处「只有一端照合同做」，四处都补了**（做法沿用 #140：把
+    `mobile/shared/protocol/spec.md` 里每条规范性句子，对着 PC（`app/`）、安卓（`utssdk/app-android/`）、鸿蒙
+    （`utssdk/app-harmony/`）和那份共用状态机各读一遍，专找"三端里有一端的答案和另两端不一样"的那一支）。
+    - **§1「服务叶 = RSA-2048 自签，`CN=peer_id`」——安卓的主题写的是硬件名**。PC（`app/net/identity.py::ensure_leaf`）
+      与鸿蒙（`app-harmony/index.uts::servedPair`）都照这句写，安卓 `ServedLeaf.kt::commonName()` 写的是
+      `Build.MANUFACTURER + " " + Build.MODEL`。线上没有任何一端读主题（对端显示的名字来自 pair 请求里的 `name`，
+      进 `trust(...)` 那本账，不进任何摘要），所以这不是一个会被对面发现的缺陷，而是"同一句合同，三端各自解释成
+      三张不同的证书"。现在 `CsIdentity.kt` 新导出 `peerId()`（`loadOrMake().peerId`，问不到就回 `''`），
+      `commonName()` 是 `CsIdentity.peerId().ifEmpty { CsIdentity.hardwareName() }`。
+    - **§1「同一份证书一直 serve」——安卓在拿时钟投票**。`ServedLeaf.stored()` 读过私钥、验过公钥匹配之后还要
+      `parsed.checkValidity()`，一句 `stored cert rejected by the clock` 就把这张叶判死、于是重铸一把**新钥匙**。
+      改前在旧包上量到过一次（`.probe/a_162_leaf.py clock`，改法是把那 718 字节 DER 里 TBS 的两个 UTCTime 改成
+      `2020-01-01`、用同一把私钥重签再按原长拼回去）：logcat 说了那句话，`served` 从 `f693be2bb977…` 变成
+      `109a4b93…`——**同一条钉在每一台对端机器上的记录从此失效**，而 §1 的结尾那句说的是"换了叶要人工重新配对"。
+      一次倒退的时钟不该有权限替用户做这个决定。这一支在设备上有更早的原文：`.probe/and_persist.txt` 152-155 那两行
+      `stored cert rejected by the clock: CertificateExpiredException … expired at Sun Oct 24 06:09:43 GMT 1976`
+      （#109 那回的年份编码把有效期写进了 1976，于是每一次重启都重铸一遍）。现在日期那一道**故意不读**，只保留
+      "解析不出 DER"和"证书里的公钥与架上的私钥不是一对"两种重建。改后同一趟（`模拟器`，`.probe/a_162_clock.txt`）：
+      「verdict: PASS 一张被日期判死的叶留在架上也照样递出去，摘要三个地方都是同一个数，日志没开口」——架上、
+      套接字、`GET /v1/hello` 三个读数都是 `f693be2bb977…`，`cs-leaf` 那一栏一句话都没说；`cn` 段（把架子清空让
+      它重铸）：「verdict: PASS 首次运行铸的那张叶，主题就是 §1 说的 peer_id」，`CN=「e813141dd9020102047c620538899a20」`
+      与本机的 `peer_id` 相等，notAfter 2046-10-27，三处摘要仍是同一个数（`885c8d70489c514e…`）。三份原文件按
+      `.probe/a_162_backup.json` 放回去了（`.probe/a_162_restore.txt`：架上摘要回到 `f693be2bb977…`）。
+      **改前那一趟的数字只在这轮会话里读过，它的原文被改后那一趟同名覆盖了**——要引就引上面那两行 1976 的旧原文。
+    - **§3「同一来源 5 次失败锁 60s」——鸿蒙把"来源"交成了"这一条连接"**。规则本身在共用状态机里，一直是对的
+      （`cs-receive.uts:44-45` 的 `CODE_MAX_FAILS=5`/`CODE_LOCK_S=60`，`failCount`/`pushFail` 按调用方交来的
+      `client` 字符串分桶，第 10 组那三条腿量的是这本账）；缺的是鸿蒙递给它的那个号：`index.uts::dispatch` 原来交
+      `c.ip == '' ? c.id.toString() : c.ip`，而这一端**每条请求都开一条新连接**（`onAccept` 里 `openConns.push(c)`），
+      所以地址一时读不到时，猜码的人每一次尝试都分到一格全新的 5 次额度——这把锁在这条路上永远不会填不满，
+      首页卡片那句「配对码连错 5 次会锁 60 秒」于是是在承诺一件不发生的事。现在交 `'?'`：一个还没落到手的地址
+      就是"一个没人叫得出名字的来源"，全部同桶，这是安卓那一端一直在做的写法（`CsServe.kt:233-236`
+      `sk.inetAddress?.hostAddress ?: "?"`，宁可和陌生人同桶也不给它发新额度）。PC 按 `client_ip` 记
+      （`app/net/receive.py:564`）。档位是 `编译门`（`.probe/c162_harmony.log`：`项目 chuanshu 编译成功。` +
+      `运行包制作成功`）；共用状态机这一轮没动，所以浏览器那 71 项没有重跑（跑它证不到这一格）。
+      **这一格为什么停在 `编译门`，说清楚**：`c.ip` 是 `onAccept` 里挂在 `getRemoteAddress().then(…)` 上的，地址
+      是**异步落到 `Conn` 上**的，而请求监听就在同一个函数里紧接着注册——所以第一条请求完全可能在它落地之前就被
+      派发出去，那正是漏额度的那一扇窗口（#94 那一轮量过这一端的请求与回调谁先到，没有结论）。模拟器出不了这一支的
+      正证：`hdc fport` 拨进来的来源在 guest 看就是同一个 `127.0.0.1`，地址一旦落地，改前改后交出去的号是一样的，
+      锁照样在第 5 次之后落——那一趟**分不出这两个版本**，所以它不算这一支的证据。要出正证需要一条"地址回调根本不
+      落地"的路（真机上的局域网拨入，或这台设备拒绝 `getRemoteAddress` 的那一类），那一格跟着 #45/#46 的真机腿一起
+      等用户点头。
+    - **§1「配对回复和 hello 的 `fingerprint` 字段是同一个数」——手机停了，PC 照抄**。手机共用发送方早就按这句做
+      （`cs-client.uts:218-222`：应答里那个数不等于 hello 的数就抛「配对应答里的指纹和 hello 不一致，已中止」）；
+      PC 的 `app/net/send.py::pair()` 过去把 `payload["fingerprint"]` 直接交给 `identity.trust()`，**而那正是下一次
+      连接查钉子用的键**——一台在 TLS 上被钉住、却在应答里报另一个身份的对端，会被记到第二个身份下面。
+      现在 `hello()` 把这条连接读到的数存进 `self.peer_identity`，`pair()` 一拿到应答就先比它，比不过就抛
+      `PeerIdentityMismatch`（`send.py:63-70`），而且**在写下 token 之前**——那一条连接上的会话因此也不建立。
+      抛的是本机句子，没有新增错误码（`protocol/protocol.json` 与 `app/net/errors.py` 一字未动：这一支对端从不应答，
+      给它一个合同里的码等于改冻结合同）。三处出口说同一句话：`app/ui/transfer.py:2059`（连接工作器）与
+      `:2523`（发送工作器）共用一个 msgid，`app/cli.py:501`（命令行）。两端接收方对 hello 与 pair 本来就答同一个数
+      （PC `app/net/receive.py:599`/`:629` 都是 `self.identity.fingerprint`，手机 `cs-receive.uts:871`/`:1186` 都是
+      `self.fingerprint`），所以这道核对不可能把自己人判死。档位 `门禁`：`scripts/protocol_selftest.py` 新加一条腿
+      （把 `service.handle_pair` 包一层，应答里的 `fingerprint` 换成 64 个 `0`）——
+      `PASS  a pair reply naming another identity is refused`，判据是"抛了"并且 `sender.is_trusted("0"*64)` 为假，
+      全文件 `RESULT ALL PASS`。**这条腿自己教了一件事**：接收方对每把钥匙只留一个 token
+      （`app/net/receive.py:586-587` `self._tokens[fingerprint] = token`），所以被拒的那次 pair 照样顶掉了 `conn`
+      的会话，于是 `finally` 里必须 `conn.pair()` 把 token 拿回来，不然同一 phase 后两条版本集合的腿会报
+      `NOT_PAIRED`——那是 harness 的账，不是协议的账，但下一次读这段的人会需要它。`cli_selftest`、`ui_selftest`
+      各自 `RESULT ALL PASS`；八套目录只多这一条（每份四个文件行），`scripts/i18n_sync.py --check` `guard rc=0`，
+      逐语言把 `Translate` 真取回一次（`en -> The pair reply named a fingerprint that does not match hello; stopped.`）。
+      babel 的 `extract`/`update` 会顺手重排约 1300 行行号与折行，照 `e33a7f0` 的先例那属于单独一趟，本轮把 churn
+      存进 `.probe/a_162_locale_churn.diff` 后 `git checkout -- locale`，只用文本追加了这一条。
+      **还欠的那一格**：PC 屏幕上那句话没有真窗口读数——要造一台说谎的对端（现成的形状是 `.probe/tlsserver.py`
+      那一族），门禁那条腿证的是"本机不会写信任表"，UI/CLI 两支只是同一句子的两个出口。
+    - **这一轮核过、没有动的句子**（记下来免得下一轮重查）：§1 那两个摘要都不进 `fingerprint` 的算法链；§3 的
+      `pairReply` 三端一致只按**身份摘要**认人（#141 补的那座桥）；§5 的落盘路径守卫（#148）；§6 的
+      `chunk_pace_ms`、锁时长与单会话名额；§7 的版本集合（#144）。**这一轮因此欠的三格都在设备或真窗口那一侧**：
+      鸿蒙那把锁的 429 一跑、PC 那句判死的一屏、以及安卓那两条叶腿还没有真机（私人机锁着，未经同意不动）。
 
 ### 需要用户点头才能做的三件事
 - 唤醒/解锁并使用那台个人鸿蒙真机（#45/#46 + 鸿蒙发现真机腿）。
