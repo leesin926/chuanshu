@@ -1438,6 +1438,66 @@ export function receiveSelfReport(): string {
 		check('清单没报版本集合时按它自己那一个数判，照样等人决定', vAsk(JSON.stringify(noSet)).pending)
 	}
 
+	// 5c. §5 的另一句：一单里两个同名文件不许抢同一个落点（#163）。
+	// 发送方按文件名取名是合法的（PC 的 `plan()` 不传 base 就只取文件名，
+	// `send C:\a\report.txt D:\b\report.txt` 就是这么把两个 id 报成同一个名字的），#128 让每一单
+	// 有自己的目录，管的是两「单」之间；同一份清单里的两个同名条目，这一端此前把 land 记了两次同一个
+	// 字符串，后一条的字节直接盖在前一条身上。改之前这一腿是红的：前一条 finalize 过不了。
+	const twinBox = newInbox()
+	const twinPair = askPairOn(twinBox, SIM_PEER_ID, currentPairCode(twinBox, nowSeconds()), passphraseOf(twinBox, nowSeconds()), simKey)
+	const twinPairObj = jsonOf(twinPair)
+	const twinToken = twinPairObj == null ? '' : twinPairObj!.getString('token', '')
+	const twinTexts: string[] = ['甲：这一份和下面那份同名。\n', '乙：这一份该落在另一个名字上。\n']
+	const twinFiles: CsFile[] = []
+	for (let i = 0; i < twinTexts.length; i++) {
+		const twinBytes = utf8(twinTexts[i])
+		const twin = new CsFile()
+		twin.path = '同名-备忘.txt'
+		twin.relpath = '同名-备忘.txt'
+		twin.id = hexOf(randomBytes(8))
+		twin.size = twinBytes.length
+		twin.sha256 = hexOf(sha256Bytes(twinBytes))
+		twin.mtime = Math.floor(Date.now() / 1000)
+		twin.type = 'text/plain'
+		twinFiles.push(twin)
+	}
+	const twinId = hexOf(randomBytes(8))
+	const twinOffer = askOn(twinBox, SIM_PEER_ID, 'POST', '/v1/offer', offerJson(twinId, twinFiles, SIM_PEER_ID, SIM_NAME), twinToken, new ArrayBuffer(0), '')
+	check('同名两条先登记、等人决定', twinOffer.pending)
+	resolveOffer(twinBox, twinId, true, recvPrepare, recvDrop)
+	let twinWritten = 0
+	for (let i = 0; i < twinFiles.length; i++) {
+		const twinPart = utf8(twinTexts[i])
+		const twinPut = askOn(twinBox, SIM_PEER_ID, 'PUT', '/v1/offer/' + twinId + '/chunk/' + twinFiles[i].id + '/0', '', twinToken, twinPart.buffer as ArrayBuffer, hexOf(sha256Bytes(twinPart)))
+		if (twinPut.status == 200) {
+			twinWritten = twinWritten + 1
+		}
+	}
+	check('同名两条都收下了自己那一块', twinWritten == 2)
+	const twinDone = askOn(twinBox, SIM_PEER_ID, 'POST', '/v1/offer/' + twinId + '/finalize', '{}', twinToken, new ArrayBuffer(0), '')
+	const twinObj = jsonOf(twinDone)
+	const twinList = twinObj == null ? null : twinObj!.getArray<UTSJSONObject>('verified')
+	let twinPassed = twinList != null && twinList!.length == 2
+	let twinFirst = ''
+	let twinSecond = ''
+	if (twinList != null) {
+		for (let i = 0; i < twinList!.length; i++) {
+			const twinEntry = twinList![i]
+			if (!twinEntry.getBoolean('ok', false)) {
+				twinPassed = false
+			}
+			const twinPath = twinEntry.getString('path', '')
+			if (i == 0) {
+				twinFirst = twinPath
+			} else {
+				twinSecond = twinPath
+			}
+		}
+	}
+	check('同名两条都过了整文件摘要', twinPassed, twinFirst + ' | ' + twinSecond)
+	check('两条落在两个不同的名字上', twinFirst != twinSecond && twinFirst != '' && twinSecond != '', twinFirst + ' | ' + twinSecond)
+	check('后拿到的那一条改名成 §5 说的「 (2)」', twinSecond.indexOf('同名-备忘 (2).txt') >= 0, twinFirst + ' | ' + twinSecond)
+
 	// 6. chunks: store, reject a lying digest, reject the wrong length, and be idempotent.
 	const bigId = files[1].id
 	const bigSize = files[1].size

@@ -439,6 +439,38 @@ function landingOf(offerId: string, relpath: string): string {
 	return offerId == '' ? relpath : offerId + '/' + relpath
 }
 
+/** §5's other half: two files in one manifest that clean to the same name do not get one path. The
+ *  first keeps the name its sender gave it, every later one gets 「 (2)」「 (3)」… on the last component,
+ *  before the extension. #128 put each offer in its own directory, which stops one *transfer* from
+ *  truncating another; it did not stop the sender's own manifest from naming two files the same thing,
+ *  and that was reachable - `plan(paths, base)` with no base answers with the basename, so
+ *  `ChuanShu-cli send C:\a\report.txt D:\b\report.txt` offered two ids whose chunks were written to one
+ *  file at the same offsets. Neither end had the suffix rule: the PC recomputed the landing from
+ *  `relpath` on every chunk, this end stored the same `relpath` twice. */
+function uniqueName(name: string, used: string[]): string {
+	if (used.indexOf(name) < 0) {
+		used.push(name)
+		return name
+	}
+	const at = name.lastIndexOf('/')
+	const dir = at < 0 ? '' : name.substring(0, at + 1)
+	const leaf = at < 0 ? name : name.substring(at + 1)
+	const dot = leaf.lastIndexOf('.')
+	// A leading dot is a name, not an extension: §5 refuses those outright, so dot > 0 is the only
+	// case where anything can be split off.
+	const stem = dot > 0 ? leaf.substring(0, dot) : leaf
+	const suffix = dot > 0 ? leaf.substring(dot) : ''
+	let n = 2
+	while (true) {
+		const candidate = dir + stem + ' (' + n.toString() + ')' + suffix
+		if (used.indexOf(candidate) < 0) {
+			used.push(candidate)
+			return candidate
+		}
+		n = n + 1
+	}
+}
+
 /** A stored `land` that is empty means the document predates per-offer directories: those bytes lie flat
  *  under the sent name, and that is where the card and the resume have to keep looking for them. */
 function landingOr(land: string, relpath: string): string {
@@ -914,6 +946,7 @@ function offerReply(inbox: Inbox, now: number, json: string, caller: string): Wi
 	offer.offerId = offerId
 	offer.created = now
 	offer.touched = now
+	const used: string[] = []
 	for (let i = 0; i < files.length; i++) {
 		const entry = files[i]
 		const relpath = entry.getString('relpath', '')
@@ -925,7 +958,7 @@ function offerReply(inbox: Inbox, now: number, json: string, caller: string): Wi
 		const file = new RFile()
 		file.id = entry.getString('id', '')
 		file.relpath = relpath
-		file.land = landingOf(offerId, relpath)
+		file.land = landingOf(offerId, uniqueName(relpath, used))
 		file.size = Math.floor(entry.getNumber('size', 0))
 		file.sha256 = entry.getString('sha256', '')
 		file.mtime = Math.floor(entry.getNumber('mtime', 0))

@@ -57,6 +57,10 @@ def check_uts_mirror(body: dict) -> None:
         # would delete files the sender still believes are resumable.
         "SESSION_IDLE_S": body["transport"]["session_idle_timeout_s"],
         "OFFER_IDLE_S": body["transport"]["offer_idle_timeout_s"],
+        # §4's third window. The sender keeps it (it re-posts the manifest until this runs out) and the
+        # receiver keeps it too (an unanswered offer is dropped on it), so a phone that guessed would
+        # either give up on a peer that is still waiting or keep a card alive past the sender's deadline.
+        "OFFER_WAIT_S": body["transport"]["offer_wait_timeout_s"],
         # The discovery windows are the same story: a phone that expired a candidate on a different
         # clock, or broadcast on a different port, is a phone the PC cannot be found by.
         "DISCOVERY_PORT": body["ports"]["discovery_udp"],

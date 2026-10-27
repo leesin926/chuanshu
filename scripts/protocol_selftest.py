@@ -750,6 +750,57 @@ def phase_repeated_offer(proto: protocol_spec.Protocol, workspace: Path) -> None
         service2.stop()
 
 
+def phase_same_name(proto: protocol_spec.Protocol, workspace: Path) -> None:
+    """§5's other clause: 同名文件加「 (2)」后缀，而不是覆盖.
+
+    ``plan()`` with no base names every entry after its basename, so a selection that spans two roots
+    is a real shape and not a hostile peer: ``ChuanShu-cli send C:\\a\\report.txt D:\\b\\report.txt``
+    puts two ids on one destination. #128 gave each *offer* its own folder, which stops two transfers
+    colliding but says nothing about two entries of the same manifest - and until this leg both ends
+    re-derived the landing from ``relpath`` on every chunk, so the two files' bytes were written into
+    one file at the same offsets and finalize could not pass either of them.
+    """
+    corpus = workspace / "same-name"
+    big = corpus / "c1" / "report.txt"
+    small = corpus / "c2" / "report.txt"
+    big.parent.mkdir(parents=True, exist_ok=True)
+    small.parent.mkdir(parents=True, exist_ok=True)
+    big.write_bytes(blob(11, proto.chunk_size + 1000))
+    small.write_bytes(blob(12, 2000))
+    sender = load_or_create(workspace / "same-sender")
+    receiver = load_or_create(workspace / "same-receiver")
+    files = plan([big, small])
+    check("两个不同根目录下的同名文件在这一单里确实是同一个名字",
+          len(files) == 2 and files[0].relpath == files[1].relpath == "report.txt",
+          " / ".join(f.relpath for f in files))
+    root = workspace / "same-received"
+    service = ReceiveService(receiver, "PC-Same-Name", lambda m, who, caller: True,
+                             host="127.0.0.1", port=0, root=root)
+    service.start()
+    try:
+        conn = PeerConnection(sender, "PC-Same-Sender", "127.0.0.1", service.port, receiver.served_fingerprint)
+        conn.hello()
+        conn.pair(service.current_pair_code())
+        conn.offer(files)
+        result = conn.send(files)
+        verified = result["verified"]
+        by_id = {f.id: f for f in files}
+        check("一单里两个同名文件都过了整文件摘要", all(bool(v["ok"]) for v in verified), str(verified))
+        paths = [str(v["path"]) for v in verified]
+        check("两份同名的字节落在两个不同的路径上", len(set(paths)) == 2, " | ".join(paths))
+        check("后拿到的那一个改名成 §5 说的「 (2)」后缀",
+              any(p.endswith("report (2).txt") for p in paths), " | ".join(paths))
+        for v in verified:
+            source = by_id[str(v["id"])]
+            landed = Path(str(v["path"]))
+            check(f"{source.path.parent.name} 那一份落盘的字节和它自己的一致",
+                  hashlib.sha256(landed.read_bytes()).hexdigest() == source.sha256
+                  and landed.stat().st_size == source.size,
+                  f"{landed} {landed.stat().st_size} vs {source.size}")
+    finally:
+        service.stop()
+
+
 def phase_discovery(proto: protocol_spec.Protocol, workspace: Path) -> None:
     """Two symmetric peers finding each other, then promoting a prefix to an anchor."""
     from app.net.discovery import DiscoveryService, Peer, adopt_hello
@@ -952,6 +1003,7 @@ def main() -> int:
         phase_stalled_offer(proto, workspace)
         phase_offer_poll(proto, workspace)
         phase_repeated_offer(proto, workspace)
+        phase_same_name(proto, workspace)
         phase_chunk_reply_lost(proto, workspace)
         phase_discovery(proto, workspace)
         phase_reverse_pin(proto, workspace)

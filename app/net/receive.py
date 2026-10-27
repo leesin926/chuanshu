@@ -91,6 +91,32 @@ def sanitize_relpath(relpath: str, proto: protocol_spec.Protocol) -> PurePosixPa
     return PurePosixPath(*out)
 
 
+def unique_landing(rel: PurePosixPath, used: set[str]) -> PurePosixPath:
+    """spec §5's second clause: a name this end has already handed out is worn, not overwritten.
+
+    One directory per offer (#128) keeps two *transfers* from fighting over one file, but a single
+    manifest can still name the same destination twice: `send.plan` with no base answers with the
+    basename, so a selection spanning two roots offers ``report.txt`` and ``report.txt`` under two ids
+    - and both ends used to write the two files' chunks into the same path at the same offsets. The
+    first entry keeps its name, each later one gets `` (2)``, `` (3)``… before the extension, counted
+    against the names already handed out in this offer.
+    """
+    key = rel.as_posix()
+    if key not in used:
+        used.add(key)
+        return rel
+    leaf = PurePosixPath(rel.name)
+    parent = rel.parent
+    n = 2
+    while True:
+        candidate = parent / f"{leaf.stem} ({n}){leaf.suffix}"
+        found = candidate.as_posix()
+        if found not in used:
+            used.add(found)
+            return candidate
+        n += 1
+
+
 @dataclass
 class OfferState:
     offer_id: str
@@ -667,7 +693,13 @@ class ReceiveService:
         if outcome is not None:
             raise protocol_spec.ProtocolError("OFFER_UNKNOWN", {"offer_id": offer_id})
 
-        targets = {str(f["id"]): sanitize_relpath(str(f["relpath"]), self.proto) for f in files}
+        # Sanitised, and given a landing that no earlier entry of this same manifest already holds,
+        # before the user is asked - nobody confirms a name this end would refuse, and no entry
+        # silently shares a path with its twin. `land` rides along in the state file, so a restart
+        # re-adopts the offer with the same names rather than re-shuffling them.
+        used: set[str] = set()
+        for entry in files:
+            entry["land"] = unique_landing(sanitize_relpath(str(entry["relpath"]), self.proto), used).as_posix()
         entry = self.identity.trusted_entry(caller) if caller else None
         # A peer may call itself anything inside the manifest, so the name the user sees
         # comes from the pin list; caller's fingerprint prefix is the only real anchor.
@@ -689,7 +721,7 @@ class ReceiveService:
         directory.mkdir(parents=True, exist_ok=True)
         state = OfferState(offer_id=offer_id, directory=directory, files=files, proto=self.proto, who=who)
         for entry in files:
-            target = self._target(state, targets[str(entry["id"])])
+            target = self._target(state, PurePosixPath(str(entry["land"])))
             _prepare(target, int(entry["size"]))
             state.received.setdefault(str(entry["id"]), {})
         state.persist()
@@ -724,7 +756,7 @@ class ReceiveService:
         state.touched = time.time()
         if stored.get(index) == digest:
             return {"index": index, "stored": True, "idempotent": True}
-        target = self._target(state, sanitize_relpath(str(file["relpath"]), self.proto))
+        target = self._target(state, self._land(file))
         # `r+b` only while the file is still there. A chunk re-pushed into a file that went away has to
         # recreate it - the phone's RandomAccessFile("rw") does this by definition - otherwise the very
         # repair finalize just asked for cannot be written (#127: the ledger cleared, the resend
@@ -745,7 +777,7 @@ class ReceiveService:
         landed: list[dict] = []
         for file in state.files:
             missing = state.missing(file)
-            target = self._target(state, sanitize_relpath(str(file["relpath"]), self.proto))
+            target = self._target(state, self._land(file))
             ok = not missing and _digest_file(target) == str(file["sha256"])
             if not ok and not missing:
                 # The disk just contradicted the ledger, so the chunks it recorded are not evidence of
@@ -790,6 +822,16 @@ class ReceiveService:
             if child.is_file():
                 child.unlink()
         return {"offer_id": offer_id, "dropped": True}
+
+    def _land(self, file: dict) -> PurePosixPath:
+        """Where this entry's bytes go, as the offer decided when it was accepted.
+
+        Reading it back off the manifest instead would re-derive the plain name and hand a second
+        file the same path the first one already owns - and a state file written before this key
+        existed has no honest answer, which is the same fallback the phone's `landingOr` uses.
+        """
+        stored = str(file.get("land") or "")
+        return PurePosixPath(stored) if stored else sanitize_relpath(str(file["relpath"]), self.proto)
 
     def _target(self, state: OfferState, relative: PurePosixPath) -> Path:
         root = state.directory.resolve()

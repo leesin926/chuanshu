@@ -369,6 +369,30 @@ py -X utf8 scripts/check_protocol.py
       从不应答），UI 两支与 CLI 一支说同一句话。判据在 `scripts/protocol_selftest.py`：
       `PASS  a pair reply naming another identity is refused`，全文件 `RESULT ALL PASS`。
 
+16. **#163：合同逐条巡检第三轮——§5 后半句「同名文件加 ` (2)` 后缀而非覆盖」三端都没做，三端都补了**
+    （完整账在 [docs/feature-matrix.md](../docs/feature-matrix.md) §6 第 20 条）。
+    - **可达的触发**不是"两单同名"（#128 已经按单建目录隔开了），而是**同一份清单里两个条目清洗到同一个
+      `relpath`**：`ChuanShu-cli send C:\a\report.txt D:\b\report.txt`。CLI 不带 `base` 时 `plan()` 只取
+      `Path(entry.name)`（`app/net/send.py`），GUI 那条路被 `os.path.commonpath` 挡着（「这些文件不在同一个
+      文件夹下」），所以这洞只有命令行走得进去。后果是数据损坏：两条共享同一个 `land`，分块写进同一批偏移，
+      两个整文件摘要永远不可能同时过。
+    - **手机端那一半**在共用状态机 `cs-receive.uts::uniqueName(name, used)`：一份清单一个 `used` 列表，第一个
+      条目留原名，之后的在**最后一段**的扩展名之前插 ` (2)`/` (3)`（`dot > 0` 才算扩展名，`.bashrc` 这种点开头
+      的不加后缀）。后缀打在 `land` 上、`relpath` 保持对端声明的原名——和 PC 同形，写块/摘要/回收/卡片/`state`
+      回的 `path` 读的都是 `land`（§7 那条老规矩）。旧台账没有 `land` 的兜底（`landingOr`）没动。
+    - **证据档位**：`浏览器`（H5 接收内核自检 71 → 76 项，原文 `.probe/c163_web_selftest.txt`；改前那一趟把
+      `uniqueName` 桩成原样返回，红三条——`都过了整文件摘要`、`落在两个不同的名字上`、` (2)` 后缀；而
+      `两条都收下了自己那一块` **改前也是绿的**，因为两条 PUT 打在同一个路径上照样各自 200，这一条证不到东西）；
+      `编译门` 两道（`.probe/c163_android.log`、`.probe/c163_harmony.log`）；镜像守卫 `check_protocol.py` OK。
+      **设备腿还欠着**：让手机真的发两个跨根目录的同名文件过去，落到屏上两行两个名字——这一轮没跑。
+    - **顺带核到的两处**：限额/超时那一整组数字（4 MiB 分块、255 字节名、深度 16、2000 文件、900/3600/120 s、
+      静态码 8 位、60 s 等待、节奏阶梯 `[0,15,40]`、单文件最多重写 3 次）三端**全都对**；`offer_wait_timeout_s`
+      以前不在镜像守卫里，现在加了 `OFFER_WAIT_S`。剩下两个数反过来——合同写了 `X-File-Size` 与
+      `transport.max_parallel_chunks: 2`，**三端都不发也不读**，是要用户点头的口径题（feature-matrix §6 结尾）。
+    - **harness 自己的一条坑**（已进 feature-matrix §7）：`web/index.uts` 的 `askOn()` 是八个参数，第一版把
+      `token` 写在 `jsonBody` 的位置上（少一个 `''`），五条腿红四条；vite 对 UTS 参数个数只打
+      `warning: Expected 8 arguments, but got 7`，**不拦编译**。自检头一趟是红的，先怀疑腿。
+
 M2a 的最小切口是"手机发、PC 收"：扫（或粘贴）PC 的二维码拿到地址与完整指纹，用户只核对同屏的
 一次性配对码——PC 侧接收端已经跑绿，手机只要把
 `/v1/pair`、`/v1/offer`、`PUT chunk`、`/v1/finalize` 四条打出去就能有结论，发现层可以先不做。
