@@ -1573,6 +1573,65 @@ export function receiveSelfReport(): string {
 	const afterMissing = missingOf(after, bigId)
 	check('续传缺块与重启前一致', beforeMissing.length == afterMissing.length && beforeMissing.length == 1)
 
+	// 7c. 第四轮巡检（#165）改掉了 §4 的另一句：原来写的是「状态文件损坏或缺失时，接收方按已落盘字节 /
+	// chunk_size 重算缺块」，可这一条三端都量不出来——用户在 #128 那一手「接受」里点下头的那一刻，这一端
+	// 就把文件开档并截到清单声明的长度（PC 的 receive.py:898、鸿蒙 app-harmony/index.uts:1049、安卓
+	// CsStore.kt:52，这里的 recvPrepare 走同一条规则），所以一块没落和刚落一块，落盘字节数都回「整个文件」。
+	// 一个量不出区别的数不能当答案，于是真行为成了合同：读坏的台账一单也不认领，发送方那份清单再投一次
+	// 就是全缺登记的一单，finalize 仍然是唯一的结论。丢的只是那几块本来要重传的字节。
+	const lostBox = newInbox()
+	let lostToken = ''
+	const lostPair = jsonOf(askPairOn(lostBox, SIM_PEER_ID, currentPairCode(lostBox, nowSeconds()), passphraseOf(lostBox, nowSeconds()), simKey))
+	lostToken = lostPair == null ? '' : lostPair!.getString('token', '')
+	const lostAsk = (method: string, path: string, jsonBody: string): WireReply => {
+		return askOn(lostBox, SIM_PEER_ID, method, path, jsonBody, lostToken, new ArrayBuffer(0), '')
+	}
+	const lostPut = (path: string, part: Uint8Array): WireReply => {
+		return askOn(lostBox, SIM_PEER_ID, 'PUT', path, '', lostToken, part.buffer as ArrayBuffer, hexOf(sha256Bytes(part)))
+	}
+	const lostId = hexOf(randomBytes(8))
+	const lostManifest = offerJson(lostId, files, SIM_PEER_ID, SIM_NAME)
+	const lostBig = landOf(lostId, files[1].relpath)
+	lostAsk('POST', '/v1/offer', lostManifest)
+	resolveOffer(lostBox, lostId, true, recvPrepare, recvDrop)
+	check('丢台账这一腿：会话在，先落一块', lostPut('/v1/offer/' + lostId + '/chunk/' + bigId + '/0', sliceOf(all, 0, chunkSizeAt(bigSize, 0))).status == 200)
+	check('一块刚落，落点已经量成整个文件的长度——字节数说不出哪块落了',
+		recvStore.has(lostBig) && recvStore.get(lostBig)!.length == bigSize, lostBig)
+	const lostLedger = stateAll(lostBox)
+	check('落一块就重写台账，此刻盘上有一份', lostLedger.length == 1)
+	// 崩在重写台账的中途，留下的就是这半个 JSON——上一秒它还在，下一秒就读不出来了。
+	const torn = lostLedger.length == 1 ? lostLedger[0].substring(0, Math.floor(lostLedger[0].length / 2)) : ''
+	restartLike(lostBox)
+	check('读坏的台账一单也不认领', adoptAll(lostBox, [torn], nowSeconds()) == 0)
+	const lostRepair = jsonOf(askPairOn(lostBox, SIM_PEER_ID, '', '', simKey))
+	lostToken = lostRepair == null ? '' : lostRepair!.getString('token', '')
+	// 会话是重启后新配的那一个，问的却是同一单：这一端手里没有台账，就没有这一单可说。
+	check('认领不到就没有这一单：state 回 OFFER_UNKNOWN', codeOfReply(lostAsk('GET', '/v1/offer/' + lostId + '/state', '')) == 'OFFER_UNKNOWN')
+	const reposted = lostAsk('POST', '/v1/offer', lostManifest)
+	check('这一端不记得那一单，同一份清单再投就重新问用户一次', reposted.pending)
+	resolveOffer(lostBox, lostId, true, recvPrepare, recvDrop)
+	const lostState = lostAsk('GET', '/v1/offer/' + lostId + '/state', '')
+	const bigMissing = missingOf(lostState, bigId)
+	let everyIndex = bigMissing.length == bigCount
+	for (let i = 0; i < bigCount; i++) {
+		if (bigMissing.indexOf(i) < 0) {
+			everyIndex = false
+		}
+	}
+	check('再投的清单按全缺登记，不拿落盘字节猜', everyIndex && missingOf(lostState, files[0].id).length == 1, bigMissing.join('、'))
+	let repushed = 0
+	for (let k = 0; k < bigCount; k++) {
+		const part = sliceOf(all, k * CHUNK_SIZE, chunkSizeAt(bigSize, k))
+		if (lostPut('/v1/offer/' + lostId + '/chunk/' + bigId + '/' + k.toString(), part).status == 200) {
+			repushed = repushed + 1
+		}
+	}
+	check('全缺登记以后每块都真写得进去，一块也没被幂等挡回', repushed == bigCount, repushed.toString() + '/' + bigCount.toString())
+	check('小文件也照样重写', lostPut('/v1/offer/' + lostId + '/chunk/' + files[0].id + '/0', smallBytes).status == 200)
+	const lostDone = lostAsk('POST', '/v1/offer/' + lostId + '/finalize', '{}')
+	check('那一单照样传得完——finalize 才是结论', lostDone.status == 200 && firstVerifiedOk(lostDone))
+	check('台账丢了重发的字节，逐块填回后整文件摘要等于清单那一份', recvDigestFile(lostBig) == files[1].sha256)
+
 	// 8. finish it: the rest of the chunks, then the whole-file digest over the reassembled bytes.
 	for (let k = 1; k < bigCount; k++) {
 		const part = sliceOf(all, k * CHUNK_SIZE, chunkSizeAt(bigSize, k))

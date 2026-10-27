@@ -377,6 +377,71 @@ def phase_lying_ledger(proto: protocol_spec.Protocol, workspace: Path) -> None:
         service.stop()
 
 
+def phase_state_lost(proto: protocol_spec.Protocol, workspace: Path) -> None:
+    """spec §4's other half of 它只是提示: a state document that cannot be read back claims nothing (#165).
+
+    That sentence used to promise more than the disk can tell. It said the receiver re-derives the missing
+    chunks from "已落盘字节 / chunk_size" - but the length of a landing is not evidence of what landed,
+    because the moment the user accepts, the receiver allocates the declared length: the first check below
+    is exactly that, one chunk written into a file that already measures the whole file. So the branch both
+    ends actually take is the honest one: nothing is adopted, the interrupted offer answers OFFER_UNKNOWN,
+    the same manifest arrives as a new all-missing offer, and the transfer still finishes byte for byte.
+    Losing the state costs re-sent bytes - never a 已完成 that the digest has not earned.
+    """
+    corpus = build_corpus(workspace / "lost-corpus")
+    sender = load_or_create(workspace / "lost-sender")
+    receiver = load_or_create(workspace / "lost-receiver")
+    root = workspace / "lost-received"
+    service = ReceiveService(receiver, "PC-Lost", lambda manifest, who, caller: True,
+                             host="127.0.0.1", port=0, root=root)
+    service.start()
+    offer_id = ""
+    try:
+        files = plan(corpus, base=workspace / "lost-corpus")
+        big = next(f for f in files if f.relpath.endswith("IMG_大文件.bin"))
+        count = (big.size + proto.chunk_size - 1) // proto.chunk_size
+        conn = PeerConnection(sender, "PC-Sender", "127.0.0.1", service.port, receiver.served_fingerprint)
+        conn.hello()
+        conn.pair(service.current_pair_code())
+        conn.offer(files)
+        offer_id = conn.offer_id
+        conn.push_missing(files, {"files": [{"id": big.id, "missing": [0]}]}, None, 3)
+        landing = root / offer_id / big.relpath
+        check("one chunk in, and the landing already measures the whole file - so a byte count cannot say what landed",
+              count > 1 and landing.stat().st_size == big.size, (count, landing.stat().st_size, big.size))
+    finally:
+        service.stop()
+    document = root / offer_id / STATE_FILE
+    intact = document.read_text(encoding="utf-8")
+    document.write_text(intact[: len(intact) // 2], encoding="utf-8")  # torn, the way a crash mid-rewrite leaves it
+    lost = ReceiveService(receiver, "PC-Lost", lambda manifest, who, caller: True,
+                          host="127.0.0.1", port=0, root=root)
+    lost.start()
+    try:
+        check("a torn state document adopts no offer", lost.adopt_interrupted_offers() == 0,
+              list((root / offer_id).iterdir()))
+        conn2 = PeerConnection(sender, "PC-Sender", "127.0.0.1", lost.port, receiver.served_fingerprint)
+        conn2.hello()
+        conn2.pair(lost.current_pair_code())
+        why = ""
+        try:
+            conn2.reopen(offer_id)
+        except protocol_spec.ProtocolError as exc:  # noqa: BLE001 - the code is the answer under test
+            why = exc.code
+        check("the interrupted offer is refused, not guessed at", why == "OFFER_UNKNOWN", why)
+        conn2.offer(files)
+        fresh = [e for e in conn2.state()["files"] if e["id"] == big.id]
+        check("the same manifest registers as all-missing", bool(fresh) and fresh[0]["missing"] == list(range(count)),
+              fresh)
+        result = conn2.send(files, None)
+        check("and still finishes", all(v["ok"] for v in result["verified"]),
+              [v for v in result["verified"] if not v["ok"]])
+        landed = root / conn2.offer_id / big.relpath
+        check("re-sent file byte-identical", hashlib.sha256(landed.read_bytes()).hexdigest() == big.sha256)
+    finally:
+        lost.stop()
+
+
 def phase_stalled_offer(proto: protocol_spec.Protocol, workspace: Path) -> None:
     """spec §4 counts an idle offer from the last chunk that landed, so that moment is data.
 
@@ -1000,6 +1065,7 @@ def main() -> int:
         phase_in_process(proto, workspace)
         phase_restart(proto, workspace)
         phase_lying_ledger(proto, workspace)
+        phase_state_lost(proto, workspace)
         phase_stalled_offer(proto, workspace)
         phase_offer_poll(proto, workspace)
         phase_repeated_offer(proto, workspace)

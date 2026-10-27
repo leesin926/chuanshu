@@ -152,7 +152,14 @@ manifest：
 }
 ```
 
-响应：`200 {"accepted": true, "root": "相册/"}` 或 `403 {"code": "DECLINED"}`。
+响应：`200 {"accepted": true}` 或 `403 {"code": "DECLINED"}`；`accepted: true` 的那一份同时带回
+每个条目已经落地的分块（与 `GET /v1/offer/{id}/state` 同一份 `files[]`）。落点不在这条应答里说：
+每个文件最终写在哪儿，由 `finalize` 的回复逐项报回（`{"verified": [{"id": "…", "ok": true, "path": "…"}]}`），
+发送端界面上那句「落到」读的是它。
+
+（2026-10-27 第四轮巡检：这一行原本写的是 `{"accepted": true, "root": "相册/"}`，而 `root` 这个键三端
+谁都不发、发送端谁都不读——PC 的应答是 `app/net/receive.py:145` 那份 `payload()`，手机是
+`cs-receive.uts::payloadOf`，两边都没有它。合同里不留没有实现体的字段。）
 
 **待决应答**：接收方不必把这条连接挂着等答案，可以立刻回
 `200 {"offer_id": "…", "accepted": false}`——"清单登记好了，还没人决定"。发送方见到
@@ -200,10 +207,27 @@ manifest：
 `finalize` 返回 `200 {"verified": [{"id": "a2b0…", "ok": true}]}`；任一项 `ok: false` 时
 发送方可只补传该文件的问题分块再 finalize 一次。
 
-**续传状态**：接收方每落一块就重写 offer 目录下的 `.chuanshu.state.json`
-（`state_flush_chunks = 1`，攒到收尾才写会让中途崩溃白传）。进程重启后靠它认领未完成的
-offer，但**它只是提示**：可信结论只来自 `finalize` 的整文件摘要。状态文件损坏或缺失时，
-接收方按"已落盘字节 / chunk_size"重算缺块，绝不允许因为状态丢了就谎报已完成。
+**续传状态**：接收方每落一块就把手里那份未完成的清单落盘（`state_flush_chunks = 1`，攒到收尾才写会让
+中途崩溃白传）。这份文档从不走线，所以放在哪儿是各端自己的事：PC 一单一份，写在 offer 目录下的
+`.chuanshu.state.json`（`app/net/receive.py:42`）；两个手机端是一份合并的 `chuanshu-receiver-offers.json`，
+未完成的单一条一行（安卓 `CsIdentity.kt:46` 与 `app-android/index.uts:444`，鸿蒙 `app-harmony/index.uts:46`）。
+内容体三端相同：`offer_id`、每个条目的 `relpath`/`land`/`size`/`sha256`/已收分块、`created`/`touched`、
+`complete`。进程重启后靠它认领未完成的
+offer，但**它只是提示**：可信结论只来自 `finalize` 的整文件摘要。状态文件损坏或缺失时，接收方
+**什么都不认领**——发送方那份清单再投一次，就是按全缺登记的一单，绝不允许因为状态丢了就谎报已完成。
+
+（2026-10-27 第四轮巡检：这一句原本把 PC 那个文件名当成了合同位置——「重写 offer 目录下的
+`.chuanshu.state.json`」。第一版设备腿照这句话去删 `files/chuanshu-receive/<offer_id>/.chuanshu.state.json`，
+删完冷启动，手机照样认得那一单、`state` 照旧回缺第 1 块（`.probe/a_165.txt` 头一趟）；删掉
+`chuanshu-receiver-offers.json` 那一行才是它手里的台账。合同里不留只有一端成立的路径。）
+
+以前这一句写的是「按"已落盘字节 / chunk_size"重算缺块」，而这个字节数三端都量不出来：用户在卡片上点
+「接受」的那一刻，接收方就按清单里声明的长度把文件开好（PC `app/net/receive.py:898`
+`handle.truncate(size)`、鸿蒙 `app-harmony/index.uts:1049` `fs.truncateSync(fd, size)`、安卓
+`app-android/CsStore.kt:52` `raf.setLength(want)`），一块没写的文件长度也等于全长——先开档是
+`STORAGE_FULL` 能在把 4 GiB 写花之前回给用户的那一手（#128 的预分配）。所以宁可放弃「按字节猜缺哪几块」
+这条捷径，也不撤销提前开档：丢的只是那几块本来要重传的字节，分块的偏移、幂等与整文件摘要都不受影响，
+重投的那一单照样把每一块写回同一个位置。
 一份被整文件摘要推翻的台账，它记下的缺块列表也一并作废：接收方要当场抹掉这个文件的分块记录，
 `finalize` 的回复随之改口成全缺。留着它，发送方最后那一手（整单重发）会被逐块的幂等答复挡回来——
 每个分块都被回答"已经存过"，一个字节也写不回去，这一单就再也回不来（2026-10-26 在安卓与鸿蒙模拟器上各量到一次，
