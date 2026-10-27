@@ -743,7 +743,12 @@ export function parsePairUrl(text: string): PairTarget {
 		out.reject = '配对信息里没有地址或指纹，无法安全连接'
 	} else if (!isFullFingerprint(out.fingerprint)) {
 		out.reject = '配对信息里的指纹不是完整的 64 位十六进制，可能被截断了'
-	} else if (!isDigits(out.version) || parseFloat(out.version) != PROTOCOL_VERSION) {
+	} else if (!isDigits(out.version) || !versionsOverlap(COMPATIBLE_VERSIONS, [], parseFloat(out.version))) {
+		// The pairing text names ONE number, so that number is the whole set this peer can be speaking -
+		// which is what `versionsOverlap`'s empty `theirs` means, and what app/net/spec.py:215 does with
+		// `proto.supports(int(v))`. Comparing it to PROTOCOL_VERSION instead was the last half of spec §7
+		// left unimplemented here: the day this device declares [1,2], a v=1 code from an older peer would
+		// still be refused by a machine that can speak 1.
 		out.reject = '对端协议版本 v' + out.version + ' 本机听不懂'
 	} else if (out.port.length > 0 && !isDigits(out.port)) {
 		out.reject = '配对信息里的端口不合法'

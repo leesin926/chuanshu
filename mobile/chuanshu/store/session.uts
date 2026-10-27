@@ -1387,7 +1387,9 @@ export function toggleAdvanced() {
 export function applyConnectText(text: string): boolean {
 	const target = parsePairUrl(text)
 	if (target.reject != '') {
-		log('配对信息读不出来：' + target.reject)
+		// 解析 lives on this page, so it owes this page an answer: `log()` writes to the 传输 list, and #123
+		// already measured what that silence costs - a probe read "no sentence on screen" as "never dialled".
+		refuse('配对信息读不出来：' + target.reject)
 		return false
 	}
 	s.host = target.host
@@ -1406,6 +1408,11 @@ export function applyConnectText(text: string): boolean {
 	// #endif
 	s.targetLabel = '来自配对二维码：' + target.host + ':' + s.port + '　指纹 ' + target.fingerprint.substring(0, 16) + '…'
 	s.showAdvanced = false
+	// A refusal from the previous paste must not stay under the button that just read a whole pairing:
+	// 已读入 pairs with 未连接, not with 读不出来. A live link keeps its own sentence.
+	if (!s.connected) {
+		s.sessionLabel = '未连接'
+	}
 	log(target.secret == ''
 		? '已读入配对信息，核对配对码后点连接'
 		: '已读入配对信息（含密码），核对后点连接')
