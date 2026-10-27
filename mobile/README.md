@@ -228,7 +228,7 @@ py -X utf8 scripts/check_protocol.py
    之后两投都是 `403 DECLINED` 且卡为 0；另一条腿只投一次、六十八秒里一个请求都不发，那张卡自己收掉
    （`receiveSnapshot()` 里带着一次 `sweep()`，而界面 1 秒一读），之后两投还是 `403 DECLINED`——重发没有把用户
    叫醒第二次。两单都被拒，`files/chuanshu-receive` 腿前腿后一样空。三趟连过。
-11. **#146：这台设备的名字改不了**（代码已修，两道编译门 + `接收自检 71 项` 都过；**设备腿还欠**，
+11. **#146：这台设备的名字改不了**（代码已修，两道编译门 + `接收自检 71 项` 都过；**设备腿两端都在模拟器上跑完了**，
    见 [docs/feature-matrix.md](../docs/feature-matrix.md) §6 第 16 条）。合同 §1 的身份五项里只有 `name` 写着
    「用户可改，存 `settings.json`」，PC 早就有这一行，而手机这一端**根本没有能改它的地方**：名字是读出来的——
    安卓 `Build.MANUFACTURER + Build.MODEL`、鸿蒙 `deviceInfo.marketName`、浏览器 `browserName`，屏幕上也就不存在
@@ -239,13 +239,23 @@ py -X utf8 scripts/check_protocol.py
    trim 之后非空、合同不给长度，手机不许自己发明上限；组合（存过的顶掉默认、空的才回落）也在同一份里；
    存储各家自己管——安卓 `CsIdentity.kt` 的 `storedName/saveName`（`self()` 从此不再附 `name`，因为 §1 那条规则
    该由 UTS 那层说一次），鸿蒙 `app-harmony/index.uts::deviceName()` 先读 `settings.json` 的 `device_name`，
-   浏览器只能存在模块变量里（**这一端没有私有目录，所以关于重启的任何说法在这里都无法证明**，设备腿就是这么欠着的）。
+   浏览器只能存在模块变量里（**这一端没有私有目录，所以关于重启的任何说法在这里都无法证明**——这一句今天仍然成立，
+   欠的那次观察不是由浏览器补的，是两台模拟器各自跑了一趟，见这一条末）。
    刷副本的位置按平台不同，因而是分支而不是"一条统一规则"：安卓与浏览器在 `deviceNameSave` 里就把 hello 与公告
    那两份改掉；鸿蒙的接收状态机跑在页面旁边（`harmonyReceive`），`recvSelf`/`discName` 是 store 的变量，于是由
    `store/session.uts::applySelfName` 在写成功之后把 `recvSelf` 丢掉、下一次请求照 `deviceNameText()` 重建。
    改名**不是**重新入网：对端钉的是密钥摘要，名字不在指纹里，所以旧固定照旧、留空配对码照样能 resume。
    UI 那一行有两个状态而不是一个（`s.nameDraft` 是草稿、`s.selfName` 是已经生效的），因为被规则拒掉的那次要留得住
    用户刚打的字，同时屏幕上那行还是旧名字——写进私有目录失败也是同一处理：不显示一个重启后会变回去的名字。
+   设备上跑的那两趟是 `.probe/h_146_leg.py` 与 `.probe/a_146_leg.py`（原文 `.probe/h_146.txt` / `.probe/a_146.txt`，截图
+   `.probe/h_146_saved.jpeg`、`h_146_restarted.jpeg`、`.probe/a_146_saved.png`、`a_146_restarted.png`，档位 `模拟器`）：
+   在 `我的` 页改成一个新名字并按保存，屏上三处（头像那行、`设备名` 行末的值、输入框里的草稿）一起换成它；从私有目录
+   读回 `settings.json`，里面写的就是那一个值（改名前鸿蒙那边还没有这个文件）；PC 拨进来读 `GET /v1/hello`，`name`
+   念的是新名字。然后杀进程重开、中途一个键都不按——那句「已保存…」活在内存里，重开后它自己消失了，而三处仍是新名字、
+   没有回落成硬件那句（`Build.MODEL` / `marketName`），文件与 hello 都还是它，TLS 递出来的叶前后逐字节一致，最后
+   **留空配对码**再配一次照样 `resumed=True`：改了名、杀过进程，旧钉仍认得这台 PC。这一趟在设备上读的是 hello 那一处；
+   清单的 `from_name` 与配对回复由 §3.4 那五条 `浏览器` 腿证到"读的是同一个 `self`"，广播里的 `n=` 这一份副本则还没有
+   设备上读数（鸿蒙只在 `discOpen` 时才顶掉 `discName`）。
 12. **#148：鸿蒙这一端，落盘的路径没核到符号链接**（代码已修，两道编译门 + `模拟器` 腿都过了，见
    [docs/feature-matrix.md](../docs/feature-matrix.md) §3.3 那一行）。合同 §5 那条清单的最后一行写的是「符号链接、重解析点：
    写出前 `resolve()` 一次，若结果不在该 offer 目录内 → 拒绝」，安卓早就按字面做到了（`CsStore.kt` 的 `canonicalFile` 算完再比
