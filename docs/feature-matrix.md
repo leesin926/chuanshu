@@ -120,7 +120,13 @@ Linux 与 Windows 的三个真实分歧，都已落到代码分支：
 | UI 七页（首页/文件/传输/我的/发送/扫码连接/探针） | 完成 | `截图` + `模拟器`；自定义导航页让出状态栏安全区（#102） |
 | 收：同一个 `offer_id` 只问用户一次，答过的按 id 复述那一答（#145，与 PC 同一条规则） | 完成 | `编译门`（`.probe/c145_android.log`：`项目 chuanshu 编译成功。`；鸿蒙那一道见 §3.3 同一行）+ `浏览器`（`接收自检 66 项全部通过`，`bad=0`，原文 `.probe/c145_web_selftest.txt`；第 14 组那五条腿见 §3.4）。**这一支只有一份代码**：记答案的活儿从宿主收进共用状态机 —— `sweep` 里窗口到点没人答＝`DECLINED`、闲置回收与对方 `DELETE`＝`OFFER_UNKNOWN`、用户点拒绝与 `STORAGE_FULL`＝当场记下；改之前只有"用户点了拒绝"这一种答案是靠宿主记得调 `settleOffer`，宿主漏一次就再弹一次窗，而"这一单已经结束了"那两种根本没有记。`settleOffer` 自己按 id 去重，所以安卓宿主里那两处旧调用留着也不会记两遍。<br>**设备腿在安卓模拟器上跑过了**（`模拟器`，`.probe/a_145_leg.py` 连过三趟，原文 `.probe/a_145.txt`）：本机把同一份清单（**同一个 `offer_id`**）连投四遍，头两投都拿回 `200 {"accepted": false}` 而屏上始终只有一张卡（`.probe/a_145_card.png`：「有一个传输在等你决定」＋下面一行 `a145-145d.bin · 195.3 KB · 来自 DESKTOP-58TSA70`「等你决定」），在卡上点一次「拒绝」，第三、四投拿回的都是 `403 DECLINED`，卡一张也没有多出来（`.probe/a_145_answered.png` 上那张卡已经没了）。第二条腿只投一次、六十八秒里一个请求都不发，窗口到点自己收（屏上 0 张卡），之后两投还是 `403 DECLINED`——重发没有把用户叫醒第二次。两单都被拒，所以 `files/chuanshu-receive` 腿前腿后一样空。**鸿蒙那一端同一形状也跑过了**（两趟 `PASS`，见 §3.3 那一行末）——这一支两端各自有一份宿主代码，现在两端各自有一份屏 |
 | 身份：设备名是用户改得了的那一项，改完 hello / 广播 / 清单都念新的，落在私有目录 `settings.json`（#146，合同 §1） | 完成 | `编译门`（`.probe/c146_android2.log`：`项目 chuanshu 编译成功。`。第一趟 `.probe/c146_android.log` 是红的：`store/session.uts:27` 报 `找不到名称"nameReject"`——**Android 的插件只保留入口抵达得到的名字**，`app-android/index.uts` 顶上那串 `export { … } from '../cs-protocol.uts'` 没带新名字，补进去就过；这条坑 §7 已经写着，是新名字忘了挂号）+ `浏览器`（规则与 hello 那一份副本见 §3.4 的第 15 组五条腿，`接收自检 71 项全部通过`）+ `浏览器`（`我的` 页那张卡真的按过一次：改名后头像那行、输入框里的草稿（空格被吃掉）和「已保存…」那一行同时换，填一串空格再按保存则三样都不动、那一行改口说「名字不能是空的」；这一趟是在 H5 上按的，所以档位是 `浏览器` 而不是 `模拟器`）。本端改了四处：`CsIdentity.kt`（`storedName`/`saveName`/`hardwareName`，`self()` 不再附 `name`——§1 那条规则只该有一份）、`app-android/index.uts`（`myName()` 组合两份、`deviceNameSave` 写文件后顺手刷掉 `recvSelf.name` 与 `discName` 那两份**已经抄出去的**名字）、`store/session.uts`（`renameSelf` 走共用 `nameReject`，写不进就不改屏幕）。名字不进指纹：对端钉的是密钥摘要，所以改名不需要重新配对。**安卓这一端现在对着屏跑过了**（`模拟器`，`.probe/a_146_leg.py`，原文 `.probe/a_146.txt`，截图 `.probe/a_146_saved.png` + `.probe/a_146_restarted.png`；§6 第 16 条因此了结）：改名前屏上三处都还是 `Build.MODEL` 那句「手机 · Google sdk_gphone64_x86_64」，`run-as` 读 `files/settings.json` 回 `No such file or directory`，PC 经 `adb forward tcp:43746 tcp:43720` 拨进来读 `GET /v1/hello` 拿到的也是那句；在 `我的` 页把输入框换成 `h146-renamed-phone` 并按保存，屏上三处一起换、下面那一行改口说「已保存：对端在 hello、广播和清单上读到的都是它」，`run-as` 读回 `{"device_name":"h146-renamed-phone"}`，PC 再读一次 hello 就是它——这一端刷的是**宿主自己那两份**（`deviceNameSave` 里直接改 `recvSelf.name`、顶掉 `discName`），与鸿蒙由 store 丢 `recvSelf` 的那一支是两处代码，现在各有一份屏。第二条腿 `am force-stop` 再拉起、中途一个键都不按：屏上三处仍是 `h146-renamed-phone`（**没有**回落成 `Build.MODEL` 那一句），而「已保存…」那一行已经不在了（那句活在内存里），所以这三处只可能来自磁盘上那个文件；文件还是它，hello 还是它，`指纹 eabb89ec30a4ccd1…` 那一行没动，TLS 递出来的叶改名前后都是 `f693be2bb977…`，最后**留空配对码**再配一次拿到 `resumed=True` |
-| 收：接收中挂前台服务，挂不上时卡片自己说为什么（#143，`spec.md` §6） | 代码完成 + `模拟器`；**真挂上**要等自定义基座 | 落点是四处：`utssdk/app-android/CsKeepAlive.kt`（`Service` + 一个 `object`，`startForeground` 只在 API 34 带类型，读的是 `ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC`——合同 §6 原来写的 `dataTransfer` 是 14 预览期的叫法，正式版改名 `dataSync`，已用 HBuilderX 自带的 `android.jar` 逐字节查过那张常量表并把 §6 改口）、`utssdk/app-android/AndroidManifest.xml`（`android:foregroundServiceType="dataSync"`、`exported="false"`，组件只能进清单，代码里 `startService` 造不出一个 `<service>`）、`config.json` 补 `FOREGROUND_SERVICE`/`FOREGROUND_SERVICE_DATA_SYNC`/`POST_NOTIFICATIONS`、`app-android/index.uts::receiveHoldStart/receiveHoldStop`（13+ 那一句"要不要问"必须留在 UTS，运行时权限是 activity 上的 UI 线程调用）。**三件事都读设备、不假设**：`getServiceInfo` 抛 `NameNotFoundException` 就说明这个包的清单没带它，`checkSelfPermission` 少哪一项就报哪一项，`startForeground` 之后还要 `AtomicBoolean` 落定才算挂上——返回值走 `{ok, note}`，界面因此不需要匹配任何句子。`store/session.uts::armHold/disarmHold` 把结论写成卡片那一行（挂上=绿，挂不上=合同那句红字），关掉监听跟着收回。<br>证据：`编译门`（`.probe/c143_gates_final.log`：两道 `项目 chuanshu 编译成功。` + `运行包制作成功`）+ `模拟器`（`.probe/c143_device_legs.md`：标准调试基座 `targetSdk=32`、`POST_NOTIFICATIONS granted=false`，打开监听后卡片说「这台机器没让挂上保活（这个包的清单里没有保活服务这一项，所以保活挂不上：它要打进自定义基座才生效），退到后台可能被系统掐断：请保持传书在前台」，关掉后那行收回；`传输` 页日志同轮留着 `接收已打开…`/那句拒绝/`本来就没有保活挂着`）+ `浏览器`（接收 59 / 发送 17 / 发现 22 项全过，证明 store 那段条件编译没伤到 web）+ `截图`（`.probe/_c143_hold.png`：同一屏上「正在监听…」是绿的，下面那句保活拒绝是红的，开关在开位——挂上那句走的是同一个 `stateOk`）。**这一趟还真抓到一个只有设备能给的缺陷**：第一版按 `Build.VERSION.SDK_INT < 33` 决定要不要问通知权限，跑上去就在 `store/session.uts:997` 抛 `IllegalStateException: ... The targetSdkVersion SDK must be 33 or more`——问不问取决于**包**的 target 而不是系统的 API，现在读 `activity.getApplicationInfo().targetSdkVersion`（`mayAskNotify`）。至于"退到后台还收得到"这一条，只有把服务打进自定义基座才可能测（`pack --iscustom` 花用户的 DCloud 账号，等点头） |
+| 收：接收中挂前台服务，挂不上时卡片自己说为什么（#143，`spec.md` §6） | 代码完成 + `模拟器`；**真挂上**要等自定义基座 | 落点是四处：`utssdk/app-android/CsKeepAlive.kt`（`Service` + 一个 `object`，`startForeground` 只在 API 34 带类型，读的是 `ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC`——合同 §6 原来写的 `dataTransfer` 是 14 预览期的叫法，正式版改名 `dataSync`，已用 HBuilderX 自带的 `android.jar` 逐字节查过那张常量表并把 §6 改口）、`utssdk/app-android/AndroidManifest.xml`（`android:foregroundServiceType="dataSync"`、`exported="false"`，组件只能进清单，代码里 `startService` 造不出一个 `<service>`）、`config.json` 补 `FOREGROUND_SERVICE`/`FOREGROUND_SERVICE_DATA_SYNC`/`POST_NOTIFICATIONS`、`app-android/index.uts::receiveHoldStart/receiveHoldStop`（13+ 那一句"要不要问"必须留在 UTS，运行时权限是 activity 上的 UI 线程调用）。**三件事都读设备、不假设**：`getServiceInfo` 抛 `NameNotFoundException` 就说明这个包的清单没带它，`checkSelfPermission` 少哪一项就报哪一项，`startForeground` 之后还要 `AtomicBoolean` 落定才算挂上——返回值走 `{ok, note}`，界面因此不需要匹配任何句子。`store/session.uts::armHold/disarmHold` 把结论写成卡片那一行（挂上=绿，挂不上=合同那句红字），关掉监听跟着收回。<br>证据：`编译门`（`.probe/c143_gates_final.log`：两道 `项目 chuanshu 编译成功。` + `运行包制作成功`）+ `模拟器`（`.probe/c143_device_legs.md`：标准调试基座 `targetSdk=32`、`POST_NOTIFICATIONS granted=false`，打开监听后卡片说「这台机器没让挂上保活（这个包的清单里没有保活服务这一项，所以保活挂不上：它要打进自定义基座才生效），退到后台可能被系统掐断：请保持传书在前台」，关掉后那行收回；`传输` 页日志同轮留着 `接收已打开…`/那句拒绝/`本来就没有保活挂着`）+ `浏览器`（接收 59 / 发送 17 / 发现 22 项全过，证明 store 那段条件编译没伤到 web）+ `截图`（`.probe/_c143_hold.png`：同一屏上「正在监听…」是绿的，下面那句保活拒绝是红的，开关在开位——挂上那句走的是同一个 `stateOk`）。**这一趟还真抓到一个只有设备能给的缺陷**：第一版按 `Build.VERSION.SDK_INT < 33` 决定要不要问通知权限，跑上去就在 `store/session.uts:997` 抛 `IllegalStateException: ... The targetSdkVersion SDK must be 33 or more`——问不问取决于**包**的 target 而不是系统的 API，现在读 `activity.getApplicationInfo().targetSdkVersion`（`mayAskNotify`）。至于"退到后台还收得到"这一条，**要分两支看**：**没挂上保活的那一支已经在标准调试基座上量过了**（`模拟器`，#168：
+`.probe/a_168.py` → 原文 `.probe/a_168.txt`，三相与鸿蒙那一趟同形——按过 `KEYCODE_HOME` 以后 `dumpsys window` 的
+`mCurrentFocus` 与 `topResumedActivity` 都换成 `NexusLauncherActivity`，那一刻 hello/PUT/state/finalize 四格全部
+0 秒答话、两份落点都由 `run-as … sha256sum` 在机上对上源、回前台仍是同一个 pid=6616，而且 C 相把卡片那一行原样读回
+（「这台机器没让挂上保活…退到后台可能被系统掐断：请保持传书在前台」）；这一台本来就是"挂不上"的状态，所以它量的不是
+保活、而是没有保活时这一端自己会不会停——答案是不会）。**挂上保活那一支**只有把服务打进自定义基座才可能测
+（`pack --iscustom` 花用户的 DCloud 账号，等点头），见 §6 第 13 条。两支都不等于真机：模拟器不进 doze。 |
 
 ### 3.3 HarmonyOS Next
 
@@ -151,7 +157,7 @@ Linux 与 Windows 的三个真实分歧，都已落到代码分支：
 | 收：同一个 `offer_id` 只问用户一次（#145，与 PC、与安卓同一条规则） | 完成 | `编译门`（`.probe/c145_harmony.log`：`项目 chuanshu 编译成功。` + `运行包制作成功`）+ `浏览器`（`接收自检 66 项全部通过`）。**本端没有第二份代码要改**：记答案的五处都在共用的 `cs-receive.uts`（见 §3.2 那一行）。改之前鸿蒙这一头只记一种——用户在卡片上按的那一句由 `store/session.uts` 的 `receiveDecide`（`#ifdef APP-HARMONY` 那一段）补进 `settleOffer`，安卓对应的那一处在 `utssdk/app-android/index.uts`；而"这一单已经结束了"那两种（闲置回收、对方 `DELETE`）谁都没记，重发的清单于是会再弹一次卡片。<br>**鸿蒙这一端也对着屏跑过了**（`模拟器`，`.probe/h_145_leg.py` 两趟都 `PASS`，原文 `.probe/h_145.txt`）：本机经 `hdc fport tcp:43745 tcp:43720` 拨进这台正在监听的模拟器，`pair` 上了以后把**同一个 `offer_id`**（`4b5f660a`）的清单连投四遍——头两投都拿回 `200 {"accepted": false}` 而屏上始终一张卡（`.probe/h_145_card.jpeg`：「有一个传输在等你决定」＋「来自 PC-scratch-sender 的传输在等你决定」＋「接受／拒绝」两颗按钮），在卡上点一次「拒绝」（@ 945,1838），第三、四投拿回的都是 `403 DECLINED`，卡 0 张（`.probe/h_145_answered.jpeg`）。第二条腿（`2747aeea`）只投一次，然后这一支 68 秒里一个请求都不发，每 10 秒读一次屏（**读屏不是请求，代价是零**）：+10/20/30/40 秒都还是一张卡，+50 秒读到 0 张，之后两投还是 `403 DECLINED`。两单都被拒，`files/chuanshu-receive` 腿前腿后一字不差。第二趟还顺带读到一件事：`配对 | resumed=True`——上一趟留下的钉这一次被认出来了，同一条清单规则跑在一条已经配过对的关系上 |
 | 身份：设备名用户可改，改完 hello / 广播都念新的，落在沙箱 `settings.json`（#146，合同 §1，与安卓同一条规则） | 完成 | `编译门`（`.probe/c146_harmony.log`：`项目 chuanshu 编译成功。` + `运行包制作成功`）+ `浏览器`（共用规则与 hello 那份副本的腿见 §3.4 第 15 组）。本端只有两处：`app-harmony/index.uts` 里 `deviceName()` 先读 `settings.json` 的 `device_name`、读不到才回落 `marketName`/`productModel`（§1 那个文件名保留合同的写法，不加 `chuanshu-` 前缀；`fieldOf` 已经够用，不需要 JSON 库），新导出 `deviceNameSave` 同步写文件；**刷副本的活儿落在 `store/session.uts`**——这一端的接收状态机跑在页面旁边（`harmonyReceive`），hello 用的 `recvSelf` 与公告用的 `discName` 都是 store 的变量，不像安卓宿主那样自带缓存，所以改名成功后由 store 把 `recvSelf` 丢掉（下一次请求照 `deviceNameText()` 重建，读到的就是刚写进去的那一个）并顶掉 `discName`。ArkTS 侧不能 import 同目录的 `.uts`，`nameWithDefault` 那两行只能在 `deviceName()` 里照写一遍——与 `TRANSPORT_PORT` 同一个理由。**鸿蒙这一端现在对着屏跑过了**（`模拟器`，`.probe/h_146_leg.py`，原文 `.probe/h_146.txt`，截图 `.probe/h_146_saved.jpeg` + `.probe/h_146_restarted.jpeg`）：改名前三处（头像那行、`设备名` 行末的值、输入框里的草稿）都还是那句硬件自己的话「手机 · emulator」，PC 经 `hdc fport tcp:43745 tcp:43720` 拨进来读 `GET /v1/hello` 拿到的也是它，`pair` 上了（`resumed=False`），而沙箱里这时候**还没有** `settings.json`（`hdc file recv` 回 `no such file or directory`）。在 `我的` 页把输入框换成「鸿蒙改名腿146」并按保存：屏上三处一起换，下面那一行改口说「已保存：对端在 hello、广播和清单上读到的都是它」，`/data/app/el2/100/base/com.chuanshu.app/files/settings.json` 读回本机是 `{"device_name":"鸿蒙改名腿146"}`（36 字节），PC 再读一次 hello 拿到的就是它——这一端 hello 那一份副本确实由 `store/session.uts::applySelfName` 丢掉、下一次请求照 `deviceNameText()` 重建。第二条腿 `aa force-stop` 再 `aa start`，中途一个键都不再按：屏上两处加草稿仍是「鸿蒙改名腿146」（**没有**回落成「手机 · emulator」），文件还是那 36 字节（sha `9325495bec4d…` 一字不差），而「已保存…」那一行已经不在了（那句活在内存里），所以屏上这三处只可能来自磁盘上那个文件；hello 还是它，`指纹 558f78d300672ac7…` 那一行没动，TLS 递出来的叶摘要改名前后都是 `30630f39ace7…`，最后**留空配对码**再配一次——`resumed=True`，对端名字那一句已经是新名字。名字改了、进程杀过又活了，旧钉照样认得这台 PC：§6 第 16 条鸿蒙那一格因此了结 |
 | 收：§5 最后一条——写出前把路径一环一环核到底，中间那一环是符号链接就不许写过去（#148） | 完成 | `编译门`（`.probe/c148_harmony2.log`：`项目 chuanshu 编译成功。` + 同一趟 `运行包制作成功`；另有一道 `.probe/c148_android2.log` 干净缓存复跑，证明那半边的 `#ifdef` 没被伤到）+ `模拟器`（`127.0.0.1:10001`，`我的` → `平台能力探针` → 新加的那一个按钮，原文 `.probe/h_148.txt`：「还没收过东西时的接收根：none」→ 落过一个文件以后「dir」；新建出来的那一环「dir」；那个文件「file（要的是 file，不是 link）」；写进去的 8 字节读回来磁盘摘要 `9ac2197d9258257b…`，宿主机上 `sha256("ABCDEFGH")` 是同一个数；`_guard/deep/again.bin` 那种"中间还没建出来"的放行，续传才可能穿过一个刚被回收掉的目录；`../escape.bin` 拒掉；清场后 `_guard` 读回 none）+ `截图`（`.probe/h_148_guard.jpg`：那十行就在屏上）。**规则只有一份**，落点是 `app-harmony/index.uts::recvPath`——这一端把 relpath 变成磁盘位置的地方只有它，六个调用点（prepare / write / digest / drop / `storeFileExists` / 台账那一个）全从它走，所以守卫不必抄第二遍，也不可能漏一处。这一平台确实没有 `realpath`（`@ohos.file.fs.d.ts` 里查不到这个导出），安卓那句 `File.canonicalFile` 算完再比前缀在这里没有对应的调用，能问的只有 `lstatSync(path): Stat`（同一份 d.ts 第 1755 行，文档原话就是 "Obtains information about a symbolic link"）和 `Stat.isSymbolicLink()`（5056），于是 `noLinkBelowRoot` 改成**从接收根往下的一环一环问**：任何一环是链接，整条路径不作数；问到不存在的那一环就停——不在＝后面更不会在，prepare 那句 `mkdirSync(parent, true)` 负责把剩下的补出来。用 lstat 而不是 access 是这一条的关键：`accessSync` 跟着链接走，一个悬空的链接它正好答"没有这个文件"，于是写入会顺着那条链接出去。**拒绝链接那一支在这台机器上造不出来**，这一点也写进了屏上那一行：`fs.symlink` 从 API 11 起只对系统应用开放（还是那份 d.ts 的注释），而模拟器的 shell 是 uid 2000、连这个沙箱都进不去（`ls /data/app/el2/100/base/` 报 Permission denied，也没有 `su`）——所以那一支的证据到 `编译门` + 代码读为止，档位不往上编。另外把 `relOk` 顶上那句注释改了口：它说"这一平台没有 canonical-path 调用"是实情，但被读成了"§5 这一条做不到"，而做得到 |
-| 后台限制的产品处理（#143 的另一半：这一端没有机制，只有合同要求的那句话） | 完成 | `模拟器` + `截图`（`127.0.0.1:10001`：监听开着时「我的」页那行「这一端没有后台保活，退到后台或锁屏可能被系统冻住：请保持传书在前台」，点掉监听那行跟着收回；`.probe/_c143_hold_harmony.jpeg` 里它是红的，与同屏那句绿色的「正在监听 43720…」并排。原文 `.probe/c143_device_legs.md`。这句话过去只在文档里，`pages/` 与 `store/` 里一个字都没有——写它的人把口径当成了实现） |
+| 后台限制的产品处理（#143 的另一半：这一端没有机制，只有合同要求的那句话） | 完成 | `模拟器` + `截图`（`127.0.0.1:10001`：监听开着时「我的」页那行「这一端没有后台保活，退到后台或锁屏可能被系统冻住：请保持传书在前台」，点掉监听那行跟着收回；`.probe/_c143_hold_harmony.jpeg` 里它是红的，与同屏那句绿色的「正在监听 43720…」并排。原文 `.probe/c143_device_legs.md`。这句话过去只在文档里，`pages/` 与 `store/` 里一个字都没有——写它的人把口径当成了实现。**合同这一格钉的那次实测，两半都补量了**（`模拟器`，#168）：`.probe/h_168.py` → 原文 `.probe/h_168.txt` 三相（A 前台控制格全绿且逐字节 → 按过 Home、`aa dump -a` 读到 `app state #BACKGROUND` 以后 hello/PUT/state/finalize **四格全在 0 秒答话** → `aa start` 回前台，同一个 pid=5482，B 相那份 `…/0f11ce6f4cbbe187/bg168.bin` 回本机重算等于源）；`.probe/h_168_lock.py` → 原文 `.probe/h_168_lock.txt`（灭屏由 `hidumper -s PowerManagerService -a -a` 的两枚表记定住——`Off` 动了、`On` 没动，那时 `aa dump -a` 说的是 `#BACKGROUND`，而 hello 仍 `200` 体 357 字节）。**这两趟读到的是"这一端自己不会因为退后台就停"**，不是那句「可能被冻住」被推翻：模拟器不进 doze，也没有真机那套省电冻结，所以 §6 那句「按**真机**实测结论」照旧按欠着记（§6 第 1 与第 23 条），文案里那个「可能」不改。那一趟 C 相屏上那行报的是「（没读到）」，所以文案的证据仍是上面那张截图，不是这两趟） |
 
 ### 3.4 浏览器（H5 目标）
 
@@ -394,6 +400,7 @@ Xcode，够不到任何一档编译门**——它改的原因只是共用的 sto
 | `h_165.py` | #166：与 `a_165.py` 同形的那一趟，跑在鸿蒙模拟器上（同一份合并台账按行删、删前先把"这一单确实占着一行"当前提核一遍） | 四腿 PASS、verdict 六条 YES（原文 `.probe/h_165.txt`）。落点长度用 `ls -l` 在沙箱里量、字节用 `hdc file recv` 拉回本机算 sha256——**这台机器的 shell 删得掉沙箱里的文件、建不出一份**，所以「台账丢了」造得出来、「台账坏成半个」造不出来（那一支只有 `门禁` + `浏览器`）。两条 harness 坑记在 §7：`file recv` 的本地路径必须是反斜杠那种写法，否则它一个字都不落地也不报错；删台账要在**冷启动之前**做完，而应用活着的时候删掉那份文件，它要等下一次状态真的变了才会重写出来 |
 | `a_167.py` | #167 那两句写进手机 host 的判据，在活手机上各问一遍：一个文件三块走 §4 转义的三个读法（正确头值 / 陌生值 `stu2` / 没有零所以没有转头），然后第二单送完一个文件、第三单把**自己那个落点**换成一条指向第二单目录的软链接再往里写 | 两格都 `PASS`（原文 `.probe/a_167.txt`，verdict 五条 YES）。陌生头值那一格读的是答复码与 `detail`：`422 CHUNK_DIGEST_MISMATCH {'reason': 'length', 'got': 4227776, 'want': 4194304}`，也就是字节一个没被解、由长度先挡回来；软链接那一格读的是 `507 STORAGE_FULL {'reason': '这个路径不在接收目录里'}` **加**受害者写前写后同一个 `sha256sum`。**立的 harness 规则：软链接是在正常管线里量的**——`run-as … sh -c 'rm -f <落点> && ln -s <别人那单的文件> <落点>'`，然后仍走 `PUT /v1/offer/<id>/chunk/<fid>/0`；不需要（也不该）绕过状态机去直接叫存储原语，合同防的"有人绕过"在设备上就是"落点本身是一条链接" |
 | `h_167.py` | 与 `a_167.py` 第一格同形的那一趟，跑在鸿蒙模拟器上（这一端本来就是转义存在的理由） | 跑到 `PASS`（原文 `.probe/h_167.txt`），对照 `.probe/h_167_before.txt`：**头一趟量的还是改前的 hap**——#167 那一轮只到 `运行包制作成功`、没人把它装到机上，`stu2` 那一格回 `200 stored`；补 `py .probe/deploy.py --serial 127.0.0.1:5555` 才读到 `422 … reason: length`。这是 §4 第四条（编译门 ≠ 设备上也是这样）在鸿蒙一侧的现场。**这台隧道的天气也记下了**：`fport` 会在 4 MiB 体写到一半时掐连接（`WinError 10053`），落下来的整块偶尔内容不对（不带 `reason` 的 `CHUNK_DIGEST_MISMATCH`），两者都按 §4 给发送方的那两手重发；腿只认 `reason: length` 那一个形状当判据，其余一律重试，否则量的就是隧道而不是这一端 |
+| `h_168.py` / `h_168_lock.py` / `a_168.py` | #168 的 §6 设备腿：合同给鸿蒙钉的那句「按真机实测结论」里那两半（**退到后台** / **锁屏**），加上安卓**没挂保活**那一支的对照。三相同形——A 前台把一单走完当控制格，B 相由**设备说**它在后台（鸿蒙 `aa dump -a` 的 `app state #BACKGROUND`；安卓 `dumpsys window` 的 `mCurrentFocus` + `topResumedActivity` 换成 launcher）以后问四格，C 相回前台看同一个 pid、那份字节还在不在、卡片那行还在不在 | 三趟都 `PASS`（`模拟器`，原文 `.probe/h_168.txt`、`.probe/h_168_lock.txt`、`.probe/a_168.txt`；pid 全程 5482 / 5482 / 6616 没换）。**这一组立的规则第一条是免费的**：发送方 `PeerConnection._once` 本来就每条请求各开一条 TLS 连接，所以"不再接受**新**连接"这一句不需要造手——hello / PUT / state / finalize 每一格读数就是一次新连接。其余五条（后台这一相要由设备说、块体做成 3 072 字节不带零、`dataclasses.replace(conn.proto, offer_wait_timeout_s=N)` 才量得出停摆、鸿蒙不许用 `Connection: close` 读回复、灭屏要 `hidumper` 两枚表记动过才算）记在 §6 第 23 条末。**读数是"这一端自己不会因为退后台就停"，不是那句「可能被冻住」被推翻**（模拟器不进 doze），所以 §6 那句「按真机实测结论」仍按欠着记；鸿蒙那一趟 C 相的卡片那行报「（没读到）」，文案的证据仍是 #143 那张截图 |
 | `a_128.py` / `h_128.py` | 两单送**同一个名字**：每单是否落在自己的目录里，后一单有没有碰前一单已校验的字节 | 两条都 `PASS`：安卓 `手机一单一个目录：后一单同名文件不再顶掉前一单已经校验过的字节`，鸿蒙 `鸿蒙收：一单一个目录，同名两单各留各的字节`（原文 `.probe/a_128.txt`、`.probe/h_128.txt`） |
 | `a_133.py` / `h_133.py` | 发送方那条恢复支的设备腿：造一个**会说真话**的对端，四种喂法——`held`（体收下、回复吞掉）、`blind`（体一个字节都不收）、`dead`（每块都吞、每回都不答）、`mute`（体不收、那一次 `state` 也不答） | 八条腿全 `PASS`。判据是对端自己的账本：`held` 写块 2 次 + state 1 次 + 逐字节一致，`blind` 写块 3 次 + state 仍 1 次 + 一致，`dead` 写满 3 次 + 问满 3 次 + 一块都没落下 + 屏上报失败而不是挂住，`mute` 写块 **1** 次 + 问 1 次且那问没人答 + 报的是那一问的错（原文 `.probe/a_133_held.txt` 等八份，对端账本 `.probe/*_133_*_peer.txt`） |
 | `a_134.py` / `h_134.py` | A 级取消那一句的设备腿：让对端**只回答"还没决定"**（`POST /v1/offer` 每次回 `{"accepted": false}`，与手机端接收方自己没决定时答的是同一句），发送方就每秒重投清单，趁这一秒一秒之间点屏上的「取消」 | 两条都 `PASS`，各六条判据全 YES：安卓 `清单进来 8 次 / 写块请求 0 次 / 5.3 秒收口`，鸿蒙 `清单进来 11 次 / 写块请求 0 次 / 3.2 秒收口`，两台屏上都是整句 `失败：本机取消了这次传输 这一单还没发出去就被本机收回了`、都不带裸 JSON（原文 `.probe/a_134.txt`、`.probe/h_134.txt`） |
@@ -517,6 +524,10 @@ Xcode，够不到任何一档编译门**——它改的原因只是共用的 sto
     `<service>`，所以 `CsKeepAlive.begin()` 在这一台上必然报"挂不上"（那正是这一趟要证的诚实降级）。要证保活本身，
     得先 `pack --iscustom` 出自定义基座——它花的是用户的 DCloud 账号，所以这一步等点头；判据是：开着监听把应用退到
     后台，通知栏那条「传书在收」还在，对端接着发的那一块照样落盘。
+    **#168 把这一条收窄成两格**：**没挂保活的那一支已经量了**（三趟都在活设备上、都 `PASS`，见第 23 条与 §3.2 / §3.3
+    那两行）——安卓那一台正是"挂不上"的标准调试基座，退到后台以后四格全答话、两份落点逐字节对上、屏上那行红字原样读回。
+    现在欠的只有两样：**①挂上保活那一支**（要自定义基座，等点头，判据不变）；**②真机那一格**（模拟器不进 doze，
+    所以它证明的是"这一端自己不会停"，不是那句「可能被系统掐断」被推翻）。
 14. ~~**#144 的设备腿**~~ — **两端、两个方向、三道门都跑完了**（鸿蒙那四格见 §3.3 那一行末与 §5 那一行，
     安卓那两格见 §3.1 / §3.2）。原来列的"还欠的两格"是这样了结的：
     ①鸿蒙同一形状的两趟——`模拟器` 四格全 `PASS`，跑的是装着 `parsePairUrl` 那道改动的新 hap；
@@ -871,6 +882,67 @@ Xcode，够不到任何一档编译门**——它改的原因只是共用的 sto
       台账）；`X-Sha256` 始终是**转义之前**那一个分块的摘要（三端都是先摘要后转义，这一轮由 7d 的一条腿量过）；
       §4「错误响应先吞掉未读的 body」（三端各有实现体，#121 那一条是它的设备证据）；§5 前四条清洗规则（#148 之后
       三端都有符号链接那一手，这一轮只改安卓圈的那一圈范围）。
+
+23. **#168：合同逐条巡检第六轮——§6「保活与后台」那一整段，四句话里三句找得到实现体，第四句缺的是量、不是代码**
+    （做法沿用 #140/#162/#163/#165/#167：这一轮只读 §6 那四句，每一句对着 PC（`app/ui` + `app/net`）、共用 store
+    （`store/session.uts`）、安卓宿主（`utssdk/app-android/`）与鸿蒙宿主（`utssdk/app-harmony/`）各找一遍实现体。
+    **这一轮合同与产品代码都一字未改**——四句都有体，而唯一没落地的那一格是 §6 自己要求的一次实测。）
+    - **PC 那句「常驻托盘即可，监听随进程存活」有体，而且它认识没有托盘的桌面。**
+      `app/ui/main_window.py:402-459`：`hide_to_tray()` 在 `tray_available()` 为假时不藏（藏了就等于把用户唯一能回来的
+      门收掉，而传输本来就在照跑），`request_close()` 把记住的 `CLOSE_TRAY` 降级成一次询问。Linux 那一格因此不需要
+      新代码——GNOME/无托盘上是同一个分支。
+    - **安卓那句「接收中需前台服务（`dataSync`）+ 13+ 通知权限，否则系统会掐连接」有四处体**：`CsKeepAlive.kt`
+      （`startForeground` 只在 API 34 带类型，`AtomicBoolean` 落定才算挂上）、`app-android/AndroidManifest.xml`
+      （`android:foregroundServiceType="dataSync"`、`exported="false"`）、`config.json` 那三项权限、
+      `app-android/index.uts::receiveHoldStart`（13+ 那句"要不要问"读的是**包**的 `targetSdkVersion`）。这四处是 #143
+      落的，本轮只核"有没有体"，结论是有。
+    - **鸿蒙那句「同 iOS 的后台限制口径，按真机实测结论写进 UI 文案」也有体**：`store/session.uts::armHold` 在
+      `#ifdef APP-HARMONY || APP-IOS` 那支把话写成 `s.recvHold`，`pages/files/files.uvue:53` 与 `pages/me/me.uvue:67`
+      两处渲染，`initReceivePanel()` 让那行跟着重启重新挂上。#143 当时补的就是"这句话只在文档里"那半边。
+    - **真正欠的是 §6 给鸿蒙钉的那一句「按真机实测结论」**：文案站得住（用的是「可能」），但从没有任何人在设备上问过
+      "退到后台 / 锁屏以后，那条监听还答不答话"。这一轮把那两半各量了一趟，另加安卓对照一趟，三趟都在**活设备**上：
+      - **后台那一趟**（`模拟器`，`.probe/h_168.py` → 原文 `.probe/h_168.txt`，verdict `PASS`；鸿蒙
+        `127.0.0.1:5555`，pid=5482 全程没换）：A 相在前台把一单走完（offer `3a1216e95bc1ce73`，`PUT` → `state`
+        → `finalize`，落点 `…/files/chuanshu-receive/3a1216e95bc1ce73/fg168.bin` 用 `hdc file recv` 拉回本机重算
+        `786e68ec3623…` 等于源）——控制格必须先绿，否则 B 相的读数不能算这一端的结论。B 相**先在前台按过"接受"**，
+        然后 `uitest uiInput keyEvent Home`，由 `aa dump -a` 读到 `app state #BACKGROUND` 才开始问；四格
+        （hello / PUT 块 0 / state / finalize）全部**在 0 秒答话**，`state` 说 `received 1 / missing []`。C 相
+        `aa start` 拉回前台：同一个 pid（5482→5482）、`#FOREGROUND`、hello 又答话，而 B 相那一份
+        `…/0f11ce6f4cbbe187/bg168.bin` 回本机重算 `8373d3af0bcd…` 等于源。**这一端退到后台以后，监听答话、字节能落、
+        单子能完。**
+      - **锁屏那一趟**（`模拟器`，`.probe/h_168_lock.py` → 原文 `.probe/h_168_lock.txt`）：只问 `GET /v1/hello`
+        （= 新开一条 TLS 连接，正是 §6 那句话量的那一格），三格"亮屏 → `power-shell suspend` → `wakeup` + 扫掉锁屏卡片"。
+        灭屏不是按下开关就算：`hidumper -s PowerManagerService -a -a` 的两枚表记要动对了才算——那一趟读到
+        `Last Screen On=6585130` 不动、`Off` 从 `6535187` 走到 `6594001`，同时 `aa dump -a` 说 `app state #BACKGROUND`，
+        而 hello 照样 `200`（体 357 字节，叶 `30630f39ace7…`）；唤醒后表记 `On=6612872`、状态回 `#FOREGROUND`、
+        同一个 pid=5482，hello 又答话。**"退到后台或锁屏"那两句的后半在这一台上也是答话。**
+      - **安卓那一趟是同一形状跑在**没有**保活服务的标准调试基座上**（`模拟器`，`.probe/a_168.py` → 原文
+        `.probe/a_168.txt`，verdict `PASS`；`emulator-5556`，`adb forward tcp:43749 tcp:43720`，pid=6616 全程没换）。
+        这一台不是保活那一支——`CsKeepAlive.begin()` 在它上面必然报"挂不上"（#143 已读到），所以它量的是 §6 那句
+        "否则系统会掐连接"的**反面**：没挂保活的这一端退到后台还答不答话。后台这一相由设备说，不由"我按过了"说：
+        按过 `KEYCODE_HOME` 以后 `dumpsys window` 的 `mCurrentFocus` 与 `dumpsys activity` 的 `topResumedActivity`
+        都换成了 `NexusLauncherActivity`。四格同样全部 0 秒答话（hello 里 `served` 就是这一台自己的叶 `f693be2bb97…`，
+        证明答话的是这一端而不是隧道上另一台），A 相落点 `786e68ec3623…`、B 相那份 `8373d3af0bcd…` 都由
+        `run-as … sha256sum` 在机上对上源（两台的字节形状一模一样，因为发的是同一份构造）。C 相 `monkey` 拉回前台：
+        同一个 pid、焦点回到本包、hello 又答话，而且**屏上那一行原样读回来了**——「这台机器没让挂上保活（这个包的
+        清单里没有保活服务这一项，所以保活挂不上：它要打进自定义基座才生效），退到后台可能被系统掐断：请保持传书在前台」。
+    - **这三趟合起来能读成什么、不能读成什么**：模拟器不进 doze、也没有真机的省电冻结，所以"答话"**既不能证成也不能
+      证伪**卡片那句「可能被系统掐断」；它只证明了一件更窄的事——这一端**没有任何代码在退到后台时自己把监听收掉**。
+      §6 给鸿蒙钉的那句「按**真机**实测结论」因此仍然按欠着记（第 1 条那一台私人机锁着，未经同意不动），文案里那个
+      「可能」一个字都不该改。安卓那格「要证保活本身」照旧是第 13 条（要 `pack --iscustom`，等点头）。
+    - **照实记下没读到的那一格**：鸿蒙那一趟 C 相的卡片那行报的是「（没读到）」——`card_line('前台')` 那一路扫没扫到
+      取决于当时的页位，这一趟没扫到，所以文案那句证据仍然是 #143 的 `.probe/_c143_hold_harmony.jpeg`，不能记在这一趟
+      头上；同一形状在安卓那一趟读到了（上面引的整句）。
+    - **这一轮立的 harness 规则**：①**发送方每条请求各开一条 TLS 连接**（`app/net/send.py:229-267` 的 `_once`，那是
+      #94/#121 的结果），所以"不再接受**新**连接"这一句不需要专门造一手——hello / PUT / state / finalize 每一格读数
+      本身就是一次新连接。②**"这一相在后台"要由设备说**：鸿蒙看 `aa dump -a` 的 `app state #…`，安卓看
+      `dumpsys window` 的焦点 + `topResumedActivity`，读到之后才开始问；按过 Home 不是证据。③**块体一律 3 072 字节且
+      不带零**，因此没有 `X-Chunk-Escape` 那一手，也不会撞上鸿蒙那台隧道的 4 MiB 天气（§7）——"B 相没答话"于是只能是
+      对端的事实。④**要按秒量出一个停摆的对端得自己缩短超时**：它不发 RST，只是不答；`dataclasses.replace(conn.proto,
+      offer_wait_timeout_s=N)` 换掉那份冻结的声明（`PeerConnection.proto` 是实例属性，不是类常量）。⑤**鸿蒙的回复不能
+      用 `Connection: close` 去读**（那一手会丢掉回复体，§7 记过），锁屏那一趟因此自己读到 `\r\n\r\n` 再按
+      `Content-Length` 取字节。⑥**灭屏要真灭**：`power-shell suspend` 打印的「SuspendDevice is called」只是"命令收到
+      了"，两枚表记动了才算这一相成立（第一版脚本按 `power-shell status` 判，那个子命令根本不存在）。
 
 ### 需要用户点头才能做的四件事
 - 唤醒/解锁并使用那台个人鸿蒙真机（#45/#46 + 鸿蒙发现真机腿）。

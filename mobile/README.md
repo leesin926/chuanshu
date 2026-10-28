@@ -93,6 +93,14 @@ py -X utf8 scripts/check_protocol.py
 通知权限任何一项读不出来，那句话就同样回到 Android 的卡片上——挂不上的保活和不挂等价（#143，两端同一句
 文案在 `store/session.uts::armHold`）。
 
+合同给鸿蒙钉的那句「按真机实测结论」，两半都在活设备上量过了（#168，`模拟器`）：退到后台（鸿蒙 `aa dump -a`
+读到 `app state #BACKGROUND`、安卓 `dumpsys window` 的焦点换成 launcher 之后才开始问）和灭屏（由
+`hidumper -s PowerManagerService` 的两枚表记定住）以后，hello / PUT / state / finalize 四格全部当场答话，
+回前台仍是同一个进程，那一份字节逐字节对得上源。这不等于那句「可能被系统掐断」被推翻——模拟器不进 doze，
+也没有真机那套省电冻结，所以这三趟证明的是一件更窄的事：**这一端自己不会因为退到后台就把监听收掉**。文案里
+那个「可能」照旧不改，真机那一格照旧欠着。安卓那一趟跑的是**没挂上保活**的标准调试基座，所以它量的不是保活
+本身（那一支仍要自定义基座，见 `docs/feature-matrix.md` §6 第 13 条）。
+
 手机这一端的接收有三份记忆，都写在本 App 的沙箱里：固定过的对端、没传完的单、以及传完且校验通过的文件
 （`chuanshu-receiver-trust.json` / `chuanshu-receiver-offers.json` / `chuanshu-receiver-arrivals.json`）。
 第三份是后来补的，因为前两份都回答不了"收到的文件"这张卡的标题：续传台账在单子完成的那一刻就把它去掉了
@@ -474,6 +482,28 @@ py -X utf8 scripts/check_protocol.py
       非要有对照不可的原因，也是 §4 第四条（`--compile true` 只编译不推设备、编译门过了不等于机上也是这样）在两端都
       留了一次现场。软链接那一格鸿蒙造不出来：`fs.symlink` 自 API 11 起只对系统应用开放，这台 DevEco 模拟器的 shell 是
       uid 2000、连那个沙箱都进不去，所以它只有安卓的 `模拟器` + `门禁` + `浏览器` 三档。
+19. **#168：合同 §6「保活与后台」那一整段——四句话都有实现体，缺的是合同自己钉的那一次实测**（这一轮合同与产品代码
+    都一字未改；完整账目在 `../docs/feature-matrix.md` §6 第 23 条）
+    - **四句都对着一遍实现体找过**：PC「常驻托盘即可，监听随进程存活」落在 `../app/ui/main_window.py:402-459`
+      （`tray_available()` 为假时不藏、把记住的"最小化到托盘"降级成一次询问——没有托盘的 Linux 桌面是同一个分支）；
+      Android「接收中需前台服务 + 13+ 通知权限」落在 #143 那四处（`CsKeepAlive.kt` / 它的 `<service>` / `config.json`
+      三项权限 / `app-android/index.uts::receiveHoldStart`）；鸿蒙那句文案落在 `store/session.uts::armHold`，
+      `pages/files/files.uvue:53` 与 `pages/me/me.uvue:67` 两处渲染，重启由 `initReceivePanel()` 重新挂上。
+    - **补的是量，不是代码**：合同给鸿蒙写的是「按真机实测结论写进 UI 文案」，而"退到后台 / 锁屏以后那条监听还答不
+      答话"从来没人问过。三趟都在活设备上（`模拟器`，原文 `.probe/h_168.txt`、`.probe/h_168_lock.txt`、
+      `.probe/a_168.txt`，都 `PASS`）：三相同形，A 相前台走完一单当控制格，B 相**由设备说它在后台**（鸿蒙
+      `aa dump -a` 的 `app state #BACKGROUND`；安卓 `dumpsys window` 的 `mCurrentFocus` + `topResumedActivity`
+      换成 launcher）以后才问，C 相回前台核同一个 pid、那份字节、那一行文案。四格（hello / PUT / state / finalize）
+      在两台后台状态里全部当场答话，两份落点逐字节对上源。
+    - **这三趟能读的只有一件事**：这一端自己不会因为退到后台就把监听收掉。它们**不能**读成"那句「可能被系统掐断」被
+      推翻"——模拟器不进 doze，也没有真机那套省电冻结。所以合同那句「按**真机**实测结论」照旧欠着（真机是用户的
+      私人机，锁着，未经同意不动），文案里那个「可能」一个字不改；安卓那一趟跑的是**挂不上保活**的标准调试基座，
+      它量的是没有保活时这一端会不会停，保活本身那一支仍要 `pack --iscustom`（等点头）。
+    - **顺手立的 harness 规则**（细节 §6 第 23 条末）：发送方本来就每条请求各开一条 TLS 连接，所以"不再接受**新**
+      连接"这一句不用造手——每一格读数本身就是一次新连接；块体做成不带零的 3 072 字节，"没答话"于是只能是天气之外
+      的事实；`dataclasses.replace(conn.proto, offer_wait_timeout_s=N)` 才量得出一个不答话也不发 RST 的对端；鸿蒙
+      的回复不能用 `Connection: close` 读；灭屏要 `hidumper -s PowerManagerService -a -a` 那两枚表记动过才算，
+      `power-shell suspend` 打印那句「SuspendDevice is called」不算。
 
 M2a 的最小切口是"手机发、PC 收"：扫（或粘贴）PC 的二维码拿到地址与完整指纹，用户只核对同屏的
 一次性配对码——PC 侧接收端已经跑绿，手机只要把
