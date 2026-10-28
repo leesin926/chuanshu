@@ -35,6 +35,13 @@ import javax.net.ssl.SSLSocket
  *    critical section". */
 object CsServe {
 
+    /** The one encoding value spec §4 names, restated here the way `recvPath` restates the path rules on
+     *  the other phone: this file is Kotlin and cannot import `cs-protocol.uts`. It matters that the
+     *  receiver compares the header's *value* rather than asking whether a header came at all - an
+     *  encoding this end does not know must reach the length and digest checks as it arrived, which is
+     *  what `app/net/receive.py` and the shared `unescapeChunk` both do. */
+    private const val CHUNK_ESCAPE_STU = "stu"
+
     private val lock = ReentrantLock()
     private val counter = AtomicInteger(1)
     private val blobs = ConcurrentHashMap<Int, ByteArray>()
@@ -218,7 +225,7 @@ object CsServe {
                 }
             }
             val wire = if (declared > 0) readExactly(ins, declared) else ByteArray(0)
-            val raw = if (escape.isNotEmpty() && method == "PUT" && wire.isNotEmpty()) {
+            val raw = if (escape == CHUNK_ESCAPE_STU && method == "PUT" && wire.isNotEmpty()) {
                 val plain = unescape(wire)
                 note("反解 $escape：收到 ${wire.size} 解出 ${plain.size}")
                 plain

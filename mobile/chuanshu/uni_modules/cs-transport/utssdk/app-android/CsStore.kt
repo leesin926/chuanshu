@@ -30,7 +30,16 @@ object CsStore {
         if (relpath.isEmpty() || relpath.contains("\u0000")) return null
         return try {
             val candidate = File(base, relpath).canonicalFile
-            val inside = candidate.path.startsWith(base.canonicalFile.path + File.separator)
+            // spec §5 bounds a landing to *this offer's* directory, not to the receive root. The state
+            // machine always puts the offer id first (`landingOf`), so the first component is that
+            // directory - and a root-relative check would let a link that resolves from `<root>/<a>` into
+            // `<root>/<b>` write over bytes another, already-verified offer owns. PC compares against
+            // `state.directory` (app/net/receive.py), and this end was the only one reading the sentence
+            // as the root. A landing with no offer component is the pre-#128 shape the ledger can still
+            // carry, and for that one the root is all there is to bound it by.
+            val first = relpath.substringBefore('/', "")
+            val bounds = if (first.isEmpty()) base else File(base, first)
+            val inside = candidate.path.startsWith(bounds.canonicalFile.path + File.separator)
             if (inside) candidate else null
         } catch (e: Throwable) {
             null

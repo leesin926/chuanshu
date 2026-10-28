@@ -2356,6 +2356,12 @@ function headerOf(head: string, name: string): string {
 	return tail.replace('\r', '').trim()
 }
 
+/** The one encoding value §4 names, restated here because this file cannot import `cs-protocol.uts`
+ *  (the same reason `recvPath` restates the path rules). The receiver decides from the header's *value*,
+ *  not from its presence: a body tagged with some future encoding must reach the length and digest checks
+ *  as it arrived, exactly as `app/net/receive.py` and the shared `unescapeChunk` pass it through. */
+const CHUNK_ESCAPE_STU: string = 'stu'
+
 /** Undo `X-Chunk-Escape: stu`, the encoding a sender uses because this platform's TLS server hands
  *  JavaScript only the bytes in front of the first 0x00 and then never reads that connection again
  *  (`.probe/nul.py`: 600 B and 4 MiB with no zero byte both land whole, the same body with a zero planted
@@ -2406,7 +2412,7 @@ function dispatch(c: Conn): void {
 	const method = bits[0]
 	const path = bits[1]
 	const escape = headerOf(head, 'x-chunk-escape:')
-	if (escape != '' && method == 'PUT' && c.declared > 0 && c.view != null) {
+	if (escape == CHUNK_ESCAPE_STU && method == 'PUT' && c.declared > 0 && c.view != null) {
 		/* Both digests, so a rejected chunk says which half of this end is wrong: if the wire digest
 		 *  matches what the sender hashed over its escaped bytes, the bytes came through and the decode is
 		 *  at fault; if it does not, the platform handed this connection a body that was not what went on

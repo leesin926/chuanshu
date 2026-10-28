@@ -91,6 +91,42 @@ def check_uts_mirror(body: dict) -> None:
             fail(f"cs-protocol.uts no longer sends the optional pair body key {key}")
 
     check_discovery_mirror(body)
+    check_chunk_escape()
+
+
+def check_chunk_escape() -> None:
+    """spec §4's zero-byte encoding is decided from the header's *value*, on every end that reads it.
+
+    The value itself lives in the contract's prose, not in `protocol.json`, so nothing else would notice
+    the day one receiver goes back to asking "did a header arrive?" instead of "is it the encoding I
+    know?" - an unknown encoding then gets bytes thrown away before the length and digest checks can say
+    what they are, which is the one thing §4 says a receiver must not do. The two native hosts cannot
+    import the shared module, so each restates the value; this is the guard that keeps the restatements
+    restating the same thing."""
+    root = HERE.parent
+    utssdk = HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk"
+    desktop = (root / "app" / "net" / "spec.py").read_text(encoding="utf-8")
+    found = re.search(r'^CHUNK_ESCAPE_VALUE = "([^"]+)"', desktop, re.M)
+    if found is None:
+        fail("app/net/spec.py no longer names the escape value spec §4 writes on the wire")
+    value = found.group(1)
+    shared = (utssdk / "cs-protocol.uts").read_text(encoding="utf-8")
+    if f"CHUNK_ESCAPE_VALUE: string = '{value}'" not in shared:
+        fail(f"cs-protocol.uts does not mirror the escape value {value!r}")
+    for name, pattern in (
+        ("app-android/CsServe.kt", rf'CHUNK_ESCAPE_STU = "{value}"'),
+        ("app-harmony/index.uts", rf"CHUNK_ESCAPE_STU: string = '{value}'"),
+    ):
+        host = (utssdk / name).read_text(encoding="utf-8")
+        if re.search(pattern, host) is None:
+            fail(f"{name} does not carry the escape value {value!r} it compares against")
+        if "== CHUNK_ESCAPE_STU" not in host:
+            fail(f"{name} declares the escape value but never compares a header against it")
+    for name, presence in (("app-android/CsServe.kt", 'escape.isNotEmpty() && method == "PUT"'),
+                           ("app-harmony/index.uts", "escape != '' && method == 'PUT'")):
+        if presence in (utssdk / name).read_text(encoding="utf-8"):
+            fail(f"{name} decides the body's encoding from the header's presence, not its value (spec §4)")
+
 
 
 def check_discovery_mirror(body: dict) -> None:

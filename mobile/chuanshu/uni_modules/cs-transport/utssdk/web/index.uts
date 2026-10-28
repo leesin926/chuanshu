@@ -16,6 +16,8 @@ import {
 	SESSION_IDLE_S,
 	OFFER_IDLE_S,
 	OFFER_WAIT_S,
+	CHUNK_ESCAPE_VALUE,
+	escapeChunk,
 	unescapeChunk,
 	nameReject,
 	nameWithDefault,
@@ -1631,6 +1633,73 @@ export function receiveSelfReport(): string {
 	const lostDone = lostAsk('POST', '/v1/offer/' + lostId + '/finalize', '{}')
 	check('那一单照样传得完——finalize 才是结论', lostDone.status == 200 && firstVerifiedOk(lostDone))
 	check('台账丢了重发的字节，逐块填回后整文件摘要等于清单那一份', recvDigestFile(lostBig) == files[1].sha256)
+
+	// 7d. 第五轮巡检（#167）的两支都在 §4 那句零字节转义上：「体里没有零就不转义」，以及收货这一端认的是
+	// 头的「值」还是「头在不在」。发货这一端以前只要数得出转义就打包抬头，于是整整一块 0x1B、一个零也没有
+	// 的体，手机翻倍而桌面原样发出——PC 的 `app/net/spec.py:escape_chunk` 从一开始就只看有没有零。收货那
+	// 两端更贵：老分支写的是「头非空就反解」，对面发来一个它不认识的编码值，字节会被当成编码过的读掉，凭空
+	// 少一截；合同要的是原样交给后面的长度与摘要去判（`unescapeChunk` 上面那句注释）。三端现在都只认那一个值。
+	const hasZero = (src: Uint8Array): boolean => {
+		for (let i = 0; i < src.length; i++) {
+			if (src[i] == 0) {
+				return true
+			}
+		}
+		return false
+	}
+	const sameBytes = (a: Uint8Array, b: Uint8Array): boolean => {
+		if (a.length != b.length) {
+			return false
+		}
+		for (let i = 0; i < a.length; i++) {
+			if (a[i] != b[i]) {
+				return false
+			}
+		}
+		return true
+	}
+	const plainOnly = new Uint8Array([0x1B, 0x41, 0x1B, 0x1B, 0x20, 0x1B])
+	const plainPacked = escapeChunk(plainOnly.buffer as ArrayBuffer)
+	check('整块都是 0x1B、一个零也没有：不打包，也不抬头——「体里没有零就不转义」',
+		plainPacked.escape == '' && sameBytes(new Uint8Array(plainPacked.bytes), plainOnly))
+	const mixedBytes = new Uint8Array([0x41, 0x00, 0x1B, 0x00, 0x42])
+	const mixedPacked = escapeChunk(mixedBytes.buffer as ArrayBuffer)
+	check('有零才抬头，报的就是合同那一个值；打包以后线上一个零也不剩',
+		mixedPacked.escape == CHUNK_ESCAPE_VALUE && !hasZero(new Uint8Array(mixedPacked.bytes)))
+	check('解回来逐字节等于原来那五个字节',
+		sameBytes(new Uint8Array(unescapeChunk(mixedPacked.bytes, mixedPacked.escape)), mixedBytes))
+	check('头不是那一个值就一个字节也不动——未知编码留给长度与摘要去判',
+		sameBytes(new Uint8Array(unescapeChunk(mixedPacked.bytes, 'stu2')), new Uint8Array(mixedPacked.bytes)))
+	// 上机那一支要的是「按值判」和「按有没有判」唯一能被区分出来的那两条腿：同一份打包后的字节，配正确的头
+	// 要落回原文，配一个不认识的头必须被拒——老分支在第二条上会把它反解成原文收下，屏上一切正常。
+	const eBox = newInbox()
+	const ePair = jsonOf(askPairOn(eBox, SIM_PEER_ID, currentPairCode(eBox, nowSeconds()), passphraseOf(eBox, nowSeconds()), simKey))
+	const eToken = ePair == null ? '' : ePair!.getString('token', '')
+	const eAsk = (method: string, path: string, jsonBody: string): WireReply => {
+		return askOn(eBox, SIM_PEER_ID, method, path, jsonBody, eToken, new ArrayBuffer(0), '')
+	}
+	const eId = hexOf(randomBytes(8))
+	eAsk('POST', '/v1/offer', offerJson(eId, files, SIM_PEER_ID, SIM_NAME))
+	resolveOffer(eBox, eId, true, recvPrepare, recvDrop)
+	const eChunk = sliceOf(all, 0, chunkSizeAt(bigSize, 0))
+	const eDigest = hexOf(sha256Bytes(eChunk))
+	const eWire = escapeChunk(eChunk.buffer as ArrayBuffer)
+	const ePath = '/v1/offer/' + eId + '/chunk/' + bigId + '/0'
+	// 三个 host 都在内核看到字节之前做这一次反解，判据是头的值；这里走同一条管线。
+	const ePut = (body: ArrayBuffer, head: string): WireReply => {
+		return askOn(eBox, SIM_PEER_ID, 'PUT', ePath, '', eToken, unescapeChunk(body, head), eDigest)
+	}
+	check('这一块原文里确实又有零又有 0x1B——转义在这一腿不是摆设',
+		hasZero(eChunk) && eWire.escape == CHUNK_ESCAPE_VALUE)
+	check('X-Sha256 报的是原块的摘要：打包后的字节自己 dig 出来是另一个',
+		eDigest != hexOf(sha256Bytes(new Uint8Array(eWire.bytes))))
+	const eGood = ePut(eWire.bytes, eWire.escape)
+	const eLanded = recvStore.get(landOf(eId, files[1].relpath))
+	check('打包的体配上合同那一个头值：落点逐字节回到原文',
+		eGood.status == 200 && eLanded != null && sameBytes(sliceOf(eLanded!, 0, eChunk.length), eChunk))
+	check('同一块原样再发一次（空头）也认：没有头，体就是块', ePut(eChunk.buffer as ArrayBuffer, '').status == 200)
+	check('同一块配一个不认识的头：原样进内核，被长度/摘要拒掉而不是偷偷反解',
+		codeOfReply(ePut(eWire.bytes, 'stu2')) == 'CHUNK_DIGEST_MISMATCH')
 
 	// 8. finish it: the rest of the chunks, then the whole-file digest over the reassembled bytes.
 	for (let k = 1; k < bigCount; k++) {

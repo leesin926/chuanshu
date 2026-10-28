@@ -442,6 +442,65 @@ def phase_state_lost(proto: protocol_spec.Protocol, workspace: Path) -> None:
         lost.stop()
 
 
+def phase_chunk_escape(proto: protocol_spec.Protocol, workspace: Path) -> None:
+    """spec §4 的零字节转义读成两句（#167）：体里没有零就不转义；收货一方认的是头的「值」，不是「头在不在」。
+
+    第一句是发送方的。两个手机端的 `escapeChunk` 只要数得出转义就打包并抬头，于是一整块 0x1B、一个零也没有
+    的体，手机翻倍发出而桌面原样发出——这一端从一开始就只看有没有零（`app/net/spec.py:escape_chunk`），因为
+    要藏的只有零。第二句是接收方的。两个手机端的老分支都写的是「头非空就反解」，对面一个它不认识的编码值会被
+    当成编码过的读掉，字节凭空少一截，而合同要的是原样交给后面的长度与摘要去判。两条都在这一端有参照实现，
+    下面的腿就是把参照钉住的那几条——镜像守卫 `check_chunk_escape` 现在按同一个值查三端。
+    """
+    packed, header = protocol_spec.escape_chunk(b"\x1bA\x1b\x1b\x1b")
+    check("§4 一个零也没有的体不打包也不抬头（0x1B 只是普通字节）",
+          header == "" and packed == b"\x1bA\x1b\x1b\x1b", header)
+    raw = b"A\x00\x1b\x00B"
+    packed, header = protocol_spec.escape_chunk(raw)
+    check("§4 有零才抬头，报的就是合同那一个值，线上一个零也不剩",
+          header == protocol_spec.CHUNK_ESCAPE_VALUE and b"\x00" not in packed, header)
+    check("§4 解回来逐字节等于原文", protocol_spec.unescape_chunk(packed) == raw)
+
+    corpus = workspace / "esc-corpus"
+    corpus.mkdir(parents=True, exist_ok=True)
+    block = b"\x1b\x00A\x1bB\x00"
+    payload = (block * (proto.chunk_size // len(block) + 1))[: proto.chunk_size]
+    (corpus / "escapes.bin").write_bytes(payload)
+    sender = load_or_create(workspace / "esc-sender")
+    receiver = load_or_create(workspace / "esc-receiver")
+    root = workspace / "esc-received"
+    service = ReceiveService(receiver, "PC-Esc", lambda manifest, who, caller: True,
+                             host="127.0.0.1", port=0, root=root)
+    service.start()
+    try:
+        files = plan([corpus / "escapes.bin"], base=corpus)
+        conn = PeerConnection(sender, "PC-Sender", "127.0.0.1", service.port, receiver.served_fingerprint)
+        conn.hello()
+        conn.pair(service.current_pair_code())
+        conn.offer(files)
+        digest = hashlib.sha256(payload).hexdigest()
+        path = f"/v1/offer/{conn.offer_id}/chunk/{files[0].id}/0"
+        packed, header = protocol_spec.escape_chunk(payload)
+        status, resp = conn._request("PUT", path, raw_body=packed,
+                                     headers={"X-Sha256": digest, protocol_spec.CHUNK_ESCAPE_HEADER: header})
+        landing = root / conn.offer_id / files[0].relpath
+        check("§4 转义过的块配上正确的头：X-Sha256 是原块的，落点逐字节回到原文",
+              status == 200 and landing.is_file() and landing.read_bytes() == payload, f"{status} {resp}")
+        status, resp = conn._request("PUT", path, raw_body=packed,
+                                     headers={"X-Sha256": digest, protocol_spec.CHUNK_ESCAPE_HEADER: "stu2"})
+        check("§4 不认识的头值原样进内核：由长度/摘要拒掉，而不是被偷偷反解成原文收下",
+              status == proto.http_status("CHUNK_DIGEST_MISMATCH") and resp.get("code") == "CHUNK_DIGEST_MISMATCH",
+              f"{status} {resp}")
+        document = root / conn.offer_id / STATE_FILE
+        before = json.loads(document.read_text(encoding="utf-8")).get("touched") or 0.0
+        time.sleep(1.1)
+        status, resp = conn._request("PUT", path, raw_body=payload, headers={"X-Sha256": digest})
+        after = json.loads(document.read_text(encoding="utf-8")).get("touched") or 0.0
+        check("§4 幂等那一句照样给这一单续命：请求落到了盘上的 touched，而不是只在内存里",
+              status == 200 and resp.get("idempotent") is True and after > before, (before, after))
+    finally:
+        service.stop()
+
+
 def phase_stalled_offer(proto: protocol_spec.Protocol, workspace: Path) -> None:
     """spec §4 counts an idle offer from the last chunk that landed, so that moment is data.
 
@@ -1066,6 +1125,7 @@ def main() -> int:
         phase_restart(proto, workspace)
         phase_lying_ledger(proto, workspace)
         phase_state_lost(proto, workspace)
+        phase_chunk_escape(proto, workspace)
         phase_stalled_offer(proto, workspace)
         phase_offer_poll(proto, workspace)
         phase_repeated_offer(proto, workspace)

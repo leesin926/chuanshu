@@ -191,17 +191,25 @@ export function escapeChunk(buf: ArrayBuffer): ChunkBody {
 	out.bytes = buf
 	const src = new Uint8Array(buf)
 	let extra = 0
+	let zeros = 0
 	for (let i = 0; i < src.length; i++) {
 		const byte = src[i]
 		// Both escapes replace one byte with two, so each one costs exactly one more byte. Counting a zero
 		//  as two made the packed body longer than the bytes it holds: the request declared those extra
 		//  bytes, the tail arrived as NULs the digest was never taken over, and the peer waited for the
 		//  rest of a body that did not exist.
-		if (byte == 0 || byte == 0x1B) {
+		if (byte == 0) {
+			extra = extra + 1
+			zeros = zeros + 1
+		} else if (byte == 0x1B) {
 			extra = extra + 1
 		}
 	}
-	if (extra == 0) {
+	// §4 escapes because this platform's TLS server stops at the first zero byte, so a body without one
+	//  needs nothing: 「体里没有零就不转义」. Counting an escape-only body as needing the header was PC's
+	//  rule too (`app/net/spec.py:escape_chunk`), and a chunk of 0x1B bytes with no zeros used to leave
+	//  this end doubled while the desktop sent it whole.
+	if (zeros == 0) {
 		return out
 	}
 	const packed = new ArrayBuffer(src.length + extra)

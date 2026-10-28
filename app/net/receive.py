@@ -755,6 +755,12 @@ class ReceiveService:
         stored = state.received.setdefault(file_id, {})
         state.touched = time.time()
         if stored.get(index) == digest:
+            # Nothing new landed, but this request is still the offer's heartbeat - and the two phones'
+            # hosts rewrite the ledger after every request, so only PC could lose the stamp it just made.
+            # A crash right here used to put the on-disk `touched` back before the resend, and §4's idle
+            # reclaim counts from that value: the sender would come back to OFFER_UNKNOWN on an offer this
+            # end had just been told about twice.
+            state.persist()
             return {"index": index, "stored": True, "idempotent": True}
         target = self._target(state, self._land(file))
         # `r+b` only while the file is still there. A chunk re-pushed into a file that went away has to

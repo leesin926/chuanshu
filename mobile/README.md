@@ -436,6 +436,35 @@ py -X utf8 scripts/check_protocol.py
       `touch` 与 `hdc file send` 都是 Permission denied），所以「台账坏成半个 JSON」那一支仍然只有 `门禁` 与
       `浏览器` 两档——它不是没测，是在这条路上造不出那个状态。
 
+18. **#167：§4 的零字节转义被三个端读成了三件事，§5 最后那道闸门安卓圈的是根目录**（这一轮合同一字未改——
+    纸面那几句本来就是对的；完整账目在 `../docs/feature-matrix.md` §6 第 22 条）
+    - **接收方判的是头的「值」，不是「头有没有来」**：`utssdk/app-android/CsServe.kt` 改前写
+      `escape.isNotEmpty() && method == "PUT"`，`utssdk/app-harmony/index.uts` 改前写 `escape != '' && method == 'PUT'`。
+      后果是 §4 明确不许的那一手：一个这一端不认识的编码（将来另一种、或者拼错的那一个）会被当成 `stu` 反解，
+      字节在长度与摘要说话之前就被丢掉。两个 host 都 import 不了 `cs-protocol.uts`（和 `recvPath` 复述路径规则
+      同一个理由），所以各自复述一个 `CHUNK_ESCAPE_STU` 再比值，而**复述由守卫盯**：
+      `scripts/check_protocol.py` 新增 `check_chunk_escape()`，核 PC / 共用 / 两个 host 四处的同一个值、核两个
+      host 都真拿值比过一次，并明令禁止 `escape.isNotEmpty()` 与 `escape != ''` 这两种写法本身——这个值写在合同的
+      散文里、不在 `protocol.json` 里，没有这一格，谁都不会发现某一端哪天改了口径。
+    - **「体里没有零就不转义」这句只有 PC 在做**：共用的 `escapeChunk` 过去把 0x1B 也计成"要转义"，于是一个零字节
+      都没有、只有 0x1B 的分块从手机出来时是双倍长度还带着那个头，桌面却把同一块原样送出去。两支都能被解开了，
+      所以这一支不会自己报警。现在 `zeros` 单独计，`zeros == 0` 直接交回原 buffer（不复制、不带头）。
+    - **台账里那个 `land` 的边界**（§5 最后一条）也顺手量了一次：安卓宿主 `CsStore.kt::cleanPath` 把「resolve() 以后
+      不在该 offer 目录内 → 拒绝」读成了"不在接收根目录内"，于是一条从 `<root>/<a>` 解析到 `<root>/<b>` 的链接被
+      放行，写的字节属于**另一单**、而那一单的每一块都已经过了整文件摘要。改成按 `relpath` 的第一个成分圈（PC 比的
+      就是 `state.directory`）；没有 offer 成分的那种落点是 #128 之前台账里还可能带的形状，对它，根目录是唯一可圈的边界。
+    - **证据**：`门禁`（`../scripts/protocol_selftest.py` 新增 `phase_chunk_escape` 六条腿，全文件 **128 条 PASS、
+      `RESULT ALL PASS`**，`.probe/p167.log`；心跳那条腿做了负向验证——`.probe/neg167.py` 临时把 `state.persist()`
+      改成一句不落盘的空表达式，同一趟读出 `(1793215553.2003748, 1793215553.2003748)`（原文
+      `.probe/neg167_fail.txt`），两个数一样就是盘上那个值一动没动；还原后重跑仍 128 条全过
+      （`.probe/p167_final.log`））+ `浏览器`（H5 `接收内核自检` 87 → **96 项全部通过**，`.probe/c167_web.txt`，新增的 7d 组九条腿走的
+      是三个 host 那一条管线：`unescapeChunk(body, head)` 在内核看到字节之前反解，判据是头的值）+ `编译门`
+      （`项目 chuanshu 编译成功。` 两道，`.probe/c167_android.log`、`.probe/c167_harmony.log`）。
+    - **还欠的那一格按欠着记**：两个 host 里新写死的判据（`escape == CHUNK_ESCAPE_STU` 那一段、`cleanPath` 的新
+      bounds）只有 `编译门` + `浏览器`，没有 `模拟器`。设备腿要一个**发陌生头值**的对端和一条**从 `<a>` 解析到
+      `<b>`** 的软链接落进活手机；这一轮的安卓 AVD 已经不在了（`adb devices` 只剩 `offline`，`adb reconnect offline`
+      以后名单是空的），重新起一台做得到，但不拿"能起"当"跑过"。
+
 M2a 的最小切口是"手机发、PC 收"：扫（或粘贴）PC 的二维码拿到地址与完整指纹，用户只核对同屏的
 一次性配对码——PC 侧接收端已经跑绿，手机只要把
 `/v1/pair`、`/v1/offer`、`PUT chunk`、`/v1/finalize` 四条打出去就能有结论，发现层可以先不做。
