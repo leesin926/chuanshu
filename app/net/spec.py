@@ -45,6 +45,7 @@ class Protocol:
     pair_code_digits: int
     pair_code_static: bool
     passphrase_chars: int
+    hello_features: tuple[str, ...]
     limits: dict[str, int]
     error_codes: dict[str, dict[str, Any]]
 
@@ -114,6 +115,10 @@ def load() -> Protocol:
         # that predate it (spec §7).
         pair_code_static=bool(transport.get("pair_code_static", False)),
         passphrase_chars=int(transport.get("passphrase_chars", 8)),
+        # spec §7: hello's capability list. Nobody branches on it in v1 - compatibility is the
+        # version intersection alone - but every end has to say the same three words.
+        hello_features=tuple(str(one) for one in transport.get(
+            "hello_features", ("resume", "chunk-hash", "directory"))),
         limits={k: int(v) for k, v in limits.items()},
         error_codes=dict(c["error_codes"]),
     )

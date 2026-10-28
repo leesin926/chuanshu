@@ -188,6 +188,107 @@ def check_limits_in_prose(body: dict) -> None:
             fail(f"§5 stays silent about {name}, but a receiver refuses transfers on it (protocol.json limits)")
 
 
+def check_error_table(body: dict) -> None:
+    """The phone restates the code table twice - the words in `errorText`, the number in `statusOf` - and
+    neither copy is the contract.
+
+    The PC reads its grid out of `protocol.json` at run time, so one selftest leg can compare all eleven
+    cells. A phone cannot parse JSON at compile time, so `cs-receive.uts` spells the same numbers as an
+    if-chain and `cs-protocol.uts` spells the same sentences as string returns. That restatement is where
+    a fork hides quietly: until #176 every receive leg compared only the code *name*, so editing 403 to 400
+    stayed green while the peer - which does read the number - started telling its user something else.
+    The legs now read numbers; this guard is what keeps the copies honest between runs.
+    """
+    utssdk = HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk"
+    words = (utssdk / "cs-protocol.uts").read_text(encoding="utf-8")
+    states = (utssdk / "cs-receive.uts").read_text(encoding="utf-8")
+    wire = (utssdk / "web" / "index.uts").read_text(encoding="utf-8")
+
+    chain = re.search(r"function statusOf\(code: string\): number \{(.*?)\n\}", states, re.S)
+    if chain is None:
+        fail("cs-receive.uts no longer has a statusOf() to give the wire its number")
+    table: dict[str, int] = {}
+    for cond, num in re.findall(r"if \((.*?)\) \{\s*return (\d+)", chain.group(1), re.S):
+        for named in re.findall(r"'([A-Z_]+)'", cond):
+            table[named] = int(num)
+    rest = re.sub(r"if \(.*?\) \{\s*return \d+\s*\}", "", chain.group(1), flags=re.S)
+    fallback = re.findall(r"return (\d+)", rest)
+    if len(fallback) != 1:
+        fail(f"statusOf must end in exactly one fallback return, found {len(fallback)}")
+    for code, entry in body["error_codes"].items():
+        want_http = int(entry["http"])
+        got_http = table.get(code, int(fallback[0]))
+        if got_http != want_http:
+            fail(f"cs-receive.uts answers {code} with {got_http}, but error_codes says {want_http}")
+        spelled = re.search(rf"if \(code == '{code}'\) \{{\s*return '([^']*)'\s*\}}", words)
+        if spelled is None:
+            fail(f"cs-protocol.uts errorText() no longer names {code} - the screen shows 协议错误：{code} instead")
+        if spelled.group(1) != entry["msgid"]:
+            fail(f"errorText() says {spelled.group(1)!r} for {code}, the contract msgid is {entry['msgid']!r}")
+        # The browser's stand-in PC is a fourth copy: it answers this end's own kernel's shapes, so a
+        # number written there teaches the sender legs to expect the wrong one.
+        for num in re.findall(rf"failure\('{code}',.*?, (\d+), cb\)", wire, re.S):
+            if int(num) != want_http:
+                fail(f"web/index.uts answers a {code} refusal with {num}, but the peer's own kernel says {want_http}")
+        for num in re.findall(rf"cb\((\d+), JSON\.stringify\(\{{ code: '{code}'", wire):
+            if int(num) != want_http:
+                fail(f"web/index.uts parks a {code} reply at {num}, but the contract table says {want_http}")
+
+
+def check_hello_features(body: dict) -> None:
+    """§7 says hello's `features` is the contract's list, sent verbatim, deciding nothing in v1.
+
+    A wire field with no named owner is how a second compatibility rule gets invented: each end retypes the
+    three words, and the first person who wants to change behaviour on one end finds three lists to argue
+    about instead of one to edit.
+    """
+    want = list(body["transport"]["hello_features"])
+    utssdk = HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk"
+    shared = (utssdk / "cs-protocol.uts").read_text(encoding="utf-8")
+    declared = re.search(r"export const HELLO_FEATURES: string\[\] = \[([^\]]*)\]", shared)
+    if declared is None:
+        fail("cs-protocol.uts no longer declares HELLO_FEATURES, the one copy §7 points every end at")
+    listed = [one.strip().strip("'") for one in declared.group(1).split(",")]
+    if listed != want:
+        fail(f"cs-protocol.uts HELLO_FEATURES = {listed} but transport.hello_features says {want}")
+    for name in ("cs-receive.uts", "web/index.uts"):
+        src = (utssdk / name).read_text(encoding="utf-8")
+        if "features: HELLO_FEATURES," not in src:
+            fail(f"{name} answers hello with a restated capability list instead of importing HELLO_FEATURES")
+    desk = (HERE.parent / "app" / "net" / "receive.py").read_text(encoding="utf-8")
+    if re.search(r'"features":\s*list\(self\.proto\.hello_features\)', desk) is None:
+        fail("app/net/receive.py no longer answers hello from the list protocol.json carries")
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    if "## 7." not in spec:
+        fail("spec.md no longer has a §7 to read the capability-list rule out of")
+    section = spec.split("## 7.", 1)[1].split("\n## ", 1)[0]
+    if "transport.hello_features" not in section:
+        fail("§7 stays silent about transport.hello_features, but three ends send it on every hello")
+
+
+def check_endpoint_count(body: dict) -> None:
+    """§8 counts the endpoints for the relay branch, and that number is a restatement of `endpoints`.
+
+    The cloud branch is specified on paper only - there is no code here to disagree with - so the prose *is*
+    the integration note. Add an eighth endpoint and §8 keeps promising 七, which is exactly the shape #176
+    found on the other side of the contract: a number copied by hand, with nothing checking the copy.
+    """
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    if "## 8." not in spec:
+        fail("spec.md no longer has a §8 to read the relay branch's endpoint count out of")
+    section = spec.split("## 8.", 1)[1].split("\n## ", 1)[0]
+    spelled = re.findall(r"([一二两三四五六七八九十])个端点", section)
+    if not spelled:
+        fail("§8 no longer names how many endpoints the relay branch has to cover")
+    numerals = {"一": 1, "两": 2, "二": 2, "三": 3, "四": 4, "五": 5,
+                "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+    want = len(body["endpoints"])
+    for one in spelled:
+        got = numerals.get(one)
+        if got != want:
+            fail(f"§8 counts {one}个端点, but protocol.json defines {want}")
+
+
 def main() -> int:
     stamp_path = CONTRACT / "SOURCE.json"
     for name in ("protocol.json", "spec.md", "SOURCE.json"):
@@ -240,6 +341,9 @@ def main() -> int:
 
     check_uts_mirror(body)
     check_limits_in_prose(body)
+    check_error_table(body)
+    check_hello_features(body)
+    check_endpoint_count(body)
 
     print(f"OK  protocol v{body['protocol_version']} from {stamp['source_repo']}@{stamp['source_commit'][:8]}")
     print(f"OK  {len(body['error_codes'])} error codes, {len(body['endpoints'])} endpoints, chunk {chunk // 1024} KiB")
@@ -249,6 +353,9 @@ def main() -> int:
     print("OK  vendored copies match their stamps")
     print("OK  cs-protocol.uts mirrors the contract")
     print("OK  §5 names every limit a receiver refuses a transfer on")
+    print(f"OK  cs-receive.uts and cs-protocol.uts restate all {len(body['error_codes'])} codes with the contract's numbers and words")
+    print(f"OK  hello's capability list is one copy: {body['transport']['hello_features']}")
+    print(f"OK  §8 counts the relay branch's endpoints the way protocol.json defines them ({len(body['endpoints'])})")
     return 0
 
 

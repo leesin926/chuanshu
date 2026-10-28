@@ -35,6 +35,7 @@
     "pair_code_static": true,
     "passphrase_chars": 8,
     "resume": true,
+    "hello_features": ["resume", "chunk-hash", "directory"],
     "hash": "sha256",
     "tls": {
       "min_version": "TLSv1.2",
@@ -48,7 +49,7 @@
       "method": "GET",
       "path": "/v1/hello",
       "auth": false,
-      "purpose": "version + capability probe; `fingerprint` names the identity key that will sign the pair request and `served` the certificate this socket presents (a scanner's prefix is checked against `served`); the optional chunk_pace_ms says how slowly a sender must write a body bigger than one TLS record (milliseconds per 4 KiB record, absent or 0 = as fast as you like) - a Harmony receiver needs 15, below that a 4 MiB chunk arrives whole with the wrong bytes and the receiving process can die on the attempt"
+      "purpose": "version + capability probe; `fingerprint` names the identity key that will sign the pair request and `served` the certificate this socket presents (a scanner's prefix is checked against `served`); the optional chunk_pace_ms says how slowly a sender must write a body bigger than one TLS record (milliseconds per 4 KiB record, absent or 0 = as fast as you like) - a Harmony receiver needs 15, below that a 4 MiB chunk arrives whole with the wrong bytes and the receiving process can die on the attempt; `features` is this end's own capability list, sent verbatim as `transport.hello_features`, and it decides nothing in v1 (spec §7)"
     },
     {
       "method": "POST",

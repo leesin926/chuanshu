@@ -15,6 +15,7 @@
 import {
 	PROTOCOL_VERSION,
 	COMPATIBLE_VERSIONS,
+	HELLO_FEATURES,
 	CHUNK_SIZE,
 	TRANSPORT_PORT,
 	MAX_FILES_PER_OFFER,
@@ -1214,7 +1215,7 @@ export function handleReceive(
 			name: self.name,
 			protocol_version: PROTOCOL_VERSION,
 			compatible_versions: COMPATIBLE_VERSIONS,
-			features: ['resume', 'chunk-hash', 'directory'],
+			features: HELLO_FEATURES,
 			port: self.port,
 			fingerprint: self.fingerprint,
 			// The number a scanner checks its QR prefix against. Answering with the identity digest here

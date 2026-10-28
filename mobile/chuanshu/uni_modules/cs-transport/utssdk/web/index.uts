@@ -1,6 +1,9 @@
 import {
 	CsFile,
 	CHUNK_SIZE,
+	PROTOCOL_VERSION,
+	COMPATIBLE_VERSIONS,
+	HELLO_FEATURES,
 	TRANSPORT_PORT,
 	chunkCount,
 	chunkSizeAt,
@@ -809,9 +812,9 @@ export function request(
 		reply(200, {
 			peer_id: 'pc-demo-01',
 			name: 'PC 演示机',
-			protocol_version: 1,
-			compatible_versions: [1],
-			features: ['resume', 'chunk-hash', 'directory'],
+			protocol_version: PROTOCOL_VERSION,
+			compatible_versions: COMPATIBLE_VERSIONS,
+			features: HELLO_FEATURES,
 			port: port,
 			fingerprint: peer.fingerprint
 		} as UTSJSONObject, cb)
@@ -1348,13 +1351,13 @@ export function receiveSelfReport(): string {
 	let token = ''
 	let pass = 0
 	let fail = 0
-	const check = (label: string, ok: boolean) => {
+	const check = (label: string, ok: boolean, extra: string = '') => {
 		if (ok) {
 			pass = pass + 1
 			out.push('通过 · ' + label)
 		} else {
 			fail = fail + 1
-			out.push('不符 · ' + label)
+			out.push('不符 · ' + label + (extra == '' ? '' : '：' + extra))
 		}
 	}
 	const ask = (method: string, path: string, jsonBody: string, body: ArrayBuffer, sha: string): WireReply => {
@@ -1434,7 +1437,9 @@ export function receiveSelfReport(): string {
 	if (strays != null) {
 		const onlyTwo: number[] = [2]
 		strays!.set('compatible_versions', onlyTwo)
-		check('清单报的版本集合里没有我们这一版：拒', codeOfReply(vAsk(JSON.stringify(strays))) == 'UNSUPPORTED_PROTOCOL')
+		const strayReply = vAsk(JSON.stringify(strays))
+		check('清单报的版本集合里没有我们这一版：拒（线上 400）',
+			codeOfReply(strayReply) == 'UNSUPPORTED_PROTOCOL' && strayReply.status == 400)
 	}
 	const noSet = parseJson(offerJson(hexOf(randomBytes(8)), files, SIM_PEER_ID, SIM_NAME))
 	if (noSet != null) {
@@ -1536,20 +1541,25 @@ export function receiveSelfReport(): string {
 	const deepOkReply = askLimitOffer([mkLimitFile(deepOkRel)])
 	check('§5 深度：正好 16 段的清单收下了、先问人', deepOkReply.pending, deepOkRel + ' 回 ' + codeOfReply(deepOkReply))
 	const deepBadReply = askLimitOffer([mkLimitFile(deepBadRel)])
-	check('§5 深度：多一段的清单 PATH_REJECTED 且没有弹确认', codeOfReply(deepBadReply) == 'PATH_REJECTED' && !deepBadReply.pending, deepBadRel)
+	check('§5 深度：多一段的清单 PATH_REJECTED（400）且没有弹确认',
+		codeOfReply(deepBadReply) == 'PATH_REJECTED' && deepBadReply.status == 400 && !deepBadReply.pending, deepBadRel)
 	const longOkRel = 'a'.repeat(MAX_NAME_BYTES)
 	const longBadRel = 'a'.repeat(MAX_NAME_BYTES + 1)
 	check('§5 名字：255 字节的段收下了', askLimitOffer([mkLimitFile(longOkRel)]).pending, longOkRel.length.toString())
 	const longBadReply = askLimitOffer([mkLimitFile(longBadRel)])
-	check('§5 名字：256 字节 PATH_REJECTED 且没有弹确认', codeOfReply(longBadReply) == 'PATH_REJECTED' && !longBadReply.pending, longBadRel.length.toString())
+	check('§5 名字：256 字节 PATH_REJECTED（400）且没有弹确认',
+		codeOfReply(longBadReply) == 'PATH_REJECTED' && longBadReply.status == 400 && !longBadReply.pending, longBadRel.length.toString())
 	const dotReply = askLimitOffer([mkLimitFile('.env')])
-	check('§5 点开头：一律拒，不看它是不是列出来的那两个', codeOfReply(dotReply) == 'PATH_REJECTED' && !dotReply.pending)
+	check('§5 点开头：一律拒，不看它是不是列出来的那两个（400）',
+		codeOfReply(dotReply) == 'PATH_REJECTED' && dotReply.status == 400 && !dotReply.pending)
 	const dotInnerReply = askLimitOffer([mkLimitFile('sub/.git/config')])
-	check('§5 点开头：嵌在中间的段也算', codeOfReply(dotInnerReply) == 'PATH_REJECTED' && !dotInnerReply.pending)
+	check('§5 点开头：嵌在中间的段也算（400）',
+		codeOfReply(dotInnerReply) == 'PATH_REJECTED' && dotInnerReply.status == 400 && !dotInnerReply.pending)
 	const conReply = askLimitOffer([mkLimitFile('CON')])
 	const nulReply = askLimitOffer([mkLimitFile('nul.txt')])
-	check('§5 保留名：不看自己跑在什么系统上（CON / nul.txt 都拒）',
-		codeOfReply(conReply) == 'PATH_REJECTED' && codeOfReply(nulReply) == 'PATH_REJECTED' && !conReply.pending && !nulReply.pending)
+	check('§5 保留名：不看自己跑在什么系统上（CON / nul.txt 都拒，都回 400）',
+		codeOfReply(conReply) == 'PATH_REJECTED' && conReply.status == 400
+		&& codeOfReply(nulReply) == 'PATH_REJECTED' && nulReply.status == 400 && !conReply.pending && !nulReply.pending)
 	// 规模那一条拦的是这一单，不是这个名字，所以它回的是 `UNSUPPORTED_PROTOCOL`（v1 的码表没有「太大」这一格）。
 	const bulkFiles: CsFile[] = []
 	for (let i = 0; i < MAX_FILES_PER_OFFER + 1; i++) {
@@ -1562,11 +1572,87 @@ export function receiveSelfReport(): string {
 	const sizePairObj = jsonOf(sizePair)
 	const sizeToken = sizePairObj == null ? '' : sizePairObj!.getString('token', '')
 	const sizeReply = askOn(sizeBox, SIM_PEER_ID, 'POST', '/v1/offer', offerJson(hexOf(randomBytes(8)), bulkFiles.slice(0, MAX_FILES_PER_OFFER), SIM_PEER_ID, SIM_NAME), sizeToken, new ArrayBuffer(0), '')
-	check('§5 规模：多一个文件就被拒，且没登记进账上',
-		codeOfReply(bulkReply) == 'UNSUPPORTED_PROTOCOL' && !bulkReply.pending
+	check('§5 规模：多一个文件就被拒（400），且没登记进账上',
+		codeOfReply(bulkReply) == 'UNSUPPORTED_PROTOCOL' && bulkReply.status == 400 && !bulkReply.pending
 		&& snapshot(limitBox, nowSeconds()).pendingOfferIds.length == pendingBeforeSize,
 		codeOfReply(bulkReply) + ' | ' + detailOf(bulkReply.body))
 	check('§5 规模：正好 2000 个文件的清单收下', sizeReply.pending, codeOfReply(sizeReply))
+
+	// 5e. 第十轮巡检（#176）：这张错误码表在手机这一端是第三份抄本。§7 只在纸上写了一个号（「否则回 400
+	// UNSUPPORTED_PROTOCOL」），其余十一格的号只活在 `protocol.json` 的 `error_codes` 里，而 `cs-receive.uts`
+	// 的 `statusOf` 把它们又抄了一遍成 if 链、`cs-protocol.uts` 的 `errorText` 把话术又抄了一遍。上面那些腿
+	// 全都只判码名：把 403 改成 400，一条都不会红。号本身错了在手机上是有代价的——宿主把 `reply.status` 原样
+	// 写进线上响应（`app-android/index.uts` 的 `replyJson(reply.status, …)`），对面 PC 按合同表读它。
+	// 这里量的是四格还没被号判过的码；422/507/403(DECLINED) 三格各自的腿本来就带着号，400 那几格刚在 5b/5d 补上。
+	const errBox = newInbox()
+	const errPair = askPairOn(errBox, SIM_PEER_ID, currentPairCode(errBox, nowSeconds()), passphraseOf(errBox, nowSeconds()), simKey)
+	const errPairObj = jsonOf(errPair)
+	const errToken = errPairObj == null ? '' : errPairObj!.getString('token', '')
+	const noToken = askOn(errBox, SIM_PEER_ID, 'GET', '/v1/offer/x/state', '', '', new ArrayBuffer(0), '')
+	check('§7 码表：NOT_PAIRED 线上回 403', codeOfReply(noToken) == 'NOT_PAIRED' && noToken.status == 403, noToken.status.toString())
+	const unknown = askOn(errBox, SIM_PEER_ID, 'GET', '/v1/offer/no-such-offer/state', '', errToken, new ArrayBuffer(0), '')
+	check('§7 码表：OFFER_UNKNOWN 线上回 404', codeOfReply(unknown) == 'OFFER_UNKNOWN' && unknown.status == 404, unknown.status.toString())
+	const busy = askPairOn(errBox, '203.0.113.41', currentPairCode(errBox, nowSeconds()), passphraseOf(errBox, nowSeconds()), b64(randomBytes(32)))
+	check('§7 码表：PEER_BUSY 线上回 429', codeOfReply(busy) == 'PEER_BUSY' && busy.status == 429, busy.status.toString())
+	// 错的配对码要落在一台干净的盒子上：`box` 在第 1 组已经被五次尝试打过锁，那一格回的是 429 不是 403。
+	const codeBox = newInbox()
+	const codeNow = currentPairCode(codeBox, nowSeconds())
+	const wrongOn = codeNow == '000000' ? '111111' : '000000'
+	const badCode = askPairOn(codeBox, SIM_PEER_ID, wrongOn, passphraseOf(codeBox, nowSeconds()), simKey)
+	check('§7 码表：BAD_PAIR_CODE 线上回 403', codeOfReply(badCode) == 'BAD_PAIR_CODE' && badCode.status == 403, badCode.status.toString())
+	// hello 那一格：§7 现在说 `features` 原样来自 `transport.hello_features`，v1 里它不决定这一单的去留。
+	// 这条腿判的是「这一端念的名单就是那三个数」，不是「名单里有 resume」——PC 的老腿只判后者，抄错一个词它不红。
+	const helloReply = askOn(errBox, SIM_PEER_ID, 'GET', '/v1/hello', '', '', new ArrayBuffer(0), '')
+	const helloObj = jsonOf(helloReply)
+	const sameStrings = (a: string[], b: string[]): boolean => {
+		if (a.length != b.length) {
+			return false
+		}
+		for (let i = 0; i < a.length; i++) {
+			if (a[i] != b[i]) {
+				return false
+			}
+		}
+		return true
+	}
+	const sameNumbers = (a: number[], b: number[]): boolean => {
+		if (a.length != b.length) {
+			return false
+		}
+		for (let i = 0; i < a.length; i++) {
+			if (a[i] != b[i]) {
+				return false
+			}
+		}
+		return true
+	}
+	const theFeatures: string[] = []
+	const theVersions: number[] = []
+	let helloVersion = 0
+	if (helloObj != null) {
+		const rawVersion = helloObj!.getNumber('protocol_version')
+		if (rawVersion != null) {
+			helloVersion = rawVersion
+		}
+		const rawFeatures = helloObj!.getArray<string>('features')
+		if (rawFeatures != null) {
+			for (let i = 0; i < rawFeatures.length; i++) {
+				theFeatures.push(rawFeatures[i])
+			}
+		}
+		const rawVersions = helloObj!.getArray<number>('compatible_versions')
+		if (rawVersions != null) {
+			for (let k = 0; k < rawVersions.length; k++) {
+				theVersions.push(rawVersions[k])
+			}
+		}
+	}
+	check('§7 hello：这一端念的能力名单就是合同那一份，一个词不多一个词不少',
+		helloReply.status == 200 && helloVersion == PROTOCOL_VERSION && sameStrings(theFeatures, HELLO_FEATURES),
+		helloVersion.toString() + ' | ' + theFeatures.join(','))
+	check('§7 hello：能力名单不许偷偷变成第二套兼容规则——版本集合仍然是那一个数',
+		theVersions.length == COMPATIBLE_VERSIONS.length && sameNumbers(theVersions, COMPATIBLE_VERSIONS),
+		theVersions.join(','))
 
 	// 6. chunks: store, reject a lying digest, reject the wrong length, and be idempotent.
 	const bigId = files[1].id
@@ -1586,7 +1672,8 @@ export function receiveSelfReport(): string {
 	const tooLong = ask('PUT', chunkPath(bigId, 1), '', c0.buffer as ArrayBuffer, '')
 	check('长度不符的分块被拒', tooLong.status == 422 && tooLong.body.indexOf('length') >= 0)
 	const outOfDay = ask('PUT', chunkPath(bigId, bigCount + 5), '', c0.buffer as ArrayBuffer, '')
-	check('越界序号 BAD_CHUNK_INDEX', codeOfReply(outOfDay) == 'BAD_CHUNK_INDEX')
+	check('越界序号 BAD_CHUNK_INDEX（400）', codeOfReply(outOfDay) == 'BAD_CHUNK_INDEX' && outOfDay.status == 400,
+		outOfDay.status.toString())
 	const repeat = ask('PUT', chunkPath(bigId, 0), '', c0.buffer as ArrayBuffer, hexOf(sha256Bytes(c0)))
 	const repeatObj = jsonOf(repeat)
 	check('重发同一分块标记幂等', repeat.status == 200 && repeatObj != null && repeatObj!.getBoolean('idempotent', false))

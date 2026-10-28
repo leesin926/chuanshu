@@ -5,6 +5,10 @@ export const PROTOCOL_VERSION: number = 1
  *  question of a peer. spec §7 decides from the two sets, not from one number, so each side has to
  *  be able to say what it can speak as well as what the other one printed. */
 export const COMPATIBLE_VERSIONS: number[] = [PROTOCOL_VERSION]
+/** protocol.json's `transport.hello_features` (spec §7): the list hello answers with. It decides
+ *  nothing here - compatibility comes from the version sets above - but every end has to say the
+ *  same words, so the list lives in one place instead of being retyped per host. */
+export const HELLO_FEATURES: string[] = ['resume', 'chunk-hash', 'directory']
 export const TRANSPORT_PORT: number = 43720
 export const CHUNK_SIZE: number = 4194304
 export const MAX_FILES_PER_OFFER: number = 2000

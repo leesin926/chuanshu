@@ -565,6 +565,34 @@ py -X utf8 scripts/check_protocol.py
       决定、补预检是产品口径，两条都留给用户点头（`../docs/feature-matrix.md` §6「需要用户点头」第四半）。
     - **还欠的那格**：这三道闸门在活机上没量过。判据不必重复装一遍——读这三个数的地方只有 `pathReject` 与 `handle` 两处，
       都在共用文件里，两个宿主没有自己的一份；所以默认不补设备腿。如果下一步给 PC 补那半本地预检，那时再一起上机。
+23. **#176：合同 §7「版本与兼容」与 §8「云中转」逐句过了一遍——`hello` 里那个 `features` 三端各自手抄，错误码表的号在手机上从来没有腿读过**（动的是合同与
+    取证；**手机侧 `cs-protocol.uts` / `cs-receive.uts` 各只改一行**（一份 `HELLO_FEATURES` 常量 + hello 用它），`web/index.uts` 加了
+    一组自检腿，`cs-client.uts` 与两个宿主一行未改——所以两道编译门**本轮都跑了**（有东西要过）：`app-android` 与 `app-harmony` 都
+    `rc=0`（`.probe/r10_compile.txt`）；完整账目在 `../docs/feature-matrix.md` §6 第 27 条）
+    - **`hello` 的 `features` 现在只有一份**：合同里多了 `transport.hello_features: ["resume","chunk-hash","directory"]`
+      （`protocol.json:38`）与 §7 那一段（「别把它读成第二套兼容规则……**v1 没有任何一端拿它做决定**」）。手机这边
+      `cs-protocol.uts:11` 一份 `HELLO_FEATURES`，`cs-receive.uts:1218` 与浏览器替身 `web/index.uts:817` 都从它发，PC
+      从 `spec.py` 读合同再发（`receive.py:651`）。**三个词一个没改，所以 §7 的兼容决定没被触发**——这一格缺的不是行为，是名分：
+      改前全仓库唯一读过它的地方是 `"resume" in hello["features"]`，抹掉 `directory` 它也不红。
+    - **码表的号现在有腿了**（`web/index.uts:1581-1655` 的 5e 组六条）：`NOT_PAIRED` 403、`OFFER_UNKNOWN` 404、`PEER_BUSY` 429、
+      `BAD_PAIR_CODE` 403 各一条按号判，外加两条 hello 腿（名单逐词相等 + 版本集合仍是那一个数）。`cs-receive.uts:279-296` 的
+      `statusOf` 是合同表的**第三份抄本**（号）而 `cs-protocol.uts:393-440` 的 `errorText` 是第四份（话术），改前所有腿只比码名——
+      把 403 改成 400 一条都不红，可宿主是把 `reply.status` 原样写上线的（安卓 `index.uts:549` 的 `replyJson`），对面 PC 按号读它。
+      档位：H5 `接收内核自检` 105 → **111 项全部通过**（`.probe/r10_web_after.txt`）；**负向**改 `statusOf` 那一格 →
+      `接收自检失败 3 项，通过 108 项`（`.probe/r10_web_negative_status400.txt`）。镜像守卫加了三道 `check_error_table()` /
+      `check_hello_features()` / `check_endpoint_count()`，六次负向全红（`.probe/r10_guard_negatives.txt`）；PC 侧
+      `门禁` 141 → **143 条 PASS、`RESULT ALL PASS`**（`.probe/r10_pc_selftest.log`，含十一格全表的号）。
+    - **取证工具自己的一个哑点顺手修了**：`receiveSelfReport()` 里的 `check` 只有两个形参（:1354），而这批腿从 #163/#174 起
+      就一直传第三个 `extra` 当读数——第三段被静吞，屏上看不到「实际回的是 400」。补上默认形参并拼在失败行尾巴以后，上面那次
+      负向才在屏上自己说出为什么红。凡是读屏判成败的探针，"报了名却没报数"都值得回头查一遍。
+    - **只记下、没有改**：§9 那条冻结标准写「错误码表两端各能渲染出**中英文**文案」，手机这边只有中文（`errorText` 一份，
+      手机上也没有语言切换）。要么给手机补一份英文码表，要么把 §9 那句改成「按本机语言」——后者是收窄冻结标准，不该由巡检自己
+      签字，记在 `../docs/feature-matrix.md` §6「需要用户点头」第五半。§8 那三句（session id、多一层账号、"共用同一份 fixture
+      做回归"）是分支本身没做，不是手机端没照合同做；唯一能核的是那句里的端点数，现在由 `check_endpoint_count()` 核着。
+    - **还欠的那格**：5e 那六条只到 `浏览器` 档。`statusOf` / `errorText` 都在共用文件里，两个宿主读的是同一份，没有第二份
+      实现可以骗过这些腿，所以默认不补设备腿；两个宿主唯一自己写的东西是状态行里那个短语（`app-android/CsServe.kt:163-172`、
+      `app-harmony/index.uts:2262-2285` 两份 `reasonOf`），合同没规定它、对面也不读它，本轮判它属于外观。若哪天要给 #175
+      那半（PC 发送方的本地预检）上机，届时一起把设备腿补上。
 
 M2a 的最小切口是"手机发、PC 收"：扫（或粘贴）PC 的二维码拿到地址与完整指纹，用户只核对同屏的
 一次性配对码——PC 侧接收端已经跑绿，手机只要把

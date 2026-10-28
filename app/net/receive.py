@@ -648,7 +648,7 @@ class ReceiveService:
             "name": self.device_name,
             "protocol_version": self.proto.version,
             "compatible_versions": list(self.proto.compatible_versions),
-            "features": ["resume", "chunk-hash", "directory"],
+            "features": list(self.proto.hello_features),
             "port": self.port,
             # Discovery advertises a prefix only; the full digest here is what lets a
             # candidate become a peer you can pin.

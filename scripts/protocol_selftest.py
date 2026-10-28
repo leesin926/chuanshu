@@ -137,6 +137,11 @@ def phase_in_process(proto: protocol_spec.Protocol, workspace: Path) -> None:
         conn = PeerConnection(sender, "PC-Sender", "127.0.0.1", service.port, receiver.served_fingerprint)
         hello = conn.hello()
         check("hello reports v1 + resume", hello["protocol_version"] == proto.version and "resume" in hello["features"], hello)
+        # spec §7: `features` is one list off the contract, sent verbatim, and in v1 it decides nothing. The
+        # membership test above cannot tell a correct list from a retyped one, and a word that reads
+        # differently on the three ends is what the next person mistakes for a second compatibility rule.
+        check("hello's feature list is the contract's, word for word",
+              sorted(hello["features"]) == sorted(proto.hello_features), hello["features"])
 
         wrong = PeerConnection(sender, "PC-Sender", "127.0.0.1", service.port, receiver.served_fingerprint)
         try:
@@ -1193,6 +1198,11 @@ def phase_catalogue(proto: protocol_spec.Protocol) -> None:
     sample = proto.msgid("CHUNK_DIGEST_MISMATCH")
     check("zh catalogue echoes the msgid", zh.gettext(sample) == sample, zh.gettext(sample))
     check("http status mapping", proto.http_status("STORAGE_FULL") == 507 and proto.http_status("DECLINED") == 403)
+    # That spot-check covered two of eleven cells. The number is the half the *peer* reads - the words stay
+    # home, the status goes on the wire, and §7 quotes one of them in prose (400 for a version it cannot
+    # talk to) - so every cell is compared now, not two of them.
+    wrong_http = [c for c, entry in proto.error_codes.items() if proto.http_status(c) != int(entry["http"])]
+    check("every code answers with the contract's http status", not wrong_http, wrong_http)
 
 
 def main() -> int:

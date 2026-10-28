@@ -1135,6 +1135,78 @@ Xcode，够不到任何一档编译门**——它改的原因只是共用的 sto
       除非那一端的宿主自己读这几个数）判断：三个数只有 `pathReject` 与 `handle` 两处读，都在共用文件里，所以**默认不补**；
       如果下一轮想给手机发送方补 PC 那半预检（上面那格），那时候一起上机跑。§5 最后那句符号链接在鸿蒙上的腿早已量过（#148），
       本轮没碰。
+27. **#176：合同逐条巡检第十轮——§7「版本与兼容」与 §8「云中转」：`hello` 里那个 `features` 是三端各自手抄的第四个集合，而错误码表在手机这一端是第三份抄本、此前没有一条腿读过它的号**
+    （做法沿用 #140/#162/#163/#165/#167/#168/#171/#172/#174：这一轮把 §7（`protocol/spec.md:282-296`）、§8（:297-301）
+    与 §9（:303-311）逐句对着 PC（`app/net/receive.py` / `send.py` / `spec.py` / `errors.py`）、共用状态机
+    （`cs-receive.uts` / `cs-protocol.uts`）、两个宿主与 H5 各找一遍实现体。动的是合同（一个键 + 一段话）、三端各自那份
+    抄本的**出处**（只删重打，指向同一处）与取证；**三端的线上行为一个字节都没变**——`hello` 发的还是那三个词，
+    拒收回的还是那些号。）
+    - **`features` 是一个没人管过的线上字段**。`protocol.json` 只在 `/v1/hello` 的 `purpose` 里提到过这个词，没有任何一个
+      键装着它；§7 通篇只讲 `compatible_versions` 那**一个**集合。于是三端各自把它重打了一遍：PC `receive.py:651` 一行
+      字面量、手机 `cs-receive.uts:1218` 同一行字面量、浏览器替身 `web/index.uts` 再一行。全仓库只有一个读者——
+      `scripts/protocol_selftest.py:139` 那条 `"resume" in hello["features"]`：它分不出"抄对了"和"抄漏了一个词"，
+      把 `directory` 抹掉它照样绿。这正是 #165 那条口径（合同里不留没有实现体的字段）的反面形状：**字段在线上、实现体也有，
+      缺的是名分**——下一位想改行为的人会去给三份名单各加一个词，而 §7 只给了一个集合的兼容规则。
+    - **修法是给它一个出处，不是给它一套语义**。合同这边：`protocol.json:38` 新增 `transport.hello_features:
+      ["resume","chunk-hash","directory"]`，:52 那句 purpose 尾巴补上「`features` is this end's own capability list,
+      sent verbatim as `transport.hello_features`, and it decides nothing in v1 (spec §7)」，§7 多出一段（:292-296）说清了
+      三件事——三端都照那一份名单原样发、**v1 没有任何一端拿它做决定**、要让它决定什么就先按同一节的
+      「改语义就升 `protocol_version`」办。代码这边：PC `spec.py:48` 新字段 `hello_features`、`:120-121` 从 `transport` 读，
+      `receive.py:651` 改成 `list(self.proto.hello_features)`；手机 `cs-protocol.uts:11` 一份 `HELLO_FEATURES`，
+      `cs-receive.uts:18` 导入、`:1218` 用它；浏览器替身同（:817）。**三个词一个没改，所以 §7 那个兼容决定没被触发**，
+      这是纸面追上线上，不是线上追纸面。
+    - **错误码表在手机这一端是第三份抄本，而号从来没有腿读过**。表活在四处：`protocol.json` 的 `error_codes`（11 格，真本）、
+      PC `app/net/errors.py`（只有文案，号是运行时从合同读的）、手机 `cs-receive.uts:279-296` 的 `statusOf`（把号又抄成一条
+      if 链）、`cs-protocol.uts:393-440` 的 `errorText`（把 msgid 又抄成中文句子）——外加浏览器替身 `web/index.uts` 里
+      `failure('CODE', …, N, cb)` 那批字面量，第四处。§7 在纸上只写了一个号（「否则回 400 UNSUPPORTED_PROTOCOL」），
+      其余十一格的号只在 JSON 里。**号不是装饰**：两个宿主都把 `reply.status` 原样写进线上响应
+      （安卓 `app-android/index.uts` 的 `replyJson(reply.status, …)`、鸿蒙 `writeBack` 同理），对面 PC 按合同表读它。
+      可改前所有 receive 腿只比**码名**，所以把 403 改成 400 一条都不会红，而屏幕上的话已经换了。
+    - **新增的腿（`浏览器`）**：`web/index.uts:1581-1655` 的 5e 组六条，全打在按号判上——`NOT_PAIRED` 403、
+      `OFFER_UNKNOWN` 404、`PEER_BUSY` 429、`BAD_PAIR_CODE` 403，加两条 hello 腿（:1650 名单逐词相等、判长度也判内容，
+      所以多抄一个词也红；:1653 版本集合仍然是那一个数，防的就是"能力名单偷偷变成第二套兼容规则"）。`BAD_PAIR_CODE`
+      那条必须落在一台新建的干净盒子上：`box` 在第 1 组已经被五次尝试打过锁，那一格回的是 429 不是 403——第一版就栽在
+      这里，所以这句话写在了 :1597 的注释里。顺路把既有的拒收腿也都读上号：5b 的 `UNSUPPORTED_PROTOCOL`、5d 九条 §5 拒收、
+      组 6 的 `BAD_CHUNK_INDEX`，全带 `status == 400`。`接收内核自检` 因此 105 → **111 项全部通过**
+      （`.probe/r10_web_after.txt`）。**负向**：把 `statusOf` 里 `NOT_PAIRED` 那一格改成 400 →
+      `接收自检失败 3 项，通过 108 项`（`.probe/r10_web_negative_status400.txt`）。
+    - **这一轮还修了取证工具自己的一个哑点**：`receiveSelfReport()` 里的 `check` 只有两个形参（:1354），而这批腿从
+      #163/#174 起就一直传第三个 `extra` 当读数——第三段被静吞，屏上看不到「实际回的是 400」。补上 `extra: string = ''`
+      并把它拼在失败行尾巴（「§7 码表：NOT_PAIRED 线上回 403：400」）以后，上面那次负向才在屏上自己说出为什么红。
+      这条不是洁癖：改前的 111 条腿里，凡是带读数的都在无声地丢读数。
+    - **新增的腿（`门禁`，PC 侧）**：`scripts/protocol_selftest.py:141-144` 把 hello 的名单与合同逐词比（同一处 :139 那条
+      成员判断保留，它管的是"能不能谈"）；:1204-1205 把**十一格全表**过一遍 `proto.http_status(c) == entry["http"]`——
+      PC 本来就是运行时读合同的，所以这条腿防的是 `spec.py` 读错键、或合同改了号而 PC 没跟上。读数
+      `.probe/r10_pc_selftest.log`：**143 条 PASS、`RESULT ALL PASS`**（改前 141）。
+    - **新增的守卫（`门禁`，防的是下一轮之后抄本又漂）**，三道都单独负向量过：
+      `mobile/scripts/check_protocol.py:191-235` `check_error_table()` 把 `statusOf` 的 if 链解析成 码→号 表，要求
+      **恰好一个兜底 return**（多一个说明链子断了、少一个说明某格被点名两次），逐格比对合同的 `http`；再要求 `errorText`
+      里那一格的话术与合同 `msgid` **完全相等**；最后扫浏览器替身那两处字面量（`failure('CODE', …, N, cb)` 与
+      `cb(N, JSON.stringify({ code: 'CODE' …`）也必须是合同的号。:238-266 `check_hello_features()` 要求 `HELLO_FEATURES`
+      那一行与 `transport.hello_features` 逐词同序、`cs-receive.uts` 与 `web/index.uts` 里必须出现
+      `features: HELLO_FEATURES,`（谁再手抄一遍就红）、`app/net/receive.py` 必须是 `list(self.proto.hello_features)`，
+      并要求 §7 那一段里写着 `transport.hello_features`——纸面掉一句就红，同 #174 那道守卫。:269-291
+      `check_endpoint_count()` 把 §8 那句「peer 把**七个**端点当成对中继的调用」里的中文数词与 `len(endpoints)` 对齐。
+      **六次负向全红**（`.probe/r10_guard_negatives.txt`）：`statusOf` 403→400、`errorText` 改一个字、替身 PEER_BUSY
+      429→403、`HELLO_FEATURES` 少抄一个词、PC 改回手抄字面量、§8 说成六个端点。§8 那一次走的仍是
+      「改上游 → `vendor_protocol.py` 重搬 → 守卫红 → 按字节还原 → 再搬」（直接改 vendored 那份会先撞 SOURCE.json 摘要）。
+    - **本轮读过、只记不改的三格**。一、§7 那句「这个集合出现在每一处"说自己"的场合：`hello`、`pair` 的应答，以及
+      `pair`/`offer` 的请求体」——四处两栏都对得上：PC `receive.py:624,650` 两个应答、`send.py:350,400` 两个请求体；
+      手机 `cs-receive.uts:903`（pair 应答）、`:1217`（hello）、`cs-protocol.uts:322,335`（两个请求体）。交集那半在
+      #144/#156 两端两个方向都补齐了，本轮没动。二、§8 剩下三句（`peer_id` 换成中继侧 session id、鉴权多一层账号、
+      「LAN 版和云版可以共用同一份 fixture 做回归」）今天没有实现体——那是**分支本身没做**，不是某一端没照合同做，
+      按 #165 的口径不该由巡检自己补代码；但也因此那三句一条腿都红不了，「共用同一份 fixture」目前是一句愿望。
+      三、§9「错误码表两端各能渲染出**中英文**文案」手机这一端没做到：`errorText` 只有中文，手机上也没有语言切换。
+      这是范围题，归到下面「需要用户点头」第五半，不由巡检自己收窄句子。§9 那句「PC 端已于 2026-10-19 达成
+      （51 条断言…）」是按日期的历史记录、不是当期数字（同一份代码现在 143 条），历史那句仍然真，所以合同不动。
+    - **还欠的那格**：5e 那六条只到 `浏览器` 档，`门禁` 那两条只覆盖 PC。理由与 #174 同形：`statusOf` 与 `errorText`
+      都在共用文件里，两个宿主读的是同一份，**没有第二份实现可以骗过这些腿**。唯一一处宿主自己写的东西是状态行里那个
+      短语——安卓 `app-android/CsServe.kt:163-172` 的 `reasonOf` 与鸿蒙 `app-harmony/index.uts:2262-2281` 的 `reasonOf`
+      各有一份 `429 → "Too Many Requests"` 这类词，合同没有规定它，对面 PC 读的也不是它。本轮判它不改线上语义、属于外观，
+      **没有为它上设备腿**；如果哪天对端开始按短语判事，那才需要一条设备腿，届时连同 #175 那半（PC 发送方的本地预检）
+      一起上机。两道手机编译门本轮都跑了：
+      `cs-protocol.uts` / `cs-receive.uts` 各改一行，`app-android` 与 `app-harmony` 都 `rc=0`
+      （`.probe/r10_compile.txt`，原文 `.probe/r10_and_compile.log` / `.probe/r10_har_compile.log`）。
 
 ### 需要用户点头才能做的四件事
 - 唤醒/解锁并使用那台个人鸿蒙真机（#45/#46 + 鸿蒙发现真机腿）。
@@ -1149,7 +1221,10 @@ Xcode，够不到任何一档编译门**——它改的原因只是共用的 sto
   没有实现体时，是补进三端、标成保留字段，还是改掉句子。#174 添了第四半，形状略不一样但同样要点头：一份超过
   `max_files_per_offer` 的清单，接收方**回的是 `UNSUPPORTED_PROTOCOL`**（v1 码表没有"太大"这一格），发送方屏幕上是
   「对端版本不兼容」——而说错的是这份清单自己。要么给 v1 加一格错误码（§7 的兼容决定），要么三端发送方都在本地按那个数
-  拦下、让这句话压根不上线（手机已经这么做了，PC 没有）。
+  拦下、让这句话压根不上线（手机已经这么做了，PC 没有）。#176 添了第五半，形状与第四条相反——**不是某一端没照合同做，
+  是合同那条冻结标准有一半还没人做**：§9 写「错误码表两端各能渲染出**中英文**文案」，PC 那边七种语言的 msgid 都在，
+  手机这边 `cs-protocol.uts:393-440` 的 `errorText` 只有中文，而且手机上没有语言切换。要么给手机补一份英文码表（加不加
+  语言开关是另一道题），要么把 §9 那句改成「PC 端中英文、手机端按本机语言」——后者是收窄冻结标准，不该由巡检自己签字。
 
 ## 7. 已知平台坑（写给下一次动手的人）
 
