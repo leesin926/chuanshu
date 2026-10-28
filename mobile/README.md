@@ -504,6 +504,21 @@ py -X utf8 scripts/check_protocol.py
       的事实；`dataclasses.replace(conn.proto, offer_wait_timeout_s=N)` 才量得出一个不答话也不发 RST 的对端；鸿蒙
       的回复不能用 `Connection: close` 读；灭屏要 `hidumper -s PowerManagerService -a -a` 那两枚表记动过才算，
       `power-shell suspend` 打印那句「SuspendDevice is called」不算。
+20. **#171：合同 §2「发现」与 §3「配对」逐句过了一遍——两边都有体，缺的那一格在 PC 自己的 mDNS 公告上**（合同一字未改，
+    产品代码只动 `../app/net/discovery.py`；完整账目在 `../docs/feature-matrix.md` §6 第 24 条）
+    - **手机端这一轮没有要补的腿**：§3「端口/地址变了画面要重画」那句里"公告"那一半，两端本来就不归自己管——安卓宿主
+      `CsDiscovery.kt` 造的 `NsdServiceInfo` 只设 `serviceName`/`serviceType`/`port`，本机地址由 `NsdManager` 填；鸿蒙宿主
+      `app-harmony/index.uts::discLocalInfo()` 传的是 `host: {family: 1, port: …, address: '0.0.0.0'}`，同样由系统填。
+      只有 PC 在注册那一次把 `local_ipv4()` 抄进 `socket.inet_aton(host)` 之后再没动过，所以换网、重连、DHCP 续租以后，
+      三条通道里 UDP 每 3 秒现算的那条是对的、mDNS 那条还在答旧地址——而名单合并的规则是「地址取最新」（`_learn` 与
+      共用 `cs-discovery.uts::learn` 同一条），于是**那条死地址会盖掉对的那个**，这台 PC 在对面名单里被钉在拨不通的地方。
+    - **修的是 PC**：`_mdns_host` 记"公告上现在写的是哪个地址"，3 秒的 announce tick 比一次，变了就**先注销（发 ttl=0
+      goodbye）、再改 `info.addresses`、然后重新注册**。这里有一条容易踩的：`Zeroconf.update_service(info)` 只做
+      "换进注册表 + 重播"，**不发撤播**，对面 DNS 缓存里新旧两个 A 会并列被解析出来——第一版那么写，新加的腿当场读到
+      `['198.51.100.7', '192.168.2.233']` 两个数。改成撤—改—登以后 `answered=['198.51.100.7']`，挪回本机真地址也跟着回来。
+    - **档位要说清**：这条只有 `门禁`（`protocol_selftest.py` 新增两条腿，全文件 130 项 `RESULT ALL PASS`，另三道 PC
+      门禁与镜像守卫同轮重跑全绿）。**真局域网里跨设备的多播没有量过**——手机名单里那台 PC 换网以后地址跟不跟，仍属
+      第 1 条那一台私人机的门；这一轮证的是"我们这侧发出去了、对面那份 resolver 只答新地址"，跑在 127.0.0.1 的进程内 mDNS。
 
 M2a 的最小切口是"手机发、PC 收"：扫（或粘贴）PC 的二维码拿到地址与完整指纹，用户只核对同屏的
 一次性配对码——PC 侧接收端已经跑绿，手机只要把

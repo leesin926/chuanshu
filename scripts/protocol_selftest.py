@@ -993,6 +993,46 @@ def phase_discovery(proto: protocol_spec.Protocol, workspace: Path) -> None:
             except Exception as error:  # noqa: BLE001 - any rejection of the mismatch is fine
                 check("prefix mismatch rejected", True, type(error).__name__)
 
+        # §3's 「端口/地址变了画面要重画」 is about the address a peer dials, not only the one on the
+        # screen. The QR is re-read every tick; the mDNS A record is what a browser clicks, and it is
+        # the one channel where a PC writes its own address down - Android registers no host on its
+        # NsdServiceInfo and Harmony hands the SDK 0.0.0.0 to fill in, so only this end can keep
+        # advertising an address it no longer owns. Moving the network has to move the record, and
+        # back again, with no restart in between.
+        if a.channels["mdns"].state == "ok" and b.channels["mdns"].state == "ok":
+            from app.net import discovery as discovery_module
+
+            instance_name = a._service_info.name
+            moved = "198.51.100.7"
+            real_host = discovery_module.local_ipv4()
+            original = discovery_module.local_ipv4
+
+            def wait_for(published: str) -> bool:
+                """The announce tick is what notices, so wait out the interval it runs on."""
+                deadline = time.time() + 4 * proto.announce_interval_s
+                while time.time() < deadline:
+                    if a._mdns_host == published:
+                        return True
+                    time.sleep(0.25)
+                return False
+
+            def answered() -> list[str]:
+                got = b._zeroconf.get_service_info(proto.mdns_service_type, instance_name, timeout=3000)
+                return [] if got is None else got.parsed_addresses()
+
+            discovery_module.local_ipv4 = lambda: moved
+            try:
+                ticked = wait_for(moved)
+                addresses = answered() if ticked else []
+                check("a moved address is republished in mDNS", addresses == [moved],
+                      f"ticked={ticked} answered={addresses} want={moved}")
+            finally:
+                discovery_module.local_ipv4 = original
+            moved_back = wait_for(real_host)
+            back_addresses = answered() if moved_back else []
+            check("the record moves back when the network does", back_addresses == [real_host],
+                  f"back={moved_back} answered={back_addresses} want={real_host}")
+
         code = b_svc.current_pair_code()
         url = b.pairing_qr(code, host="127.0.0.1")
         fields = protocol_spec.parse_qr(url)

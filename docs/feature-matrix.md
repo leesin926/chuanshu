@@ -37,7 +37,7 @@ Ed25519 叶、TLS 记录会乱序到达——这三条都是上机才知道的�
 |---|---|
 | 版本 | `protocol_version: 1`，`compatible_versions: [1]`。**§7 判的是两个集合的交集**，不是一个数：这个集合要出现在每一处"说自己"的场合——`hello`、`pair` 的应答，以及 `pair`/`offer` 的请求体。请求体也带它，是因为接收方不会回拨去读对方的 hello，对方的集合只可能从那两个体里拿到。哪一边没报集合，就按它印出的 `protocol_version` 那一个数当作整个集合——那是这个字段之前的一版，不是把它当陌生人的理由（与 §3 的 `served` 空值兜底同一条思路，#115）。**只有 UDP 公告和二维码不取交集**：那两处一个数都印不满一个集合，所以只筛数、把交集留给 hello（`app/net/discovery.py` 的 `_learn`、`app/net/spec.py` 的 `parse_qr`、手机的 `cs-discovery.uts`，三处都写着这条注释）。交集为空 → `400 UNSUPPORTED_PROTOCOL` |
 | 端口 | 传输 43720（TCP）、发现 43721（UDP） |
-| 发现 | 三条通道：mDNS 优先 → UDP 广播补充 → 扫码/手输兜底。**顺序不可颠倒，也不能只留 mDNS**；TXT 带 `ver/name/fp/ts`，announce 3 s，名单 15 s 过期；**Presence is not trust**（听见 ≠ 信任） |
+| 发现 | 三条通道：mDNS 优先 → UDP 广播补充 → 扫码/手输兜底。**顺序不可颠倒，也不能只留 mDNS**；TXT 带 `ver/name/fp/ts`，announce 3 s，名单 15 s 过期；**Presence is not trust**（听见 ≠ 信任）。**公告要跟着本机地址走**（#171，§3「端口/地址变了画面要重画」的公告那一半）：三端里只有 PC 自己往 mDNS A 记录里抄 `local_ipv4()`，所以只有这一端会在换网后继续播一个已经不属于自己的地址，而名单合并取「最新答案」，那条死地址会盖掉 UDP 现算的对地址——PC 在 3 s 的 announce tick 上比对本机地址、变了就**先撤播（ttl=0 goodbye）再改记录重新注册**（只重播不够：对面 DNS 缓存里新旧两个 A 会并列被解析出来）；安卓 `NsdServiceInfo` 不设主机、鸿蒙传 `0.0.0.0` 占位，那两端的地址本来由系统填，因此没有这一格 |
 | 身份 | 一台设备**两个摘要**：Ed25519 身份密钥只签配对码；套接字递出的是独立签发的 **RSA-2048 自签叶**（`CN=peer_id`，20 年）。信任锚是叶的 SPKI SHA-256；二维码 `f=`、广播前缀、TLS 钉子钉的都是这个叶摘要。两个都**不是** `peer_id` |
 | 端点 | 七个：`GET /v1/hello`、`POST /v1/pair`、`POST /v1/offer`、`GET /v1/state`、`PUT /v1/offer/{id}/chunk/{idx}`、`POST /v1/finalize`、`DELETE /v1/offer/{id}`；鉴权走 `X-Chuanshu-Auth`，分块摘要 `X-Sha256`，声明长度 `X-File-Size`（**这个头三端都不发也不读**，预分配用的是清单里的 `size`——见 §6 第 20 条末尾那句口径题） |
 | 分块 | 4 MiB，同一 offer 最多 2 块并行（`max_parallel_chunks` 同样没人读：两端都是一条连接一块、顺序推）；`hello` 里接收方声明 `chunk_pace_ms`，发送方按节奏写记录（手机侧阶梯 `[0, 15, 40]`）。阶梯到底以后体仍被管道吐掉时，先读一次 `state`：对方说没到，那是**中继打嗝**不是"还太快"（这一档无档可升），发送方用剩下的尝试次数重写那一块；问不到答案或次数用尽才把原错误抛出去。这条**不分端**，因为合同说的是"发送方"：PC 走 #120/#130/#137，手机走共用那半边 `cs-client.uts`（#132）——一块最多三次写，`state` 只在一写的回复没来时问一次。**「问到了答案」才允许重写**：对方说没到是管道打嗝，重写有戏；那一问自己也没人答，就是对面真没了，再写两次只是往一个拨不通的套接字上继续写。PC 在 #137 之前把后者读成了前者（`_chunk_landed` 只有真假两值，问不到就返回"没到"），手机那一半边从 #132 起就是三态的。 |
@@ -70,6 +70,7 @@ Ed25519 叶、TLS 记录会乱序到达——这三条都是上机才知道的�
 | 配对码 + 口令展示（同屏可核对） | `门禁` | `门禁` | `门禁` | `门禁` |
 | 发：配对应答里那个身份摘要与**同一条连接**的 hello 不一致时，就地停住、不把它记进信任表（#162，合同 §1 那句"配对回复和 hello 的 `fingerprint` 字段是同一个数"；手机共用发送方 `cs-client.uts:218-222` 早就这么做，PC 这一端过去是把应答里说什么就照抄什么） | `门禁` | `门禁` | `门禁` | `门禁` |
 | 发现：mDNS + UDP 广播（`_chuanshu._tcp`，名单 15 s 过期） | `门禁` | `门禁` | `门禁`(脚本读 stdout) | `门禁` |
+| 发现：本机地址挪了，mDNS 那条 A 记录跟着挪（#171，合同 §3「端口/地址变了画面要重画」里**公告**那一半——三条通道只有 PC 自己填 A 记录，安卓把主机交给 `NsdManager`、鸿蒙交 `0.0.0.0` 让系统填；不跟的那一格会由合并规则「地址取最新」把死地址盖到 UDP 算出的对地址上） | `门禁`（`discovery.py::_republish_address()` 挂在 3 s 公告 tick 上；`protocol_selftest.py:995-1034` 两条腿：把 `local_ipv4` 换成 `198.51.100.7` 后由**对面那台**解析本实例，断言只答这一个地址，再等它挪回本机真地址。全文件 **130 条 PASS、`RESULT ALL PASS`**；第一版用 `update_service` 只重播不撤播，同一条腿读到 `['198.51.100.7', '192.168.2.233']` 两个数并列，见 §6 第 24 条。**真局域网跨设备多播那一格未验**） | `门禁`（同一份 `app/net/discovery.py`，CLI 不另起一套注册） | `门禁`（平台无关的那一份；Linux 侧本机地址由同一个 `local_ipv4()` 现算） | `门禁`（同上） |
 | 防火墙状态读取与自述（被挡时界面自己说） | `门禁`+`真机`(WSLg 侧为 `模拟器`) | `门禁` | `门禁` | `门禁` |
 | 防火墙规则写入 | 安装器（per-exe，`netsh`，先清后放；本机实测过装完的判定） | 同左 | 不代跑：`fix_commands()` 给出 `firewall-cmd`/`ufw` 那两条命令，界面与 CLI 只打印 | 同左 |
 | 无边框自绘标题栏 / 深浅主题 / 托盘 / 开机自启 / 关闭询问 | `门禁`+`截图`+`真机`(窗口像素验收 #119) | — | `截图`(WSLg 实测)；托盘随桌面环境降级 | — |
@@ -359,7 +360,7 @@ E:\android-sdk\emulator\emulator.exe -avd chuanshu34b -no-window -no-audio -no-b
 ### 仓库门禁（`scripts/`）
 | 脚本 | 覆盖 |
 |---|---|
-| `protocol_selftest.py` | 合同镜像、七个端点、路径清洗（含中文目录）、多文件带目录、断点续传（含杀接收进程后 `reopen`）、整文件摘要推翻台账时台账作废（#127）、并发身份目录、节奏已在下限时的体中止只重写那一块（#130）、那一问也没人答时一次都不重写（#137）、§7 按两个集合的交集判版本 + 没报集合时按它印出的那一个数兜底，收发两个方向各两条腿（#144）、同一个 `offer_id` 重投清单只问用户一次——还挂着时回"还没人决定"、答过拒绝的回同一句、这一单已经结束的回 `OFFER_UNKNOWN`，八条腿（#145）、**台账读坏了怎么办**：先量「一块刚落，落点已经等于清单声明的整个长度」，再把那份台账撕掉一半，于是认领不到任何一单、`state` 回 `OFFER_UNKNOWN`、同一份清单再投登记成全缺、每块都真重写、finalize 仍然把这一单收成通过（#165，原文 `.probe/c165_selftest.txt`：122 条 PASS，`RESULT ALL PASS`）、**§4 零字节转义读成两句**：三条纯函数腿打在 `protocol_spec.escape_chunk/unescape_chunk` 上（只有 0x1B 的体不转义、有 0x00 才转义且线上一个零字节都不剩、原样回来逐字节一致），三条线腿打在真的 `ReceiveService` 上（带着 `X-Chunk-Escape: stu` 的体落盘后等于原文；**陌生头值 `stu2` 原样进内核**——由长度/摘要拒成 `CHUNK_DIGEST_MISMATCH` 422，而不是被偷偷反解；同一块幂等重投**照样把 `touched` 写到盘上**，这一条就是 §4 那句「每个请求都是这一单的心跳」，改前它只在内存里翻一下（`.probe/p167.log`：128 条 PASS，`RESULT ALL PASS`；那条心跳腿做过负向验证——`.probe/neg167.py` 临时把 `state.persist()` 改成不落盘，同一趟读出 `FAIL … (1793215553.2003748, 1793215553.2003748)`（原文 `.probe/neg167_fail.txt`），两个数一样说明盘上那个值一动没动；还原后重跑仍是 128 条全过（`.probe/p167_final.log`） |
+| `protocol_selftest.py` | 合同镜像、七个端点、路径清洗（含中文目录）、多文件带目录、断点续传（含杀接收进程后 `reopen`）、整文件摘要推翻台账时台账作废（#127）、并发身份目录、节奏已在下限时的体中止只重写那一块（#130）、那一问也没人答时一次都不重写（#137）、§7 按两个集合的交集判版本 + 没报集合时按它印出的那一个数兜底，收发两个方向各两条腿（#144）、同一个 `offer_id` 重投清单只问用户一次——还挂着时回"还没人决定"、答过拒绝的回同一句、这一单已经结束的回 `OFFER_UNKNOWN`，八条腿（#145）、**台账读坏了怎么办**：先量「一块刚落，落点已经等于清单声明的整个长度」，再把那份台账撕掉一半，于是认领不到任何一单、`state` 回 `OFFER_UNKNOWN`、同一份清单再投登记成全缺、每块都真重写、finalize 仍然把这一单收成通过（#165，原文 `.probe/c165_selftest.txt`：122 条 PASS，`RESULT ALL PASS`）、**§4 零字节转义读成两句**：三条纯函数腿打在 `protocol_spec.escape_chunk/unescape_chunk` 上（只有 0x1B 的体不转义、有 0x00 才转义且线上一个零字节都不剩、原样回来逐字节一致），三条线腿打在真的 `ReceiveService` 上（带着 `X-Chunk-Escape: stu` 的体落盘后等于原文；**陌生头值 `stu2` 原样进内核**——由长度/摘要拒成 `CHUNK_DIGEST_MISMATCH` 422，而不是被偷偷反解；同一块幂等重投**照样把 `touched` 写到盘上**，这一条就是 §4 那句「每个请求都是这一单的心跳」，改前它只在内存里翻一下（`.probe/p167.log`：128 条 PASS，`RESULT ALL PASS`；那条心跳腿做过负向验证——`.probe/neg167.py` 临时把 `state.persist()` 改成不落盘，同一趟读出 `FAIL … (1793215553.2003748, 1793215553.2003748)`（原文 `.probe/neg167_fail.txt`），两个数一样说明盘上那个值一动没动；还原后重跑仍是 128 条全过（`.probe/p167_final.log`））、**§3 那句「端口/地址变了画面要重画」里公告的那一半**（#171）：`phase_discovery` 里两条新腿，只在两台都把 mDNS 通道跑成 `ok` 时才进场（任一通道不可用就整段跳过，不拿跳过冒充通过），把 `discovery.local_ipv4` 临时换成 `198.51.100.7` 后按 announce tick 等自家盖章，再由**对面那台** `_zeroconf.get_service_info()` 解析本实例，断言 `parsed_addresses()` 只有那一个新地址；还原函数后再等一次挪回本机真地址，断言记录跟着回来——这一条就是为什么修法必须是"撤播—改—重登"而不是 `update_service` 只重播（第一版那么写时这条腿读到 `['198.51.100.7', '192.168.2.233']`，对面缓存里旧的还活着）。全文件现为 **130 条 PASS、`RESULT ALL PASS`** |
 | `ui_selftest.py` | 图形界面四页、接收确认弹窗、设置窗口、7 语言 |
 | `cli_selftest.py` | CLI 八条子命令端到端（含 `receive` 的 offer 计时器） |
 | `linux_selftest.py` | Linux 侧 27 条断言，Qt-free（stdout **和** stderr 都要读：发现通道写的是 stderr） |
@@ -943,6 +944,56 @@ Xcode，够不到任何一档编译门**——它改的原因只是共用的 sto
       用 `Connection: close` 去读**（那一手会丢掉回复体，§7 记过），锁屏那一趟因此自己读到 `\r\n\r\n` 再按
       `Content-Length` 取字节。⑥**灭屏要真灭**：`power-shell suspend` 打印的「SuspendDevice is called」只是"命令收到
       了"，两枚表记动了才算这一相成立（第一版脚本按 `power-shell status` 判，那个子命令根本不存在）。
+
+24. **#171：合同逐条巡检第七轮——§2「发现」与 §3「配对」通篇有体，只有 PC 那一格把自家地址抄死在公告里**
+    （做法沿用 #140/#162/#163/#165/#167/#168：这一轮只读 §2 与 §3 那两段（§1 身份当兜底范围），每一句对着 PC
+    （`app/net` + `app/ui`）、共用状态机（`cs-receive.uts` / `cs-protocol.uts` / `cs-discovery.uts` / `store/session.uts`）、
+    安卓宿主（`utssdk/app-android/`）与鸿蒙宿主（`utssdk/app-harmony/`）各找一遍实现体。**合同一字未改**，
+    产品代码只动了一个文件。）
+    - **本轮重新核过、两边都有体的那十几句**（记下来是为了下一轮不必再核一遍）：广播只带叶摘要的前缀、完整摘要**在套接字上**
+      配对之前才确认（`app/net/receive.py` 的配对分支与手机的 `adopt_hello` 同形）；`adopt_hello` 不跟着对方自报的端口走；
+      空闲一 Peer 槽的两个时钟对称——PC 的 `seen()`/`sweep()` 与手机的 `seenNow()` 都从**分块路径**上被调用，所以「有请求就
+      算这一单还活着」不是只在内存里翻一下（那句 §4 的心跳是 #167 落的，本轮核的是发现/配对这一侧的同一形状）；`peer_id`
+      漂移时 PC 的 `remember_peer()` 与手机的 `pinned.peerId =` 都只刷元数据、不动信任锚；§1 那两个摘要分工（Ed25519 身份
+      密钥只签配对码、RSA-2048 叶才是钉子/`f=`/前缀）、老对端 `served` 空值时回落到 `fingerprint`（`store/session.uts:965-967`
+      与 `cs-receive.uts:1224`）、§1 的落盘与权限规则（`identity.py::_atomic` 0600、`_harden_key_file`）、20 年的那张自签叶，
+      逐句都能指到实现体。名单合并那三句（地址取最新、`name` 先到先得、`peer_id` 只在公告真带了才动）在 PC 的 `_learn` 与
+      共用 `cs-discovery.uts::learn` 里是抄来的同一条规则——**这三句正是本轮那处缺口的放大器**，见下。
+    - **缺口在 §3 那句「端口/地址变了画面要重画」的另外一半**：这一句管的是**对面拨过来的那个地址**，不只是屏幕上那一行。
+      三条发现通道里，mDNS 那一条的 A 记录**只有 PC 是自己填的**——`app/net/discovery.py:225-231` 在注册那一次读一遍
+      `local_ipv4()`、把它抄进 `socket.inet_aton(host)`，之后再没动过。安卓宿主 `CsDiscovery.kt` 造的 `NsdServiceInfo`
+      只设 `serviceName`/`serviceType`/`port`（本机地址交给 `NsdManager`）；鸿蒙宿主 `app-harmony/index.uts::discLocalInfo()`
+      传的是 `host: {family: 1, port: …, address: '0.0.0.0'}`（占位，由系统填）。所以**换网、重连、DHCP 续租以后**：UDP 那条
+      通道每 3 秒现算，答案总是对的；mDNS 那条还在答注册当天的旧地址；而合并规则取「最新答案」，于是**那条死地址会反过来
+      覆盖 UDP 算出的正确地址**，这台 PC 在对面名单里被钉在一个拨不通的地址上——第一发现通道反而成了错的来源。
+      这一格以前没有任何门禁覆盖：`protocol_selftest.py::phase_discovery` 的腿量的是"能不能看见""版本不符要不要丢""同名
+      不覆盖"，没有一条问过"地址挪了记录跟不跟"。
+    - **修法（`app/net/discovery.py`，三处）**：`__init__` 里加 `_mdns_host`（第 169 行，记"现在公告上写的是哪个地址"）；
+      `_start_mdns` 把那次读到的地址留在局部变量并在注册成功后盖章（225、243）；新增 `_republish_address()`（249-282），
+      在地址真的挪过时**先注销、再改 `info.addresses`、然后重新注册**；`_announce_loop` 每 tick（3 秒）在 `announce()`
+      之后顺手叫它一次（357-361）。通道不是 `ok`、`_zeroconf`/`_service_info` 不在、或地址没变，全都直接返回；重发布失败
+      只记一条 warning 并**不盖章**，所以下一个 tick 会再试一次，而一次网络中途抖动不会把发现整个收掉。
+    - **为什么是 unregister→改→register，而不是 `Zeroconf.update_service(info)`**：这是量出来的，不是猜的。第一版就是按
+      `update_service` 写的，两条新腿当场红：
+      `FAIL  a moved address is republished in mDNS: ticked=True answered=['198.51.100.7', '192.168.2.233'] want=198.51.100.7`
+      ——对端的浏览器**同时**答出新旧两个地址。翻了本地那份 `zeroconf`（`.venv/Lib/site-packages/zeroconf/_core.py`）才看清：
+      `async_update_service` 只做 `registry.async_update(info)` 加一次重播，**不发 goodbye**，于是对面 DNS 缓存里旧 A 记录
+      还活着、和新记录并列被 `parsed_addresses()` 一并交出。`unregister_service` 才是发 ttl=0 撤播的那一手（本服务没和别人
+      共用 server 键时 PTR/SRV/TXT/A 全撤），而同步包装是阻塞的，所以"撤—改—登"三步是顺序成立的。改成这个流程后同一条腿变绿：
+      `PASS  a moved address is republished in mDNS: ticked=True answered=['198.51.100.7'] want=198.51.100.7`，
+      挪回来那条也绿 `PASS  the record moves back when the network does: back=True answered=['192.168.2.233'] want=192.168.2.233`。
+    - **新增的门禁腿（`scripts/protocol_selftest.py:995-1034`，在 `phase_discovery` 的 impostor 那条之后）**：两台都真起
+      mDNS 通道才跑（任一通道 `unavailable` 就整段跳过，不拿"跳过"冒充"通过"）。做法是把 `discovery_module.local_ipv4`
+      临时换成 `198.51.100.7`（TEST-NET-2，一个这台机器不可能真持有的地址），然后按公告节奏等最多 4 个 tick，等的是
+      **自家那个 `_mdns_host` 章**，不是屏幕；盖章以后由**对面那台的 `_zeroconf.get_service_info()`** 去解析本服务实例，
+      把 `parsed_addresses()` 拿出来断言"只有这一个地址"。随后还原函数、再等一次挪回本机真实地址，断言记录跟着回来。
+      两条腿各只发一次网络查询（第二次读数复用第一次的变量）。`protocol_selftest.py` 因此从 128 项涨到 **130 项**，
+      本轮重跑四道 PC 门禁 + 镜像守卫全部 `RESULT ALL PASS` / rc=0（`门禁` 档：`ui_selftest.py`、`cli_selftest.py`、
+      WSL Ubuntu-24.04 里的 `linux_selftest.py`、`mobile/scripts/check_protocol.py`）。
+    - **照实记下没读到的那一格**：这一条只有 `门禁`，没有 `真机`/`模拟器`。它证的是"我们这侧把新记录发出去了、对面那份
+      resolver 只答新地址"，全程跑在 127.0.0.1 上的进程内 mDNS；**真局域网里跨设备的多播**（换 Wi-Fi / 路由器 DHCP
+      续租以后，手机名单里那台 PC 的地址会不会跟着挪）仍然按欠着记，和 §2 那几行的真机腿一起，属于第 1 条那一台私人机的门。
+      另外 §3 那句「地址变了画面要重画」的**屏幕**那一半本轮没动——名单每 tick 重画是原有的，缺的是公告那一半。
 
 ### 需要用户点头才能做的四件事
 - 唤醒/解锁并使用那台个人鸿蒙真机（#45/#46 + 鸿蒙发现真机腿）。

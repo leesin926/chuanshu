@@ -165,6 +165,8 @@ class DiscoveryService:
         self._zeroconf = None
         self._service_info = None
         self._browser = None
+        #: The address currently published in the mDNS A record, so a move is noticed once.
+        self._mdns_host = ""
         self._udp_socket: socket.socket | None = None
 
     # ------------------------------------------------------------------ lifecycle
@@ -220,12 +222,13 @@ class DiscoveryService:
 
         service_type = self.proto.mdns_service_type
         instance = f"{self.proto.technical_name}-{self.identity.peer_id[:8]}"
+        host = local_ipv4()
         try:
             self._zeroconf = Zeroconf()
             self._service_info = ServiceInfo(
                 service_type,
                 f"{instance}.{service_type}",
-                addresses=[socket.inet_aton(local_ipv4())],
+                addresses=[socket.inet_aton(host)],
                 port=self.port,
                 properties={
                     "ver": str(self.proto.version),
@@ -237,10 +240,45 @@ class DiscoveryService:
             )
             self._zeroconf.register_service(self._service_info)
             self._browser = ServiceBrowser(self._zeroconf, service_type, listener=_MdnsListener(self))
+            self._mdns_host = host
             channel.state = "ok"
         except Exception as error:  # noqa: BLE001 - a broken multicast stack is not fatal
             channel.state, channel.detail = "unavailable", str(error)
             log.warning("mDNS registration failed: %s", error)
+
+    def _republish_address(self) -> None:
+        """Move the published address when this machine's does, so the record says where it is.
+
+        Spec §3 repaints the QR for exactly this reason ("地址变了画面要重画"), and the picture a
+        browser dials is this A record. Both phone ends leave the address to the platform - Android
+        registers no host on its NsdServiceInfo and Harmony hands the SDK 0.0.0.0 to fill in - so
+        this is the one end that can go on advertising an address it no longer owns. It is worse
+        than merely stale: the roster merge takes the newest answer for the address, from either
+        channel, so a stale record here keeps writing a dead address back over the correct one the
+        broadcast gave.
+
+        Withdraw, then announce. Measured here (selftest, ``a moved address is republished in mDNS``):
+        rebroadcasting alone adds the new A record but never withdraws the old one, so a peer that has
+        already looked this service up answers with both numbers and keeps dialling the dead one until
+        its cache expires - the goodbye is the half that makes the record mean "here it is now".
+        """
+        if self.channels["mdns"].state != "ok" or self._zeroconf is None or self._service_info is None:
+            return
+        host = local_ipv4()
+        if host == self._mdns_host:
+            return
+        info = self._service_info
+        try:
+            self._zeroconf.unregister_service(info)
+            info.addresses = [socket.inet_aton(host)]
+            self._zeroconf.register_service(info)
+        except Exception as error:  # noqa: BLE001 - a network mid-flip is not worth losing discovery
+            log.warning("mDNS re-publish of %s failed: %s", host, error)
+            return
+        # Only a record that actually moved counts: after a failure the next tick withdraws and
+        # announces again, and the stamp is what tells the two halves apart.
+        self._mdns_host = host
+        log.info("mDNS now publishes %s", host)
 
     def _on_mdns_record(self, info) -> None:
         if info is None:
@@ -320,6 +358,7 @@ class DiscoveryService:
         self.announce()
         while not self._stop.wait(self.proto.announce_interval_s):
             self.announce()
+            self._republish_address()
 
     def _udp_listen_loop(self) -> None:
         sock = self._udp_socket
