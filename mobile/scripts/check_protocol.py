@@ -169,6 +169,25 @@ def check_discovery_mirror(body: dict) -> None:
             fail(f"app-harmony/index.uts does not restate {name} = {expected!r} as the contract requires")
 
 
+def check_limits_in_prose(body: dict) -> None:
+    """Every number a receiver refuses a transfer with has to be named by the section that lists refusals.
+
+    §5 is the page a reader comes to for "what will the other end turn down", and it is written as the
+    floor the wire has to meet. A limit that lives only in `protocol.json` is invisible there: the sender
+    gets a 400 for a reason nobody wrote down, and the mirror guard - which only compares numbers - stays
+    green. That is how `max_path_depth` rode on both ends for eight inspection rounds with no sentence in
+    §5 and no leg anywhere.
+    """
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    marker = "## 5."
+    if marker not in spec:
+        fail("spec.md no longer has a §5 to read the refusal limits out of")
+    section = spec.split(marker, 1)[1].split("\n## ", 1)[0]
+    for name in ("max_name_bytes", "max_path_depth", "max_files_per_offer"):
+        if name not in section:
+            fail(f"§5 stays silent about {name}, but a receiver refuses transfers on it (protocol.json limits)")
+
+
 def main() -> int:
     stamp_path = CONTRACT / "SOURCE.json"
     for name in ("protocol.json", "spec.md", "SOURCE.json"):
@@ -220,6 +239,7 @@ def main() -> int:
         fail(f"pair_code_ttl_s {ttl}: a code that outlives the glance at the screen is no code at all")
 
     check_uts_mirror(body)
+    check_limits_in_prose(body)
 
     print(f"OK  protocol v{body['protocol_version']} from {stamp['source_repo']}@{stamp['source_commit'][:8]}")
     print(f"OK  {len(body['error_codes'])} error codes, {len(body['endpoints'])} endpoints, chunk {chunk // 1024} KiB")
@@ -228,6 +248,7 @@ def main() -> int:
           + f", {body['transport']['passphrase_chars']}-char passphrase")
     print("OK  vendored copies match their stamps")
     print("OK  cs-protocol.uts mirrors the contract")
+    print("OK  §5 names every limit a receiver refuses a transfer on")
     return 0
 
 

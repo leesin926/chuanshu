@@ -274,6 +274,19 @@ def phase_in_process(proto: protocol_spec.Protocol, workspace: Path) -> None:
             ("CON.txt", "PATH_REJECTED"),
             ("bad name.", "PATH_REJECTED"),
             ("相册/ok.txt", None),
+            # The three numbers of §5, each measured at its boundary rather than somewhere inside it:
+            # both ends read the gate as `>`, so the only leg that tells `>` from `>=` is one shape that
+            # still has to be taken and one that has one segment / one byte too many.
+            ("a" * proto.limits["max_name_bytes"], None),
+            ("a" * (proto.limits["max_name_bytes"] + 1), "PATH_REJECTED"),
+            ("/".join(f"d{i}" for i in range(proto.limits["max_path_depth"] - 1)) + "/x.txt", None),
+            ("/".join(f"d{i}" for i in range(proto.limits["max_path_depth"])) + "/x.txt", "PATH_REJECTED"),
+            # §5 widens the dot rule to every dot-leading segment, and de-platforms the reserved names:
+            # a Linux or Harmony receiver refuses them too, so these have to be refused here as well.
+            (".env", "PATH_REJECTED"),
+            ("sub/.git/config", "PATH_REJECTED"),
+            ("CON", "PATH_REJECTED"),
+            ("nul.txt", "PATH_REJECTED"),
         ]
         for relpath, expected in hostile:
             try:
@@ -282,6 +295,32 @@ def phase_in_process(proto: protocol_spec.Protocol, workspace: Path) -> None:
             except protocol_spec.ProtocolError as error:
                 got, actual = "", error.code
             check(f"sanitize {relpath!r} -> {expected or 'accepted'}", actual == expected, got or actual)
+
+        # The third number of §5 is about the size of a manifest, not the shape of a name, so it lives in
+        # the offer handler rather than in `sanitize_relpath`: it has to be asked over the wire. The reason
+        # leg is that a person who selected too many files used to be told the other machine runs another
+        # version - `UNSUPPORTED_PROTOCOL` is the only 400 this code has for a batch that is simply big.
+        asked_before = len(accepted)
+        oversize = dict(conn._manifest)
+        oversize["offer_id"] = "oversizebatch"
+        template = dict(conn._manifest["files"][0], size=1, sha256=hashlib.sha256(b"").hexdigest())
+        bulk = [dict(template, relpath=f"bulk/{i}.txt", id=f"{i:016x}") for i in range(proto.limits["max_files_per_offer"] + 1)]
+        oversize["files"] = bulk
+        status, payload = conn._request("POST", "/v1/offer", json_body=oversize)
+        check(
+            "a manifest over max_files_per_offer is refused with a reason, not a version complaint",
+            status == proto.http_status("UNSUPPORTED_PROTOCOL") and payload.get("code") == "UNSUPPORTED_PROTOCOL"
+            and payload.get("detail", {}).get("reason") == "too many files",
+            f"{status} {payload}",
+        )
+        check("nobody was asked to decide a manifest that never became a plan", len(accepted) == asked_before, accepted[asked_before:])
+
+        within = dict(oversize)
+        within["offer_id"] = "withinsize"
+        within["files"] = bulk[: proto.limits["max_files_per_offer"]]
+        status, payload = conn._request("POST", "/v1/offer", json_body=within)
+        check("the same manifest one file short is taken", status == 200 and payload.get("accepted") is True, f"{status} {payload}")
+        conn._request("DELETE", "/v1/offer/withinsize")
 
         declined = ReceiveService(receiver, "Declining-Phone", lambda m, who, caller: False, host="127.0.0.1", port=0, root=workspace / "declined-received")
         declined.start()

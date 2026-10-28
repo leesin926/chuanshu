@@ -21,6 +21,9 @@ import {
 	unescapeChunk,
 	nameReject,
 	nameWithDefault,
+	MAX_PATH_DEPTH,
+	MAX_NAME_BYTES,
+	MAX_FILES_PER_OFFER,
 	pinAccepts
 } from '../cs-protocol.uts'
 import {
@@ -1499,6 +1502,71 @@ export function receiveSelfReport(): string {
 	check('同名两条都过了整文件摘要', twinPassed, twinFirst + ' | ' + twinSecond)
 	check('两条落在两个不同的名字上', twinFirst != twinSecond && twinFirst != '' && twinSecond != '', twinFirst + ' | ' + twinSecond)
 	check('后拿到的那一条改名成 §5 说的「 (2)」', twinSecond.indexOf('同名-备忘 (2).txt') >= 0, twinFirst + ' | ' + twinSecond)
+
+	// 5d. 第九轮巡检（#174）：§5 那三个数字各自在边界上量一次。两端写的都是 `>`，所以只有「正好卡在数上
+	// 还得收」和「多一段 / 多一字节必须拒」凑成一对，才分得出 `>` 与 `>=`；`max_path_depth` 此前只躺在
+	// `protocol.json` 里，纸面那份清单没有它，三个数字也一条行为腿都没有（`check_protocol.py` 比的是常量相等）。
+	// 点开头的段与保留名这两条，合同现在写的是「一律拒、不分平台」，腿就在共用状态机上量这一端的读法。
+	const limitBox = newInbox()
+	const limitPair = askPairOn(limitBox, SIM_PEER_ID, currentPairCode(limitBox, nowSeconds()), passphraseOf(limitBox, nowSeconds()), simKey)
+	const limitPairObj = jsonOf(limitPair)
+	const limitToken = limitPairObj == null ? '' : limitPairObj!.getString('token', '')
+	const mkLimitFile = (rel: string): CsFile => {
+		const body = utf8(rel)
+		const f = new CsFile()
+		f.path = rel
+		f.relpath = rel
+		f.id = hexOf(randomBytes(8))
+		f.size = body.length
+		f.sha256 = hexOf(sha256Bytes(body))
+		f.mtime = Math.floor(Date.now() / 1000)
+		f.type = 'text/plain'
+		return f
+	}
+	const askLimitOffer = (files: CsFile[]): WireReply => {
+		return askOn(limitBox, SIM_PEER_ID, 'POST', '/v1/offer', offerJson(hexOf(randomBytes(8)), files, SIM_PEER_ID, SIM_NAME), limitToken, new ArrayBuffer(0), '')
+	}
+	// 段数：16 段（15 层目录 + 文件名）是合同说的「超过 16 才拒」里最后还能收的那一条。
+	let deepOkRel = ''
+	for (let i = 0; i < MAX_PATH_DEPTH - 1; i++) {
+		deepOkRel = deepOkRel + (i == 0 ? '' : '/') + 'd' + i.toString()
+	}
+	deepOkRel = deepOkRel + '/x.txt'
+	const deepBadRel = deepOkRel.substring(0, deepOkRel.length - '/x.txt'.length) + '/d15/x.txt'
+	const deepOkReply = askLimitOffer([mkLimitFile(deepOkRel)])
+	check('§5 深度：正好 16 段的清单收下了、先问人', deepOkReply.pending, deepOkRel + ' 回 ' + codeOfReply(deepOkReply))
+	const deepBadReply = askLimitOffer([mkLimitFile(deepBadRel)])
+	check('§5 深度：多一段的清单 PATH_REJECTED 且没有弹确认', codeOfReply(deepBadReply) == 'PATH_REJECTED' && !deepBadReply.pending, deepBadRel)
+	const longOkRel = 'a'.repeat(MAX_NAME_BYTES)
+	const longBadRel = 'a'.repeat(MAX_NAME_BYTES + 1)
+	check('§5 名字：255 字节的段收下了', askLimitOffer([mkLimitFile(longOkRel)]).pending, longOkRel.length.toString())
+	const longBadReply = askLimitOffer([mkLimitFile(longBadRel)])
+	check('§5 名字：256 字节 PATH_REJECTED 且没有弹确认', codeOfReply(longBadReply) == 'PATH_REJECTED' && !longBadReply.pending, longBadRel.length.toString())
+	const dotReply = askLimitOffer([mkLimitFile('.env')])
+	check('§5 点开头：一律拒，不看它是不是列出来的那两个', codeOfReply(dotReply) == 'PATH_REJECTED' && !dotReply.pending)
+	const dotInnerReply = askLimitOffer([mkLimitFile('sub/.git/config')])
+	check('§5 点开头：嵌在中间的段也算', codeOfReply(dotInnerReply) == 'PATH_REJECTED' && !dotInnerReply.pending)
+	const conReply = askLimitOffer([mkLimitFile('CON')])
+	const nulReply = askLimitOffer([mkLimitFile('nul.txt')])
+	check('§5 保留名：不看自己跑在什么系统上（CON / nul.txt 都拒）',
+		codeOfReply(conReply) == 'PATH_REJECTED' && codeOfReply(nulReply) == 'PATH_REJECTED' && !conReply.pending && !nulReply.pending)
+	// 规模那一条拦的是这一单，不是这个名字，所以它回的是 `UNSUPPORTED_PROTOCOL`（v1 的码表没有「太大」这一格）。
+	const bulkFiles: CsFile[] = []
+	for (let i = 0; i < MAX_FILES_PER_OFFER + 1; i++) {
+		bulkFiles.push(mkLimitFile('bulk/' + i.toString() + '.txt'))
+	}
+	const bulkReply = askLimitOffer(bulkFiles)
+	const pendingBeforeSize = snapshot(limitBox, nowSeconds()).pendingOfferIds.length
+	const sizeBox = newInbox()
+	const sizePair = askPairOn(sizeBox, SIM_PEER_ID, currentPairCode(sizeBox, nowSeconds()), passphraseOf(sizeBox, nowSeconds()), simKey)
+	const sizePairObj = jsonOf(sizePair)
+	const sizeToken = sizePairObj == null ? '' : sizePairObj!.getString('token', '')
+	const sizeReply = askOn(sizeBox, SIM_PEER_ID, 'POST', '/v1/offer', offerJson(hexOf(randomBytes(8)), bulkFiles.slice(0, MAX_FILES_PER_OFFER), SIM_PEER_ID, SIM_NAME), sizeToken, new ArrayBuffer(0), '')
+	check('§5 规模：多一个文件就被拒，且没登记进账上',
+		codeOfReply(bulkReply) == 'UNSUPPORTED_PROTOCOL' && !bulkReply.pending
+		&& snapshot(limitBox, nowSeconds()).pendingOfferIds.length == pendingBeforeSize,
+		codeOfReply(bulkReply) + ' | ' + detailOf(bulkReply.body))
+	check('§5 规模：正好 2000 个文件的清单收下', sizeReply.pending, codeOfReply(sizeReply))
 
 	// 6. chunks: store, reject a lying digest, reject the wrong length, and be idempotent.
 	const bigId = files[1].id
