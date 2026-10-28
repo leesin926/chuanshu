@@ -550,8 +550,39 @@ export function sendFiles(
 		 *  transfer it had never filled. A receiver that does park the socket answers with the real
 		 *  plan on the first try, so both shapes go through this loop. */
 		let waited = 0
+		/** The window closing is this end's fact, and the peer cannot derive it: the last thing it got was a
+		 *  manifest nobody had answered. Say so before reporting it, because a registered offer holds a place on
+		 *  that end's ledger - the pending entry, and for an answered one the files allocated up front - until
+		 *  its own `offer_idle_timeout_s` passes (spec §4 闲置 offer 回收). A peer that already reclaimed it
+		 *  answers OFFER_UNKNOWN, which is why a refusal here is only a line in the log. */
+		function giveUp(why: string): void {
+			for (let i = 0; i < opts.relpaths.length; i++) {
+				fileEvent(opts.relpaths[i], '被拒绝', 0, 0)
+			}
+			authed('DELETE', '/v1/offer/' + offerId, '', new ArrayBuffer(0), '', '', false, function (status: number, body: string) {
+				if (status != 200) {
+					write('对方没有收下这句撤回：' + (codeOf(body) != '' ? codeOf(body) : status.toString()))
+				}
+				finish(false, why)
+			})
+		}
 		function ask(): void {
 			authed('POST', '/v1/offer', json, new ArrayBuffer(0), '', '', false, function (status: number, body: string) {
+				/** A poll that read nothing is not an answer. Spec §4 ends this loop on one of two facts -
+				 *  答案出现, or 等满 `offer_wait_timeout_s` - and a dead socket is neither: this end has not
+				 *  been refused, it has not been heard from. `status == 0` is the shape both phones give for
+				 *  that (the same one #132 taught `putChunk` to ask about), and a cancellation is the other
+				 *  status-0 shape, which is this end's own decision and stays a refusal. */
+				if (status == 0 && codeOf(body) != 'CANCELLED') {
+					if (waited >= OFFER_WAIT_S) {
+						giveUp(errorText('DECLINED') + '：' + waited.toString() + ' 秒内对方没有作答（最后一问也没读到应答）')
+						return
+					}
+					waited = waited + 1
+					write('这一问没读到对方的应答，一秒后再问：' + detailOf(body))
+					setTimeout((): void => { ask() }, 1000)
+					return
+				}
 				if (status != 200) {
 					for (let i = 0; i < opts.relpaths.length; i++) {
 						fileEvent(opts.relpaths[i], '被拒绝', 0, 0)
@@ -566,22 +597,7 @@ export function sendFiles(
 				}
 				if (!answer!.getBoolean('accepted', true)) {
 					if (waited >= OFFER_WAIT_S) {
-						for (let i = 0; i < opts.relpaths.length; i++) {
-							fileEvent(opts.relpaths[i], '被拒绝', 0, 0)
-						}
-						const why = errorText('DECLINED') + '：' + waited.toString() + ' 秒内对方没有作答'
-						/** §4's window closing is this end's fact, and the peer cannot derive it: the last thing
-						 *  it got was a manifest nobody had answered. Say so before reporting it, because an
-						 *  offer nobody decided holds that end's single offer slot - without this sentence the
-						 *  next transfer is turned away until that end's own window passes, counting from the
-						 *  last manifest this end re-sent. A peer that already reclaimed it answers
-						 *  OFFER_UNKNOWN, which is why a refusal here is only a line in the log. */
-						authed('DELETE', '/v1/offer/' + offerId, '', new ArrayBuffer(0), '', '', false, function (status: number, body: string) {
-							if (status != 200) {
-								write('对方没有收下这句撤回：' + (codeOf(body) != '' ? codeOf(body) : status.toString()))
-							}
-							finish(false, why)
-						})
+						giveUp(errorText('DECLINED') + '：' + waited.toString() + ' 秒内对方没有作答')
 						return
 					}
 					waited = waited + 1

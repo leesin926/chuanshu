@@ -1933,6 +1933,13 @@ class ChunkSwallow {
 	/** How many `GET /state` questions this peer refuses to answer. Spec §4's third rule is about this
 	 *  shape - 问不到答案 - and it is the one leg the phones have evidence for and the browser did not. */
 	muteState: number = 0
+	/** How many answers to the *manifest* this peer takes back after registering it. Spec §4 ends the
+	 *  offer poll on 答案出现 or 等满 `offer_wait_timeout_s`, and a reply that never arrived is neither -
+	 *  this end was not refused, it was not heard from. */
+	muteOffer: number = 0
+	/** How many POST /v1/offer lines this peer was shown. The retry leg below reads it: a manifest re-sent
+	 *  after an eaten answer is the same offer, and the count is what says so. */
+	offerAsks: number = 0
 	/** Replace the version set this peer answers its hello with. `[]` is not an empty set - it is a peer
 	 *  that predates the field, so §7 has to read the number it printed instead. spec §7's two directions
 	 *  are what the two legs below measure. */
@@ -1971,6 +1978,10 @@ function swallowCaller(probe: ChunkSwallow): Caller {
 		if (isChunk) {
 			probe.chunksSeen = probe.chunksSeen + 1
 		}
+		const isOffer = method == 'POST' && path == '/v1/offer'
+		if (isOffer) {
+			probe.offerAsks = probe.offerAsks + 1
+		}
 		if (method == 'GET' && path.indexOf('/state') >= 0) {
 			probe.stateAsks = probe.stateAsks + 1
 			if (probe.muteState > 0) {
@@ -2001,6 +2012,11 @@ function swallowCaller(probe: ChunkSwallow): Caller {
 				cb(0, swallowed('自检注入：体已落对端，回复被吞掉'))
 				return
 			}
+			if (isOffer && probe.muteOffer > 0) {
+				probe.muteOffer = probe.muteOffer - 1
+				cb(0, swallowed('自检注入：清单已登记，这一问的回复被吞掉'))
+				return
+			}
 			cb(reply.status, reply.body)
 			return
 		}
@@ -2009,6 +2025,12 @@ function swallowCaller(probe: ChunkSwallow): Caller {
 		const parsed = parseJson(jsonBody)
 		const offerId = parsed == null ? '' : parsed!.getString('offer_id', '')
 		const decided = resolveOffer(probe.inbox, offerId, true, recvPrepare, recvDrop)
+		if (isOffer && probe.muteOffer > 0) {
+			// Registered, decided, and the answer died on the way back: the sender has not been refused.
+			probe.muteOffer = probe.muteOffer - 1
+			cb(0, swallowed('自检注入：清单已登记并有人答了，这一问的回复被吞掉'))
+			return
+		}
 		cb(decided.status, decided.body)
 	}
 }
@@ -2178,6 +2200,21 @@ export function senderSelfReport(): string {
 	runSender(h, SIM_TEXT, rh, '')
 	check('对端报的版本集合里没有我们这一版时在 hello 就停', rh.done && !rh.ok, rh.summary)
 	check('那一单也没打到对方的名单上', h.inbox.trusted.length == 0, h.inbox.trusted.length.toString())
+
+	// G. spec §4's offer window ends on two facts only - 答案出现, or 等满 `offer_wait_timeout_s`. A poll whose
+	// reply never arrived is neither: this end was not refused, it was not heard from. The peer below takes
+	// the answer back after registering the manifest and after its user said yes, so what is measured is
+	// whether the shared sender keeps the transfer it was already given. The retry itself goes on a one
+	// second timer, which a synchronous report cannot wait for; the recovery half is the device leg's job.
+	const m = new ChunkSwallow()
+	m.muteOffer = 1
+	const rm = new SenderRun()
+	runSender(m, SIM_TEXT, rm, '')
+	check('清单那一问读不到应答时这单没有被判死', !rm.done, rm.done ? ('已经判死：' + rm.summary) : '还活着')
+	check('判死的那一行也没落到文件上', rm.summary.indexOf('被拒绝') < 0, rm.summary)
+	check('这一趟对方只被出示了一份清单', m.offerAsks == 1, m.offerAsks.toString())
+	check('那一份清单已经登记在这一单的账上', m.inbox.offers.length == 1, m.inbox.offers.length.toString())
+	check('读不到应答的这一趟一块都没推', m.chunksSeen == 0, m.chunksSeen.toString())
 
 	out.push(fail == 0 ? '发送自检 ' + pass.toString() + ' 项全部通过' : '发送自检失败 ' + fail.toString() + ' 项，通过 ' + pass.toString() + ' 项')
 	return out.join('\n')
