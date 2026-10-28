@@ -55,7 +55,7 @@
       "method": "POST",
       "path": "/v1/pair",
       "auth": false,
-      "purpose": "redeem a 4-digit code, pin the fingerprint"
+      "purpose": "redeem a 6-digit code, pin the fingerprint"
     },
     {
       "method": "POST",

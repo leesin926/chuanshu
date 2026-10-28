@@ -13,6 +13,7 @@ import gettext
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -24,9 +25,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from cryptography import x509  # noqa: E402
+from cryptography.hazmat.primitives.asymmetric import ed25519, rsa  # noqa: E402
+
 from app.net import errors  # noqa: E402
 from app.net import spec as protocol_spec  # noqa: E402
-from app.net.identity import load_or_create  # noqa: E402
+from app.net.identity import fingerprint_of_public_key, load_or_create  # noqa: E402
 from app.net.receive import STATE_FILE, ReceiveService, sanitize_relpath  # noqa: E402
 from app.net.send import PACE_MS_LADDER, PairNeeded, PeerConnection, PeerIdentityMismatch, plan  # noqa: E402
 
@@ -1146,6 +1150,39 @@ def phase_reverse_pin(proto: protocol_spec.Protocol, workspace: Path) -> None:
         phone_service.stop()
 
 
+#: The twelve DER bytes in front of an Ed25519 key inside a SubjectPublicKeyInfo - spelled array-by-array in
+#: app-android/CsIdentity.kt, app-harmony/index.uts and web/index.uts, because no phone platform hands a bare
+#: Ed25519 key to a DER encoder. The digest every peer pins is taken over these twelve plus the 32 key bytes.
+ED25519_SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
+
+
+def phase_identity_shapes(proto: protocol_spec.Protocol, workspace: Path) -> None:
+    """§1's identity shapes, taken from a device's own files rather than from a peer's answer.
+
+    The paragraph the round rewrote said the fingerprint is the digest of an identity *certificate*. It never
+    was on the wire: pair carries 32 bare bytes (`send.py`'s `public_key`), and a phone digests the SPKI it
+    builds itself, with no certificate anywhere in its private directory (#106). These legs are what the
+    rewording now stands on - that the number every peer pins is reconstructible from the bytes that travel,
+    that `peer_id` is the sixteen random bytes §1 promises, and that a device's two digests are two numbers.
+    """
+    ident = load_or_create(workspace / "shapes")
+    check("§1 peer_id is 16 random bytes, written as hex",
+          re.fullmatch(r"[0-9a-f]{32}", ident.peer_id) is not None, ident.peer_id)
+    wire = ident.raw_public_key()
+    check("§1 the pair request carries a bare 32-byte key, not a certificate", len(wire) == 32, len(wire))
+    rebuilt = hashlib.sha256(ED25519_SPKI_PREFIX + wire).hexdigest()
+    check("§1 fingerprint is the SPKI digest a peer rebuilds from those 32 bytes",
+          rebuilt == ident.fingerprint == fingerprint_of_public_key(ed25519.Ed25519PublicKey.from_public_bytes(wire)),
+          rebuilt[:12])
+    served = ident.served_fingerprint
+    leaf = x509.load_pem_x509_certificate((workspace / "shapes" / "tls-leaf.pem").read_bytes())
+    check("§1 the leaf a socket serves is RSA-2048, so it cannot be the identity key",
+          isinstance(leaf.public_key(), rsa.RSAPublicKey) and leaf.public_key().key_size == 2048)
+    check("§1 the two digests of one device are two numbers",
+          served != ident.fingerprint and re.fullmatch(r"[0-9a-f]{64}", served) is not None,
+          f"{ident.fingerprint[:8]} / {served[:8]}")
+
+
 def phase_shared_identity(proto: protocol_spec.Protocol, workspace: Path) -> None:
     """The window and the terminal open one identity directory, so each is the other's second process.
 
@@ -1211,6 +1248,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="chuanshu-proto-") as tmp:
         workspace = Path(tmp)
         phase_in_process(proto, workspace)
+        phase_identity_shapes(proto, workspace)
         phase_restart(proto, workspace)
         phase_lying_ledger(proto, workspace)
         phase_state_lost(proto, workspace)

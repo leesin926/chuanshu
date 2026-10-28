@@ -289,6 +289,105 @@ def check_endpoint_count(body: dict) -> None:
             fail(f"§8 counts {one}个端点, but protocol.json defines {want}")
 
 
+def check_pair_code_digits(body: dict) -> None:
+    """The contract says how long the pair code is out loud, in prose, and the field is the number ends mint from.
+
+    #176 pinned §8's hand-copied endpoint count; §1's round found the same shape inside `protocol.json` itself -
+    /v1/pair's purpose promised a "4-digit code" two keys below `pair_code_digits: 6`. A code is read off a screen
+    and typed on a keypad by a person, so the sentence that tells them how many to expect is not free text.
+    """
+    want = int(body["transport"]["pair_code_digits"])
+    for name in ("protocol.json", "spec.md"):
+        text = (CONTRACT / name).read_text(encoding="utf-8-sig")
+        said = [int(one) for one in re.findall(r"(\d+)\s*位(?:配对)?码", text)]
+        said += [int(one) for one in re.findall(r"(\d+)[- ]digit", text)]
+        for got in said:
+            if got != want:
+                fail(f"{name} says a {got}-digit pair code, but transport.pair_code_digits says {want}")
+
+
+def check_identity_files() -> None:
+    """§1's storage column names files - and for several rounds one of them existed nowhere.
+
+    The table promised a `identity.json` no end ever wrote: the PC keeps `peer-key.pem` beside `peer-cert.pem`
+    and reads `peer_id` back out of the certificate's CN, the phones keep a seed, an SPKI and an id file under
+    their own names. A contract filename is a hook someone integrating a fourth platform reaches for, so §1 keeps
+    to the ones this repo actually opens - the identity row now says what every end already conceded in the leaf
+    row: 文件名不属协议.
+    """
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    if "## 1." not in spec:
+        fail("spec.md no longer has a §1 to read the identity storage out of")
+    section = spec.split("## 1.", 1)[1].split("\n## ", 1)[0]
+    named = sorted(set(re.findall(r"`([A-Za-z0-9_.-]+\.(?:json|pem|txt))`", section)))
+    if not named:
+        fail("§1 no longer names a single file - the storage column has to stay readable")
+    roots = (HERE.parent / "app", HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk")
+    corpus = "".join(path.read_text(encoding="utf-8", errors="ignore")
+                     for root in roots for path in sorted(root.rglob("*"))
+                     if path.suffix in (".py", ".uts", ".kt"))
+    for name in named:
+        if name not in corpus:
+            fail(f"§1 names {name}, but no end opens a file by that name")
+
+
+def check_peer_id_shape() -> None:
+    """§1 gives `peer_id` one shape - sixteen random bytes, hex - and the four places that mint it have to keep it.
+
+    The browser's stand-in labelled itself `android-web-` plus eight bytes. Nothing on the wire reads a peer_id as
+    a label, so it worked - which is exactly how a fourth shape for a frozen identity field gets written down by
+    accident: Harmony already refuses to load an id that is not 32 hex characters, and the first build to trust
+    that shape is a build the demo peer cannot talk to.
+    """
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    if "## 1." not in spec:
+        fail("spec.md no longer has a §1 to read the peer_id shape out of")
+    row = spec.split("## 1.", 1)[1].split("\n## ", 1)[0]
+    found = re.search(r"随机 (\d+) 字节 hex", row)
+    if found is None:
+        fail("§1 no longer states the peer_id shape as N random bytes, hex")
+    size = int(found.group(1))
+    utssdk = HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk"
+    minted = (
+        ("app/net/identity.py", HERE.parent / "app" / "net" / "identity.py", rf"peer_id = secrets\.token_hex\({size}\)"),
+        ("app-android/CsIdentity.kt", utssdk / "app-android" / "CsIdentity.kt",
+         rf"fun newPeerId\(\): String \{{\s*val bytes = ByteArray\({size}\)"),
+        ("app-harmony/index.uts", utssdk / "app-harmony" / "index.uts", rf"hexOf\(randomBytes\({size}\)\)"),
+        ("web/index.uts", utssdk / "web" / "index.uts", rf"myPeerId = hexOf\(randomBytes\({size}\)\)"),
+    )
+    for label, path, pattern in minted:
+        if re.search(pattern, path.read_text(encoding="utf-8")) is None:
+            fail(f"{label} no longer mints a peer_id of {size} random bytes as §1's table says")
+    harmony = (utssdk / "app-harmony" / "index.uts").read_text(encoding="utf-8")
+    if f"id.length != {size * 2}" not in harmony:
+        fail(f"app-harmony/index.uts no longer measures the id it loads against §1's {size}-byte shape")
+
+
+def check_spki_head() -> None:
+    """§1's fingerprint is a digest over twelve DER bytes plus the key - and three ends hand-type those twelve.
+
+    No phone platform gives a bare Ed25519 key to a DER encoder, so each spells the SubjectPublicKeyInfo header as
+    an array (#106). A byte off one copy is not a pairing failure: the signature is over the 32 key bytes, so the
+    pair wire still verifies, and the fork surfaces only as a trust-store entry that never matches the number the
+    peer prints on its screen. app/net/identity.py:_spki_der is the fourth copy of the same twelve, and the PC
+    selftest's §1 leg is what ties it to these three.
+    """
+    utssdk = HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk"
+    files = ("app-android/CsIdentity.kt", "app-harmony/index.uts", "web/index.uts")
+    head: tuple[int, ...] | None = None
+    for name in files:
+        src = (utssdk / name).read_text(encoding="utf-8")
+        found = re.search(r"SPKI_HEAD\s*(?::[^=\n]*)?=\s*[\w\s]*[\[\(]([^\]\)]*)[\]\)]", src)
+        if found is None:
+            fail(f"{name} no longer spells the SPKI header §1's fingerprint is taken over")
+        spelled = tuple(int(one, 16) for one in re.findall(r"0x([0-9a-fA-F]{2})", found.group(1)))
+        if len(spelled) != 12:
+            fail(f"{name} spells {len(spelled)} bytes where an Ed25519 SubjectPublicKeyInfo header is 12")
+        if head is not None and spelled != head:
+            fail(f"{name} spells a different Ed25519 SPKI header than the other ends: {spelled} vs {head}")
+        head = spelled
+
+
 def main() -> int:
     stamp_path = CONTRACT / "SOURCE.json"
     for name in ("protocol.json", "spec.md", "SOURCE.json"):
@@ -344,6 +443,10 @@ def main() -> int:
     check_error_table(body)
     check_hello_features(body)
     check_endpoint_count(body)
+    check_pair_code_digits(body)
+    check_identity_files()
+    check_peer_id_shape()
+    check_spki_head()
 
     print(f"OK  protocol v{body['protocol_version']} from {stamp['source_repo']}@{stamp['source_commit'][:8]}")
     print(f"OK  {len(body['error_codes'])} error codes, {len(body['endpoints'])} endpoints, chunk {chunk // 1024} KiB")
@@ -356,6 +459,10 @@ def main() -> int:
     print(f"OK  cs-receive.uts and cs-protocol.uts restate all {len(body['error_codes'])} codes with the contract's numbers and words")
     print(f"OK  hello's capability list is one copy: {body['transport']['hello_features']}")
     print(f"OK  §8 counts the relay branch's endpoints the way protocol.json defines them ({len(body['endpoints'])})")
+    print(f"OK  every digit count in the contract prose says {body['transport']['pair_code_digits']}")
+    print("OK  §1 names only files an end actually opens")
+    print("OK  peer_id is 16 random bytes of hex where all four places mint it")
+    print("OK  the three ends hand-spell the same 12-byte Ed25519 SPKI header")
     return 0
 
 

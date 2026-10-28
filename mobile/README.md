@@ -593,6 +593,31 @@ py -X utf8 scripts/check_protocol.py
       实现可以骗过这些腿，所以默认不补设备腿；两个宿主唯一自己写的东西是状态行里那个短语（`app-android/CsServe.kt:163-172`、
       `app-harmony/index.uts:2262-2285` 两份 `reasonOf`），合同没规定它、对面也不读它，本轮判它属于外观。若哪天要给 #175
       那半（PC 发送方的本地预检）上机，届时一起把设备腿补上。
+24. **#177：合同 §1「身份」那三行逐句过了一遍——「存放」「生成」「摘要来源」写的是其中一端的实现，表里点名的那个文件三端都不存在**（动的是合同与
+    取证；**手机侧一行未改**（`cs-receive.uts` / `cs-protocol.uts` / `cs-client.uts` / 两个宿主都不动），只有浏览器替身
+    `web/index.uts` 给自己起的 `peer_id` 换了形状——所以两道编译门**本轮仍都跑了**（合同重搬后要确认还是编得过）：
+    `app-android` 与 `app-harmony` 都 `rc=0`（`.probe/r11_compile.txt`）；完整账目在 `../docs/feature-matrix.md` §6 第 28 条）
+    - **手机上没有 `identity.json`，也从来没有过**。§1 那一栏原来写的是 PC 的存法（PC 落 `peer-key.pem` + `peer-cert.pem`，
+      装载时从证书的 CN 把 `peer_id` 读回来），而手机存的是私钥种子 + 44 字节 SPKI + 一份自己的 id 文件。现在那一栏说的是
+      「本机身份目录里自己的文件，文件名不属协议」——与同表 leaf 行早就写过的口径一致；第四位读者（下一个平台）照句子去找文件
+      不会再扑空。守卫 `check_identity_files()` 把 §1 里点名的每个 `*.json|pem|txt` 拿去两端源码里找有没有真被打开。
+    - **「Ed25519，自签 X.509（CN=`peer_id`，10 年）」也只说了 PC**：手机上纸面就没有那张身份证书，线上也没有——pair 请求
+      带出去的是 32 字节裸公钥，对面自己拼 SPKI 再取摘要（#106 逐字节核过，三端同一个数）。那句从表里挪进表下面新的一段，
+      「10 年」这个谁都没有比较过的数删了；`fingerprint` 那一行的「证书」二字也去掉了，摘要算的是**密钥的** SPKI，
+      那 12 个字节的前缀是三端各自手抄的（安卓 `CsIdentity.kt:367`、鸿蒙 `index.uts:58`、替身 `web/index.uts:284`），
+      现在由 `check_spki_head()` 逐字节比着——PC 侧那五条新腿就是我抄错一个字节时被它们抓出来的。
+    - **替身那个 `peer_id` 是唯一一处真改的代码**：原来是 `'android-web-' + 8 字节 hex`，既不是「随机 16 字节」也不是 32 个
+      hex 字符，而鸿蒙装载时会按 32 个 hex 拒绝它；线上没有任何一端把 `peer_id` 当标签读，所以它一直"能用"。
+      现在与另外三端同形（`web/index.uts:211`），四处生成点由 `check_peer_id_shape()` 一起核（9 → 13 行 OK，六次负向全红
+      `.probe/r11_guard_negatives.txt`）；`protocol.json` 里那句「4-digit code」也改成 6，与它上面两行的
+      `pair_code_digits: 6` 对齐（`check_pair_code_digits()` 盯着合同两份文件里每一个「N 位码」）。
+    - **档位**：`门禁` PC 侧 143 → **148 条 PASS、`RESULT ALL PASS`**（`.probe/r11_pc_selftest.log`，§1 那五条在 :83-87）；
+      `浏览器` 档是 111 条腿的整体回归门，**接收自检 111 项全部通过**（`.probe/r11_web_after.txt`）。这轮取屏上读数的路子换了：
+      in-app 浏览器页签在 `visibilityState=hidden` 时 `evaluate_script` 必然超时（页签不渲染，DOM 读不到），所以临时在
+      `runRecvSelf` 里加一行 `console.log` 把整份读数打到控制台再取回，取完即还原——`store/session.uts` 现在与 HEAD 一个字节不差。
+    - **还欠的那格**：§1 这几条**没有设备腿**，这是本轮的决策不是遗漏——四处 `peer_id` 生成点里只有浏览器替身会写歪，而它本身就是
+      那份源码，升到设备档没有第二份实现可骗过；两个宿主本轮一行未改，共用状态机也没动，设备腿在这轮只能重复源码守卫已经钉住的东西。
+      「私钥文件权限按平台收紧」那句是三端各自成立、长三种样子（PC `chmod(0o600)`，手机落在应用私有目录），记下没改也不上腿。
 
 M2a 的最小切口是"手机发、PC 收"：扫（或粘贴）PC 的二维码拿到地址与完整指纹，用户只核对同屏的
 一次性配对码——PC 侧接收端已经跑绿，手机只要把

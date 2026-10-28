@@ -1208,6 +1208,62 @@ Xcode，够不到任何一档编译门**——它改的原因只是共用的 sto
       `cs-protocol.uts` / `cs-receive.uts` 各改一行，`app-android` 与 `app-harmony` 都 `rc=0`
       （`.probe/r10_compile.txt`，原文 `.probe/r10_and_compile.log` / `.probe/r10_har_compile.log`）。
 
+28. **#177：合同逐条巡检第十一轮——§1「身份」那三行的存放、生成、摘要来源，写的是其中一端的实现，而表里点名的那个文件三端都不存在**
+    （做法沿用 #140/#162/#163/#165/#167/#168/#171/#172/#174/#176：这一轮把 §1（`protocol/spec.md:14-30`）逐句对着
+    PC（`app/net/identity.py` / `send.py`）、两个宿主（`app-android/CsIdentity.kt`、`app-harmony/index.uts`）与浏览器
+    替身（`web/index.uts`）各找一遍实现体。动的是合同那三行 + 新加的一段话、`protocol.json` 里一处自相矛盾的散文、
+    替身给自己起的那个 `peer_id`，加上取证与守卫；**三端的线上行为一个字节都没变**——pair 上线还是那 32 字节裸公钥，
+    指纹还是那 12+32 字节的摘要，`hello` 念的还是 #176 那一份名单。）
+    - **「存放：用户目录 `identity.json`」这个文件从来没有被任何一端打开过**。PC 落的是 `peer-key.pem` 与
+      `peer-cert.pem`，装载时从那张自签证书的 CN 把 `peer_id` 读回来（`identity.py:457`），生成走
+      `secrets.token_hex(16)`（`:460`）；两台手机落的是私钥种子 + 44 字节 SPKI + 一份自己的 id 文件，名字各不相同。
+      这正是 #165 那条口径（合同里不留没有实现体的字段）反过来长的样子：**句子写的是别人的实现，第四位读者照着它找文件**。
+      现在那一栏说的是「本机身份目录里自己的文件，文件名不属协议」——与同表 leaf 行早就承认过的口径一致。
+      守卫 `check_identity_files()`（`mobile/scripts/check_protocol.py:309-333`）把 §1 里出现的每一个
+      `*.json|pem|txt` 拿去 PC 的 `app/` 与手机 `utssdk/` 源码里找一遍有没有真被打开过，找不到就红。
+    - **「Ed25519，自签 X.509（CN=`peer_id`，10 年）」只说了 PC**。两台手机纸面上没有那张身份证书（种子/SPKI/id 三件
+      就是全部），线上也没有：§3 的 pair 请求带的是 32 字节裸公钥（`send.py:352` ← `identity.py:247`），收方自己拼出
+      SPKI 再取摘要，算出来与发方从自己材料里取的是同一个数（#106 逐字节核过）。CN 在 PC 上确实有用（装载时靠它读回
+      `peer_id`），所以那句话没有丢、是从表里挪进表下面新的一段（`spec.md:25-29`），并把「10 年」这个**没有任何一端比较过**
+      的数删掉；那个位置本来还埋着 #109 那类手抄年份。「证书」这个定语在 `fingerprint` 那一行也是错的，摘要算的是
+      **密钥的** SPKI，不是某张证书的——三端各自手抄那 12 个字节的前缀（`app-android/CsIdentity.kt:367-369`、
+      `app-harmony/index.uts:58`、`web/index.uts:284`，加上已终止的 `app-ios/CsBytes.swift:209`）。
+    - **新增的腿（`门禁`，PC 侧）**：`scripts/protocol_selftest.py:1159-1183` 的 `phase_identity_shapes`
+      （注册在 `:1251`，紧跟在既有的进程内那一趟后面）五条——`peer_id` 是 32 个 hex 字符；pair 上线的是 32 字节
+      **不是证书**；拿那 12+32 字节自己拼出来摘要等于 `ident.fingerprint`、也等于 `cryptography` 从裸公钥算的那一个；
+      套接字真正递出的那张叶是 RSA-2048，所以它不可能是身份密钥（这一条替 §1 那句「一台设备有两个摘要」作证）；
+      同一台设备那两个摘要是两个数。读数 `.probe/r11_pc_selftest.log`：**148 条 PASS、`RESULT ALL PASS`**（改前 143，
+      那五条在报告 :83-87）。**这一组腿是自己踩出来的**：我先把前缀抄成 `…034200`（BIT STRING 的长度位写错），
+      第三条立刻红，报的就指着这一格——那 12 个字节被抄在五处，红得快是因为终于有腿读它了。
+    - **合同自己跟自己打架的那半句话**：`protocol.json:58` 的 `/v1/pair` purpose 写着「redeem a **4-digit** code」，
+      而它上面两行的 `transport.pair_code_digits` 是 6（#66 早就把三端做成 6 位）。改的是那半句（1 → 1 行，数字本身不动），
+      并添守卫 `check_pair_code_digits()`（:292-308）：把 `protocol.json` 与 `spec.md` 里所有「N 位码 / N-digit」抽出来
+      与那个字段比。形状上是 #176 那道 `check_endpoint_count()` 的同族，只不过这回数字不是数端点而是**人从屏幕上数出来
+      再按键盘的那一位**，所以散句不是自由文本。
+    - **新增的守卫（`门禁`，防的是抄本又漂）**：:334-365 `check_peer_id_shape()` 把 §1 那句「随机 N 字节 hex」的 N
+      拿去比四处生成点（PC `identity.py`、安卓 `CsIdentity.kt`、鸿蒙 `index.uts`、浏览器替身 `web/index.uts`），
+      并要求鸿蒙装载时那句 `id.length != 32` 还在——**这一条轮到自己这一端**：替身原来的 `peer_id` 是
+      `'android-web-' + 8 字节 hex`，既不是十六字节也不是那一个形状，而鸿蒙会拒收非 32 个 hex 的 id；线上没有一端把
+      `peer_id` 当标签读，所以它一直"能用"，这正是第四个形状被顺手写下来的方式。现在 `web/index.uts:211` 与其它三端同形
+      （:212-213 留了一句为什么这一端不需要前缀）。:366-390 `check_spki_head()` 要求三端手抄的那 12 个字节逐字节相等。
+      **六次负向量全红**（`.probe/r11_guard_negatives.txt`，驱动 `.probe/r11_negatives.py`）：`protocol.json` 那句改回
+      4-digit、`spec.md` 里那处「6位配对码」改成 4、§1 存放又写回 `identity.json`、替身又把 id 写成带前缀的 8 字节、
+      鸿蒙不再量那个长度、替身把 SPKI 头 12 个字节里的一个写歪。§1/`protocol.json` 那两次走的仍是「改上游 →
+      `vendor_protocol.py` 重搬 → 守卫红 → 按字节还原 → 再搬」。守卫的 OK 行 9 → **13 行**（本轮新增四行）。
+    - **本轮读过、只记不改的两格**。一、「私钥文件权限按平台收紧」：PC 是 `identity.py:443` 的 `chmod(0o600)`，
+      两台手机落在应用私有目录里（平台本身就是那道闸，没有 chmod 可调）。这是**同一句话在三种平台上长三种样子**，
+      不是某一端没照做，所以不动句子也不上腿。二、§1 末那句「`peer_id` 会随重装变化，信任锚是 fingerprint」——
+      三端都照做（信任库以指纹为键，#115/#141/#150 那几轮已经逐条钉过），本轮只确认没有第四种锚。
+    - **还欠的那格（也是本轮的一个决策记录）**：§1 这几条**没有新增 H5 腿**。理由：四处生成点里只有浏览器替身会写歪，
+      而替身就是那个源码——把它升到设备档没有第二份实现可骗过，源码守卫已经逐处钉住；两个宿主读的是同一份合同与同一份
+      共用状态机，本轮没动它们。这一轮的浏览器跑因此是 **111 条腿的整体回归门**，读数
+      `.probe/r11_web_after.txt`：**接收自检 111 项全部通过**（与 #176 那一趟同数，一条没掉）。取数方式这轮换了，
+      值得记下来：in-app 浏览器页签处于 `visibilityState=hidden` 时 `evaluate_script` 必然 15 秒超时（页签不渲染，
+      DOM 那条路读不到日志行），所以在 `runRecvSelf` 里临时加一行 `console.log` 把整份读数打到控制台、用
+      `list_console_messages` 取回，取完即还原——`mobile/chuanshu/store/session.uts` 现在与 HEAD 一个字节不差
+      （`git diff` 里没有它）。两道手机编译门本轮都跑了（合同重搬之后仍然编得过）：`app-android` 与 `app-harmony`
+      都 `rc=0`（`.probe/r11_compile.txt` :17 / :39）。
+
 ### 需要用户点头才能做的四件事
 - 唤醒/解锁并使用那台个人鸿蒙真机（#45/#46 + 鸿蒙发现真机腿）。
 - 跑 `pack --iscustom`（Android 自定义基座，#36/#90 的钥匙，也是 #143 那条"退到后台还收得到"的钥匙）。

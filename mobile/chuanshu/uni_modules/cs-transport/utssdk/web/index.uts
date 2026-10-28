@@ -208,7 +208,9 @@ function ensureSelf(): void {
 	if (myPeerId != '') {
 		return
 	}
-	myPeerId = 'android-web-' + hexOf(randomBytes(8))
+	myPeerId = hexOf(randomBytes(16))
+	// §1's shape, the same sixteen random bytes the three real ends mint: nothing on the wire reads a
+	// peer_id as a label, so this page's stand-in carries no prefix.
 	// A browser cannot hold an Ed25519 key the way java.security does, so this is a stand-in
 	// keypair: 44 bytes shaped like a SubjectPublicKeyInfo, digesting to a fingerprint that
 	// behaves like a real one for the demo peer.
