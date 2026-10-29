@@ -1656,6 +1656,70 @@ export function receiveSelfReport(): string {
 		theVersions.length == COMPATIBLE_VERSIONS.length && sameNumbers(theVersions, COMPATIBLE_VERSIONS),
 		theVersions.join(','))
 
+	// 5f. 第十二轮巡检（#178）：§9 那条冻结标准的链条里，「多文件含目录」这一格在共用接收内核上一直没人量过。
+	// PC 有 `nested chinese path preserved`（落点真的带着 `相册/2026/` 两级），这一端此前只有 5d 那道深度闸门——
+	// 它判的是清单收不收，从没成一单带目录的文件，也没读过落点。这一组把链条走完一次：配对 → 两个文件
+	//（一个嵌两层中文目录、一个平名）→ 逐块 PUT → finalize，然后按 §9 的口径读屏：两条都过整文件摘要，
+	// 且落点把目录段留着，没有被 basename 摊平。
+	const dirBox = newInbox()
+	const dirPair = askPairOn(dirBox, SIM_PEER_ID, currentPairCode(dirBox, nowSeconds()), passphraseOf(dirBox, nowSeconds()), simKey)
+	const dirPairObj = jsonOf(dirPair)
+	const dirToken = dirPairObj == null ? '' : dirPairObj!.getString('token', '')
+	const dirRels: string[] = ['传书/备忘/甲.txt', '乙.txt']
+	const dirTexts: string[] = ['甲：这一份该带着两级目录落下来。\n', '乙：这一份就落在单子目录里。\n']
+	const dirFiles: CsFile[] = []
+	const dirBodies: Uint8Array[] = []
+	for (let i = 0; i < dirRels.length; i++) {
+		const body = utf8(dirTexts[i])
+		const one = new CsFile()
+		one.path = dirRels[i]
+		one.relpath = dirRels[i]
+		one.id = hexOf(randomBytes(8))
+		one.size = body.length
+		one.sha256 = hexOf(sha256Bytes(body))
+		one.mtime = Math.floor(Date.now() / 1000)
+		one.type = 'text/plain'
+		dirFiles.push(one)
+		dirBodies.push(body)
+	}
+	const dirId = hexOf(randomBytes(8))
+	const dirOffer = askOn(dirBox, SIM_PEER_ID, 'POST', '/v1/offer', offerJson(dirId, dirFiles, SIM_PEER_ID, SIM_NAME), dirToken, new ArrayBuffer(0), '')
+	check('§9 冻结链「多文件含目录」：一条嵌两层目录、一条平名的清单先等人决定', dirOffer.pending, codeOfReply(dirOffer))
+	resolveOffer(dirBox, dirId, true, recvPrepare, recvDrop)
+	let dirWritten = 0
+	for (let i = 0; i < dirFiles.length; i++) {
+		const dirPut = askOn(dirBox, SIM_PEER_ID, 'PUT', '/v1/offer/' + dirId + '/chunk/' + dirFiles[i].id + '/0', '', dirToken, dirBodies[i].buffer as ArrayBuffer, hexOf(sha256Bytes(dirBodies[i])))
+		if (dirPut.status == 200) {
+			dirWritten = dirWritten + 1
+		}
+	}
+	check('§9 冻结链：两个文件各一块都收下', dirWritten == 2, dirWritten.toString())
+	const dirDone = askOn(dirBox, SIM_PEER_ID, 'POST', '/v1/offer/' + dirId + '/finalize', '{}', dirToken, new ArrayBuffer(0), '')
+	const dirDoneObj = jsonOf(dirDone)
+	const dirList = dirDoneObj == null ? null : dirDoneObj!.getArray<UTSJSONObject>('verified')
+	let dirAllOk = dirList != null && dirList!.length == 2
+	let dirFirst = ''
+	let dirSecond = ''
+	if (dirList != null) {
+		for (let i = 0; i < dirList!.length; i++) {
+			const dirEntry = dirList![i]
+			if (!dirEntry.getBoolean('ok', false)) {
+				dirAllOk = false
+			}
+			const dirPath = dirEntry.getString('path', '')
+			if (i == 0) {
+				dirFirst = dirPath
+			} else {
+				dirSecond = dirPath
+			}
+		}
+	}
+	check('§9 冻结链：两条都过了整文件摘要（finalize 读的是落点上的字节）', dirAllOk, dirFirst + ' | ' + dirSecond)
+	check('§9 冻结链「含目录」：嵌两层的那条落点带着两个目录段，没被摊平成文件名',
+		dirFirst.indexOf('传书/备忘/甲.txt') >= 0 && dirFirst.indexOf(dirId) >= 0, dirFirst)
+	check('§9 冻结链：平名那条也在同一单的目录里，两条落点不是一个字符串',
+		dirSecond.indexOf('乙.txt') >= 0 && dirSecond.indexOf(dirId) >= 0 && dirFirst != dirSecond, dirFirst + ' | ' + dirSecond)
+
 	// 6. chunks: store, reject a lying digest, reject the wrong length, and be idempotent.
 	const bigId = files[1].id
 	const bigSize = files[1].size

@@ -388,6 +388,43 @@ def check_spki_head() -> None:
         head = spelled
 
 
+def check_freeze_gate() -> None:
+    """§9 is the sentence that defines what "frozen" means - and three of its clauses pointed at nothing.
+
+    Round twelve read it against the tree. It cited `.probe/protocol_report.txt` (a file the tool writes next
+    run, under a directory the repo ignores, so no reader of the contract could open it), it named `py` -
+    Windows' launcher - as the gate for a contract whose PC side now has a Linux port, and it promised a chain
+    cell 「多文件含目录」 that only the PC had ever measured: the shared receiving kernel had a depth *gate*
+    (5d) but had never finished an offer whose relpath carried a directory. The prose now says which artifact
+    each clause is; this keeps them from drifting back into wishes.
+    """
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    if "## 9." not in spec:
+        fail("spec.md no longer has a §9 to read the freeze criterion out of")
+    section = spec.split("## 9.", 1)[1].split("\n## ", 1)[0]
+    root = HERE.parent
+    selftest = (root / "scripts" / "protocol_selftest.py").read_text(encoding="utf-8")
+    for cited in sorted(set(re.findall(r"[A-Za-z0-9_./-]*scripts/[A-Za-z0-9_.-]+\.py", section))):
+        if not (root / cited).is_file():
+            fail(f"§9 runs {cited}, which is not in the tree")
+    run_lines = "\n".join(one for one in selftest.splitlines() if one.strip().startswith("Run:"))
+    for launcher in ("py", "python3"):
+        if f"`{launcher} " not in section:
+            fail(f"§9's freeze command lost the {launcher} form - the gate has to read as runnable on both PC "
+                 "platforms, not only on the one Windows' launcher exists for")
+        if launcher not in run_lines:
+            fail(f"§9 says `{launcher}`, but scripts/protocol_selftest.py's own Run: line does not offer it")
+    for report in sorted(set(re.findall(r"`\.probe/([A-Za-z0-9_.-]+)`", section))):
+        if report not in selftest:
+            fail(f"§9 points at .probe/{report}, but no script in the tree writes that name")
+    if re.search(r'check\("nested[^"]*"[^\n]*is_file\(\)', selftest) is None:
+        fail('the PC gate no longer holds a check("nested…") leg that reads the landing off the disk - '
+             '§9\'s 多文件含目录 is a statement about where bytes land, not about what a manifest says')
+    harness = (HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk" / "web" / "index.uts").read_text(encoding="utf-8")
+    if harness.count("'§9 冻结链") < 3:
+        fail("the shared receiving kernel has no §9 冻结链 legs - §9's 多文件含目录 cell is a PC-only measurement again")
+
+
 def main() -> int:
     stamp_path = CONTRACT / "SOURCE.json"
     for name in ("protocol.json", "spec.md", "SOURCE.json"):
@@ -447,6 +484,7 @@ def main() -> int:
     check_identity_files()
     check_peer_id_shape()
     check_spki_head()
+    check_freeze_gate()
 
     print(f"OK  protocol v{body['protocol_version']} from {stamp['source_repo']}@{stamp['source_commit'][:8]}")
     print(f"OK  {len(body['error_codes'])} error codes, {len(body['endpoints'])} endpoints, chunk {chunk // 1024} KiB")
@@ -463,6 +501,7 @@ def main() -> int:
     print("OK  §1 names only files an end actually opens")
     print("OK  peer_id is 16 random bytes of hex where all four places mint it")
     print("OK  the three ends hand-spell the same 12-byte Ed25519 SPKI header")
+    print("OK  §9's gate names a script that exists, reads as runnable on both PC platforms, and has legs on both ends")
     return 0
 
 

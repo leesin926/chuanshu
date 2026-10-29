@@ -4,7 +4,8 @@ The contract in protocol/spec.md is only "frozen" once this runs green end to en
 including the part that is easy to fake: a receiver that is *killed mid-transfer and
 restarted as a new process* must still be able to finish the same offer.
 
-Run:  py scripts/protocol_selftest.py
+Run:  py scripts/protocol_selftest.py        (Windows launcher)
+Run:  python3 scripts/protocol_selftest.py   (Linux - the three mDNS legs skip when the host gives no multicast)
 """
 
 from __future__ import annotations

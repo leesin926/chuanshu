@@ -308,10 +308,17 @@ park 到点之前。被回收之后，迟到的分块拿到 `404 OFFER_UNKNOWN`�
 
 ## 9. 冻结标准
 
-v1 视为冻结的条件：`py scripts/protocol_selftest.py` 用**同一份代码**跑通
+v1 视为冻结的条件：`py scripts/protocol_selftest.py`（Windows 的启动器；Linux 上是
+`python3 scripts/protocol_selftest.py`，同一份脚本、同一条链）用**同一份代码**跑通
 配对 → 多文件含目录 → 中途断开 → 续传 → finalize 全绿，且错误码表两端各能渲染出
-中英文文案。参考实现即验收工具，不接受只写在文档里的约定。
+中英文文案。参考实现即验收工具，不接受只写在文档里的约定。链条里「多文件含目录」那一格判的是
+落点，不是清单：至少一条 `relpath` 带目录段，而它落下来的路径把目录段留着，没有摊平成文件名。
 
 PC 端已于 2026-10-19 达成（51 条断言，含"杀掉接收进程再拉起"的真重启路径，以及 mDNS + UDP
-两条通道各自真的发现了对端，见 `.probe/protocol_report.txt`）。手机端接入时必须用**同一份
-`protocol.json` 和同一组 fixture**重跑一遍，只认它自己那端的绿色结果。
+两条通道各自真的发现了对端；逐条读数打在 `.probe/protocol_report.txt`，那是跑出来的本地产物、
+不入库）。手机端接入时必须用**同一份 `protocol.json` 和同一组 fixture**重跑一遍，只认它自己那端的
+绿色结果。这两样东西各自是什么，写在这里免得被读成一件还没发出来的工件：同一份 `protocol.json`
+是 `mobile/shared/protocol/` 下那份逐字节副本，上游改了就重跑 `mobile/scripts/vendor_protocol.py`，
+镜像守卫按 `SOURCE.json` 的戳核它；同一组 fixture 没有单独存过文件，共享的是上面那一条序列和同一张
+错误码表，各端把它复述成自己的腿。手机端那一趟就是 `接收内核自检`（浏览器档，两个宿主的编译门各自
+`rc=0`），不是 PC 那一份读数的复制。
