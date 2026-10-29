@@ -2435,6 +2435,32 @@ export function receiveSelfReport(): string {
 		&& numList(ckEntry!.getArray<number>('missing')).length == chunkCount(ckSize)
 		&& ckEntry!.getString('path', '') == '', ckDone.body)
 
+	// 18. 第十八轮巡检（#184）：§4 的保活陷阱给发送方留的那一句是「看到连接被关要重连重发一次」，而那一趟
+	// 重发落在 finalize 上。PC 每一趟 finalize 都会把这一单已验过的文件重新报一次——同一个文件在「收到的
+	// 文件」里多出第二行；手机这一端按落点去过重（`hasArrival`）。这一腿量的是那条去过重本身：全绿之后重投
+	// finalize，清单不多一行，答复还是同一份字节。
+	const rpBox = newInbox()
+	const rpPair = jsonOf(askPairOn(rpBox, SIM_PEER_ID, currentPairCode(rpBox, nowSeconds()),
+		passphraseOf(rpBox, nowSeconds()), simKey))
+	const rpToken = rpPair == null ? '' : rpPair!.getString('token', '')
+	const rpId = hexOf(randomBytes(8))
+	const rpFiles: CsFile[] = [simFilesFor(SCRATCH_TEXT, SCRATCH_BIG)[0]]
+	askOn(rpBox, SIM_PEER_ID, 'POST', '/v1/offer', offerJson(rpId, rpFiles, SIM_PEER_ID, SIM_NAME),
+		rpToken, new ArrayBuffer(0), '')
+	resolveOffer(rpBox, rpId, true, recvPrepare, recvDrop)
+	const rpBytes = simFileOf(SCRATCH_TEXT)
+	askOn(rpBox, SIM_PEER_ID, 'PUT', '/v1/offer/' + rpId + '/chunk/' + rpFiles[0].id + '/0', '', rpToken,
+		rpBytes.buffer as ArrayBuffer, hexOf(sha256Bytes(rpBytes)))
+	const rpFirst = askOn(rpBox, SIM_PEER_ID, 'POST', '/v1/offer/' + rpId + '/finalize', '{}', rpToken,
+		new ArrayBuffer(0), '')
+	const rpAgain = askOn(rpBox, SIM_PEER_ID, 'POST', '/v1/offer/' + rpId + '/finalize', '{}', rpToken,
+		new ArrayBuffer(0), '')
+	check('§4 全绿之后重投 finalize：这一端答的还是同一份字节，而不是「没这单」',
+		rpFirst.status == 200 && rpAgain.status == 200 && rpAgain.body == rpFirst.body,
+		rpFirst.status.toString() + '→' + rpAgain.status.toString() + ' | ' + rpAgain.body)
+	check('§4 重投那一趟不再把同一个文件报第二遍：收到的清单只有一行',
+		arrivalsAll(rpBox).length == 1, arrivalsAll(rpBox).join('、'))
+
 	out.push(fail == 0 ? '接收自检 ' + pass.toString() + ' 项全部通过' : '接收自检失败 ' + fail.toString() + ' 项，通过 ' + pass.toString() + ' 项')
 	return out.join('\n')
 }
@@ -2463,6 +2489,13 @@ class ChunkSwallow {
 	/** How many POST /v1/offer lines this peer was shown. The retry leg below reads it: a manifest re-sent
 	 *  after an eaten answer is the same offer, and the count is what says so. */
 	offerAsks: number = 0
+	/** How many answers to `finalize` this peer takes back after verifying the bytes. Spec §4's keep-alive
+	 *  trap ends with 发送方看到连接被关要重连重发一次, and the request that resend reaches is this one:
+	 *  a verify answer that never arrived is the same "not heard from" as a swallowed manifest. */
+	muteFinalize: number = 0
+	/** How many POST .../finalize lines this peer was shown. The count that tells a single re-ask from a
+	 *  loop - and the witness that the second pass lives on a timer, not inside this synchronous report. */
+	finalizeAsks: number = 0
 	/** Replace the version set this peer answers its hello with. `[]` is not an empty set - it is a peer
 	 *  that predates the field, so §7 has to read the number it printed instead. spec §7's two directions
 	 *  are what the two legs below measure. */
@@ -2534,6 +2567,10 @@ function swallowCaller(probe: ChunkSwallow): Caller {
 				probe.offerId = announced!.getString('offer_id', '')
 			}
 		}
+		const isFinalize = method == 'POST' && path.indexOf('/finalize') >= 0
+		if (isFinalize) {
+			probe.finalizeAsks = probe.finalizeAsks + 1
+		}
 		if (method == 'GET' && path.indexOf('/state') >= 0) {
 			probe.stateAsks = probe.stateAsks + 1
 			if (probe.muteState > 0) {
@@ -2572,6 +2609,12 @@ function swallowCaller(probe: ChunkSwallow): Caller {
 			if (isOffer && probe.muteOffer > 0) {
 				probe.muteOffer = probe.muteOffer - 1
 				cb(0, swallowed('自检注入：清单已登记，这一问的回复被吞掉'))
+				return
+			}
+			if (isFinalize && probe.muteFinalize > 0) {
+				// Verified and written down on this side; only the answer died on the way back.
+				probe.muteFinalize = probe.muteFinalize - 1
+				cb(0, swallowed('自检注入：字节都验过了，这一问的回复被吞掉'))
 				return
 			}
 			cb(reply.status, reply.body)
@@ -2799,6 +2842,19 @@ export function senderSelfReport(): string {
 	check('§4 那一块一共写三次：首发一次、重传至多两次（这端的常量写的是那两次）', rej.chunksSeen == 3, rej.chunksSeen.toString())
 	check('三次之间它一次 state 都没问：422 说的是这块不算，不是回复没来', rej.stateAsks == 0, rej.stateAsks.toString())
 	check('报出去的就是对方那一句分块校验失败', rrej.summary.indexOf('分块校验失败') >= 0, rrej.summary)
+
+	// J. 第十八轮巡检（#184）：§4 保活陷阱那句「发送方看到连接被关要重连重发一次」落在 finalize 上就是这一腿。
+	// 这一端（两台手机共用的 `cs-client.uts`）以前把读不到 finalize 应答直接判死：字节都落齐、对面也验过了，
+	// 人看到的却是一次失败。现在它一秒后再问一次，且只问那一次。这一档只能量到「没被判死」与「此刻对方只被
+	// 出示过一次 finalize」——第二趟在 setTimeout 上，同步的报告等不到它自己发生；等得到它的是设备档，
+	// §6 第 35 条把那一档记着。
+	const k = new ChunkSwallow()
+	k.muteFinalize = 1
+	const rk = new SenderRun()
+	runSender(k, SIM_TEXT, rk, '')
+	check('finalize 那一问读不到应答时这一单没被判死', !rk.done, rk.done ? ('已经判死：' + rk.summary) : '还活着')
+	check('它没有把已经落齐的字节重写一遍：这一单只写过一次块', k.chunksSeen == 1, k.chunksSeen.toString())
+	check('此刻对方只被出示过一次 finalize：第二趟在那一秒之后', k.finalizeAsks == 1, k.finalizeAsks.toString())
 
 	out.push(fail == 0 ? '发送自检 ' + pass.toString() + ' 项全部通过' : '发送自检失败 ' + fail.toString() + ' 项，通过 ' + pass.toString() + ' 项')
 	return out.join('\n')

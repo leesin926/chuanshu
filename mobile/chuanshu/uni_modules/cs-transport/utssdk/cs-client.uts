@@ -477,9 +477,19 @@ export function sendFiles(
 		sendOneChunk(offerId, plans, 0, 0, 0, total, cb)
 	}
 
-	function finalize(offerId: string, isRetry: boolean) {
+	function finalize(offerId: string, isRetry: boolean, reasked: boolean) {
 		write('请求对方校验整文件')
 		authed('POST', '/v1/offer/' + offerId + '/finalize', '{}', new ArrayBuffer(0), '', '', false, function (status: number, body: string) {
+			/** A finalize this end could not read is a question that went unanswered, not a verdict:
+			 *  §4's keep-alive trap says a closed connection resends once, and both phones dial a fresh
+			 *  connection per request, so the second pass is a re-ask. The peer keeps the offer in its
+			 *  table after a successful verify, so this re-ask gets the same answer again rather than
+			 *  an OFFER_UNKNOWN - which is why this route is allowed a second pass at all. */
+			if (status == 0 && codeOf(body) != 'CANCELLED' && !reasked) {
+				write('这一问没读到对方的应答，一秒后再问一次：' + detailOf(body))
+				setTimeout((): void => { finalize(offerId, isRetry, true) }, 1000)
+				return
+			}
 			if (status != 200) {
 				finish(false, pinText(codeOf(body)) + ' ' + detailOf(body))
 				return
@@ -534,7 +544,7 @@ export function sendFiles(
 					finish(false, why)
 					return
 				}
-				finalize(offerId, true)
+				finalize(offerId, true, false)
 			})
 		})
 	}
@@ -612,7 +622,7 @@ export function sendFiles(
 						finish(false, why)
 						return
 					}
-					finalize(offerId, false)
+					finalize(offerId, false, false)
 				})
 			})
 		}

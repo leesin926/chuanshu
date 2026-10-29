@@ -593,7 +593,7 @@ def check_finalize_reply() -> None:
              "a clause with no source for the chunk indexes")
     if 'list(bad["missing"])' not in send:
         fail("app/net/send.py no longer reads the reply's `missing` - same clause, PC side")
-    for needle, who in (("app/net/send.py:522-539", "the PC sender"), ("cs-client.uts:480-539", "the phone sender")):
+    for needle, who in (("app/net/send.py:522-539", "the PC sender"), ("cs-client.uts:480-550", "the phone sender")):
         if needle not in section:
             fail(f"§4's retry sentence no longer names {who} by file and range - the sentence that says "
                  "where 问题分块 comes from has to say who implements it")
@@ -893,6 +893,87 @@ def check_chunk_reply() -> None:
              "three writes are §4's claim too, not only the PC's")
 
 
+def check_finalize_replay() -> None:
+    """§4's keep-alive trap has a sender half, and it lands on `finalize` - the one question a re-send
+    answers differently than a first ask.
+
+    Round eighteen (#184) read 「发送方看到连接被关要重连重发一次」 against both senders. The PC had it:
+    every request goes out under `for attempt in (0, 1)`. The phone did not - `finalize` let `status == 0`
+    fall into the `status != 200` branch and reported the whole order failed against a peer that had
+    already verified and taken the bytes. Adding that second pass drags in an obligation the paper had
+    never spelled, because a re-posted `finalize` is a *successful* question repeated: the receiver keeps
+    the offer in its table after verifying (it deletes the resume ledger, not the order), so the second
+    pass re-answers, and the PC announced every landed file a second time - a second row in 收到的文件 and
+    a second notification for bytes that had already been reported. The phone's shared kernel had that
+    gate since #35 (`hasArrival`); the PC got one keyed by destination path. This guard pins the two
+    sentences, the second pass on both senders, and both receivers' announce-once.
+    """
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    section = spec.split("## 4.", 1)[1].split("\n## ", 1)[0] if "## 4." in spec else ""
+    flat = re.sub(r"\s+", "", section)
+
+    for needle, why in (
+        ('这一问可以重投', "the re-post is the whole reason the receiver needs announce-once - it went back un-said"),
+        ('同一份字节只报一次「这个文件到了」', "the obligation a re-post drags along is the one thing that made the PC write two rows"),
+        ('发送方看到连接被关要重连重发一次', "the sentence this round was about"),
+        ('一秒后重问一次，只一次', "the phone's second pass without its bound is a retry loop"),
+        ('不再复用这一条连接', "the receiver half of the trap is written as a connection rule, not a header"),
+    ):
+        if re.sub(r"\s+", "", needle) not in flat:
+            fail(f"§4 no longer says {needle!r} - {why}")
+
+    send = (HERE.parent / "app" / "net" / "send.py").read_text(encoding="utf-8")
+    if "for attempt in (0, 1):" not in send:
+        fail("app/net/send.py no longer gives every request a second pass - §4's 重连重发一次 is that loop for the PC")
+
+    client = (HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk" / "cs-client.uts").read_text(encoding="utf-8")
+    for literal, why in (
+        ("function finalize(offerId: string, isRetry: boolean, reasked: boolean)",
+         "the phone's finalize has no way to tell its first pass from its second"),
+        ("if (status == 0 && codeOf(body) != 'CANCELLED' && !reasked) {",
+         "an unread finalize is a question, not a verdict - and only one re-ask"),
+        ("setTimeout((): void => { finalize(offerId, isRetry, true) }, 1000)",
+         "the second pass itself: a re-ask one second later, on a freshly dialled connection"),
+    ):
+        if literal not in client:
+            fail(f"cs-client.uts no longer contains {literal} - §4's 手机在路由层 says {why}")
+
+    recv = (HERE.parent / "app" / "net" / "receive.py").read_text(encoding="utf-8")
+    finalize_body = recv.split("def handle_finalize", 1)[1].split("\n    def ", 1)[0]
+    if "self._reported: set[str] = set()" not in recv:
+        fail("app/net/receive.py no longer keeps a set of what it has announced - a re-posted finalize reports "
+             "the same landing twice")
+    if 'fresh = [e for e in landed if str(e["path"]) not in self._reported]' not in finalize_body:
+        fail("handle_finalize() no longer filters the announcement by destination - §4 says 同一份字节只报一次")
+    if "self.on_received(state.who, landed)" in finalize_body:
+        fail("handle_finalize() announces the whole landed list again - the second pass re-announces every "
+             "file this offer already reported")
+
+    kernel = (HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk" / "cs-receive.uts").read_text(encoding="utf-8")
+    if "function hasArrival(inbox: Inbox, land: string): boolean {" not in kernel:
+        fail("cs-receive.uts lost the arrival dedupe it has had since #35 - the phone and the PC answer one "
+             "announce-once rule, and this is the phone's half")
+    if "hasArrival(inbox, file.land)" not in kernel.split("function recordArrivals", 1)[1].split("\nfunction ", 1)[0]:
+        fail("recordArrivals() no longer asks before writing a row - the gate has to be in the recorder, not only beside it")
+
+    harness = (HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk" / "web" / "index.uts").read_text(encoding="utf-8")
+    if "muteFinalize: number = 0" not in harness or "finalizeAsks: number = 0" not in harness:
+        fail("the browser's sender probe cannot inject a swallowed finalize answer any more - the phone's "
+             "second pass is unwitnessed at the only tier that runs the shared client")
+    recv_legs = len(re.findall(r"check\(\s*'§4 (全绿之后重投 finalize|重投那一趟不再把同一个文件报第二遍)", harness))
+    if recv_legs < 2:
+        fail(f"the receiving kernel has {recv_legs} re-post legs - it answers the repeat itself, and has to prove it")
+    send_legs = len(re.findall(r"check\(\s*'(finalize 那一问读不到应答时这一单没被判死|它没有把已经落齐的字节重写一遍|此刻对方只被出示过一次 finalize)", harness))
+    if send_legs < 3:
+        fail(f"the sending harness has {send_legs} finalize legs - the re-ask has to be shown alive, cheap, and asked once")
+
+    selftest = (HERE.parent / "scripts" / "protocol_selftest.py").read_text(encoding="utf-8")
+    if "def phase_finalize_replay(" not in selftest or \
+            re.search(r"^\s+phase_finalize_replay\(proto, workspace\)$", selftest, re.M) is None:
+        fail("scripts/protocol_selftest.py has no finalize-replay phase in its run - the PC's second pass, "
+             "the byte-identical re-post and the announce-once are unmeasured again")
+
+
 def main() -> int:
     stamp_path = CONTRACT / "SOURCE.json"
     for name in ("protocol.json", "spec.md", "SOURCE.json"):
@@ -958,6 +1039,7 @@ def main() -> int:
     check_finalize_reply()
     check_offer_reply_shapes()
     check_chunk_reply()
+    check_finalize_replay()
 
     print(f"OK  protocol v{body['protocol_version']} from {stamp['source_repo']}@{stamp['source_commit'][:8]}")
     print(f"OK  {len(body['error_codes'])} error codes, {len(body['endpoints'])} endpoints, chunk {chunk // 1024} KiB")
@@ -980,6 +1062,7 @@ def main() -> int:
     print("OK  §4's finalize reply is one shape on paper and in both receivers; `missing` is who both senders resend by")
     print("OK  §4's three offer replies are one shape on paper and in all four bodies; the abort knows the question still open")
     print("OK  §4's chunk replies are one shape on paper and in all four bodies; three writes, two names, one budget")
+    print("OK  §4's re-posted finalize: a second pass on both senders, and one announcement per landing on both receivers")
     return 0
 
 

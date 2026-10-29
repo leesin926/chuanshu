@@ -168,7 +168,7 @@ manifest（这份摊开就是三端今天真发上线的字节，一个不多一
 （2026-10-29 第十四轮巡检：这一块的顶层原来只列 `offer_id`/`protocol_version`/`total_size`/`files`，
 条目里不列 `type`——而两个发送方（`app/net/send.py:424-431` 与 `cs-protocol.uts::offerJson`）发的
 就是上面这六个键、每条六个字段。`from` 是三端都发、哪一端都不读的键：谁在说话由 §3 的配对握手
-说了算，不由清单自称（PC 那句实现与注释在 `app/net/receive.py:703-708`，名字取的是钉表）。
+说了算，不由清单自称（PC 那句实现与注释在 `app/net/receive.py:714-717`，名字取的是钉表）。
 按「合同里不留没有实现体的字段」这条，`root` 那种三端都不发的键进不了这一块；反过来，线上在场的
 键也不该在合同里缺席。这些字节属 v1 已上线的形状，拿掉任何一个是 §7 的兼容决定——本轮只把块补齐、
 把三个数的用途说清，不删。）
@@ -182,12 +182,12 @@ manifest（这份摊开就是三端今天真发上线的字节，一个不多一
 ```
 
 `files[]` 每条三个数：`received` = 这一条目手里已经落地的分块数，`missing` = 还缺的块号；
-**「同一份」是字面上的同一份**——两条应答由同一函数产出来（PC `app/net/receive.py:145` 的
+**「同一份」是字面上的同一份**——两条应答由同一函数产出来（PC `app/net/receive.py:148` 的
 `payload()`、手机 `cs-receive.uts::payloadOf`），刚接受时回全缺、落齐之后回 `missing: []`，
 形状不变（2026-10-29 第十六轮在 PC 上量到重投清单与随后那次 GET 的体长与字节全同，
 `.probe/r16_after_probe.txt` A1–A3、A4）。
 发送方读哪些键：PC 只判 `accepted`（`app/net/send.py:460`），缺块表另发一次 GET 去取
-（`:521`）；手机把这份体直接交给 `statePlans`（`cs-client.uts:610`），一条 GET 都不补——对它来说
+（`:521`）；手机把这份体直接交给 `statePlans`（`cs-client.uts:620`），一条 GET 都不补——对它来说
 「同一份 `files[]`」是省掉一个来回的那件事。续传两端都只用 `files[].id` 与 `missing`；`received`
 三端都发，手机也把它解析进 `ChunkPlan.received`（`cs-protocol.uts:513`），但没有任何一端拿它判事——
 它和 `mtime`/`type` 同一类：在场的字节，不是工作中的字段。落点不在这条应答里说：每个文件最终写在
@@ -195,7 +195,7 @@ manifest（这份摊开就是三端今天真发上线的字节，一个不多一
 上那句「落到」读的是它。
 
 （2026-10-27 第四轮巡检：这一行原本写的是 `{"accepted": true, "root": "相册/"}`，而 `root` 这个键三端
-谁都不发、发送端谁都不读——PC 的应答是 `app/net/receive.py:145` 那份 `payload()`，手机是
+谁都不发、发送端谁都不读——PC 的应答是 `app/net/receive.py:148` 那份 `payload()`，手机是
 `cs-receive.uts::payloadOf`，两边都没有它。合同里不留没有实现体的字段。）
 
 **待决应答**：接收方不必把这条连接挂着等答案，可以立刻回
@@ -208,7 +208,7 @@ manifest（这份摊开就是三端今天真发上线的字节，一个不多一
 两种写法对发送端是同一条路径。
 
 **中止**：`DELETE /v1/offer/{id}` 回 `200 {"offer_id": "…", "dropped": true}`——三端发的都是这两个键，
-而 `dropped` 哪一端都不读：发送方只在没拿到 200 的时候报一句（`cs-client.uts:562-567`、
+而 `dropped` 哪一端都不读：发送方只在没拿到 200 的时候报一句（`cs-client.uts:573-578`、
 `app/net/send.py:477-480`），它要的是"这单我不要了"这个动作本身。这条 DELETE 覆盖两种时刻，
 接收方都得认：
 
@@ -229,17 +229,17 @@ manifest（这份摊开就是三端今天真发上线的字节，一个不多一
 
 分块：`chunk_size` 固定 4 MiB，`index = offset // chunk_size`，末块可短。请求头 `X-Sha256` 为
 本块摘要，两个发送方都**无条件带上它**（PC `app/net/send.py:562`、手机 `cs-client.uts:444-448`），
-接收方却只在它非空时做块级校验：PC `app/net/receive.py:766` 与手机 `cs-receive.uts:1009` 写的是同一句
+接收方却只在它非空时做块级校验：PC `app/net/receive.py:771` 与手机 `cs-receive.uts:1009` 写的是同一句
 `sha != '' && sha != digest`。头缺失时三端都**照收、不校验**（2026-10-29 第十七轮实测：一个不带
 `X-Sha256`、体是七个大写 `Z` 的 PUT 在 PC 上拿到 `200`，那七个字节真的落进了那个偏移；同一句在共用内核
 上也从屏上量到一次——接收自检里那条「不带 X-Sha256 的 PUT 照收」，体长按这一端清单里那个尾块自己的长度
 （`.probe/r17_chunk_probe.txt` 第 5/5b/5c 行、`.probe/r17_web_after.txt`）；这一单最后的
 防线只剩 `finalize` 的整文件摘要，而摘要一推翻台账就按下面续传那一节改口成全缺，好块陪坏块一起重写）。
 `X-File-Size` 这个头**没有任何一端发、也没有任何
-一端读**：接收方要比的长度来自清单里这一条自己的 `size`（`receive.py:761-764`、
+一端读**：接收方要比的长度来自清单里这一条自己的 `size`（`receive.py:766-769`、
 `cs-receive.uts:1004-1007`），纸上从前把它和 `X-Sha256` 并列写成分块的请求头（#163 记下的那道题，
 这一轮从纸上收掉）。接收方按 `index*chunk_size` 定位写偏移，因此**分块可乱序、可重复、可断点补齐**；
-序号不在 `[0, 该文件块数)` 里是 `400 BAD_CHUNK_INDEX`，detail 给 `{index, count}`（`receive.py:758-760`、
+序号不在 `[0, 该文件块数)` 里是 `400 BAD_CHUNK_INDEX`，detail 给 `{index, count}`（`receive.py:763-765`、
 `cs-receive.uts:999-1001`、浏览器 `web/index.uts:660-663`）。
 
 一块写成的应答（这份摊开也是三端今天真发上线的字节，一个不多一个不少）：
@@ -257,7 +257,7 @@ manifest（这份摊开就是三端今天真发上线的字节，一个不多一
 「摘要一致」比的是一条完整请求反解之后的体，不是块号：同一 index 只发前 2048 字节、抬头仍是全块那份
 摘要，拿到的是 `422`（`.probe/r17_chunk_probe.txt` 第 2b 行）。`idempotent` 是接收方自己写下的说明，
 没有任何发送方读它——PC 的 `_put_chunk` 与手机的 `putChunk` 都只判 `status == 200`；它存在是因为三个
-接收端都用它省掉一次重写（`receive.py:770-777`、`cs-receive.uts:1015-1018`、`web/index.uts` 的
+接收端都用它省掉一次重写（`receive.py:774-782`、`cs-receive.uts:1015-1018`、`web/index.uts` 的
 `routeChunk`），而重发的那一次仍然要给这一单续命，所以心跳记在校验之后、跳过写盘之前。
 
 被拒时 detail 在网上有两副形状，纸上从前一副都没画。长度不对：
@@ -273,7 +273,7 @@ manifest（这份摊开就是三端今天真发上线的字节，一个不多一
 ```
 
 `expected` 里装的是**发送方自己声明的那一份**，接收方算出来的摘要从不上网（两端都直接把 `claimed_digest`
-/ `sha` 回回去：`receive.py:767`、`cs-receive.uts:1010`；`.probe/r17_chunk_probe.txt` 第 3a/3b 行）。
+/ `sha` 回回去：`receive.py:772`、`cs-receive.uts:1010`；`.probe/r17_chunk_probe.txt` 第 3a/3b 行）。
 
 「发送方须重传该块（最多 3 次）」说的是这一条 PUT **一共写三次**：首发一次、重传至多两次。同一个数在两个
 发送方手里写成两副样子——PC 是 `send(..., retries=3)` 配 `for attempt in range(retries)`
@@ -329,9 +329,20 @@ manifest（这份摊开就是三端今天真发上线的字节，一个不多一
 `missing` 就是「只补传该文件的问题分块」里那句"问题分块"的唯一来源：接收方按自己手里那份台账（被整文件
 摘要推翻时先作废、答复随之改口成全缺，见下面续传那一节）逐块报缺，发送方只 PUT 这些 index，然后第二次
 `finalize`；仍然 `ok: false` 就按 `FILE_DIGEST_MISMATCH` 收尾，两端都只补这一手（PC `app/net/send.py:522-539`、
-手机 `cs-client.uts:480-539`）。`path` 只在 `ok: true` 时非空：手机的发送方拿它说界面上那句「最后落到」
-（`cs-client.uts:502-508`），PC 的发送方读的是 `ok` 与 `id`（`app/cli.py:520-524`）而不读它——PC 屏幕上的落点
+手机 `cs-client.uts:480-550`）。`path` 只在 `ok: true` 时非空：手机的发送方拿它说界面上那句「最后落到」
+（`cs-client.uts:512-518`），PC 的发送方读的是 `ok` 与 `id`（`app/cli.py:520-524`）而不读它——PC 屏幕上的落点
 来自 §6 那份接收记录与本次任务行，不是这条应答。
+
+**这一问可以重投**：验完之后接收方删的是那份续传台账，不是这一单——`finalizeReply` 只给这一单写上
+`complete`，PC 也只删 `.chuanshu.state.json`（`receive.py:824-831`），所以表里还有它。2026-10-29 在 PC 上
+量到全成之后连投两次，回体都是 394 个字节且逐字节相同（`.probe/r18_before_probe.txt` 第 [3] 行）；
+同一趟还量到紧接着问一次 `state` 照样回 200（第 [4] 行）。重投带来一条跟着的义务：**同一份字节只报
+一次「这个文件到了」**。一单两个文件、第二个被整文件摘要推翻时，第一趟 finalize 已经替第一个报过一遍，
+发送方补完第二个再 finalize，接收方不能再把第一个报第二遍——那是在接收记录和那一声提示里同一个文件
+写两行。手机共用内核从 #35 起就有这道闸（`cs-receive.uts:1042-1055` 的 `hasArrival` 在
+`recordArrivals` 里先问一次），PC 改前没有：本轮量到它第二趟把 `好的一份.txt` 又报了一遍、第三与第四趟
+各把整表报一遍（`.probe/r18_before_probe.txt` 第 [2]/[3] 行），补的是 `receive.py:819-823` 那三行按落点记的
+本场台账。
 
 一条 `ok: false` 也可能带回**空的** `missing`，两种来路：这个条目压根没有可补传的块（`size: 0` 的文件三端
 算出的分块数都是 0，`cs-protocol.uts:162-167` 与 `app/net/send.py:554-555`），或者对面是不按本合同作废台账
@@ -362,7 +373,7 @@ offer，但**它只是提示**：可信结论只来自 `finalize` 的整文件�
 `chuanshu-receiver-offers.json` 那一行才是它手里的台账。合同里不留只有一端成立的路径。）
 
 以前这一句写的是「按"已落盘字节 / chunk_size"重算缺块」，而这个字节数三端都量不出来：用户在卡片上点
-「接受」的那一刻，接收方就按清单里声明的长度把文件开好（PC `app/net/receive.py:898`
+「接受」的那一刻，接收方就按清单里声明的长度把文件开好（PC `app/net/receive.py:938`
 `handle.truncate(size)`、鸿蒙 `app-harmony/index.uts:1049` `fs.truncateSync(fd, size)`、安卓
 `app-android/CsStore.kt:52` `raf.setLength(want)`），一块没写的文件长度也等于全长——先开档是
 `STORAGE_FULL` 能在把 4 GiB 写花之前回给用户的那一手（#128 的预分配）。所以宁可放弃「按字节猜缺哪几块」
@@ -383,8 +394,25 @@ park 到点之前。被回收之后，迟到的分块拿到 `404 OFFER_UNKNOWN`�
 `offer_id`），要么放弃；这不是错误码的失败，而是这单传输已经结束。
 
 **HTTP 层保活陷阱**：接收方在*读完请求体之前*回错误，残留的 body 会被对端当成下一个请求行
-解析，连接从此错乱。所以错误响应必须先吞掉未读的 body（≤64 KiB），吞不动就置
-`Connection: close`；发送方看到连接被关要重连重发一次，这属于实现细节而不是错误码。
+解析，连接从此错乱。所以错误响应必须先吞掉未读的 body（≤64 KiB，PC 那个数是 `receive.py:48` 的
+`_MAX_DRAIN`），吞不动就**不再复用这一条连接**。这一句从前写的是「吞不动就置 `Connection: close`」，
+而那个头恰恰不是三端共用的写法：PC 在这一支只置 `close_connection`（`app/net/receive.py:250-255`），
+头里不写那三个字，但这条套接字当场不再接第二个请求；安卓每一句应答都带着那个头
+（`app-android/CsServe.kt:181`）；鸿蒙既不写它也不复用（`app-harmony/index.uts:2292-2312` 写完自己关，
+`closeLater` 隔 300 毫秒再拆——2287-2291 那段记的就是为什么不敢写）。在这台鸿蒙设备上那个头是有
+坏处的：#121 量到对端要了 `Connection: close` 之后，承载请求体的那一条 TLS 记录丢在拆除里，接收方
+只看见一个声明了长度、没有一个字节的头。所以这条合同管的是**别让第二个请求行踩进同一根连接**，
+不是必须写哪一个头。
+
+发送方看到连接被关要重连重发一次，这属于实现细节而不是错误码。两端本来就每条请求重拨一条新
+连接（PC 那段注释在 `send.py:256-261`），所以"重发"对这一端等于再拨一次、原样再问一遍；管到的
+请求不一样宽。PC 在传输层——每一条请求都有第二趟（`for attempt in (0, 1)`，`app/net/send.py:255`；
+2026-10-29 把第一趟拧成 `ConnectionResetError`，第二趟照样拿回那份 200，`.probe/r18_before_probe.txt`
+第 [1] 行）。手机在路由层——读不到应答的那一支各归各的规矩管：清单那一问一秒后再问（上面
+「待决应答」），分块那一问先问一次 `state`（上面「节奏」）。**`finalize` 这一问改前没有第二趟**：
+`status == 0` 落进 `status != 200` 那一支，整单被报成失败，而对面很可能已经验完收下（这一端只是
+没读到那句回答）。本轮按上面那句「这一问可以重投」给它补了一趟——一秒后重问一次，只一次
+（`cs-client.uts:488-491`）。
 
 ## 5. 路径清洗（接收方的安全底线）
 

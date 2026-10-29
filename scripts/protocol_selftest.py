@@ -1762,6 +1762,150 @@ def phase_catalogue(proto: protocol_spec.Protocol) -> None:
     check("every code answers with the contract's http status", not wrong_http, wrong_http)
 
 
+def phase_finalize_replay(proto: protocol_spec.Protocol, workspace: Path) -> None:
+    """The keep-alive trap has a sender half, and it lands on `finalize`.
+
+    §4 says 「发送方看到连接被关要重连重发一次」. The PC transport does exactly that - `_once` tries
+    twice - so a verify question whose reply could not be read is re-posted, and measured here the
+    re-post comes back with the same bytes (.probe/r18_before_probe.py, 2026-10-29). What that resend
+    used to do at the other end is the half that was missing: every re-post re-ran the arrival
+    announcement, so one file put two rows in 收到的文件 and the person was told about the same bytes
+    twice. The phone's shared kernel guarded by landing path (`hasArrival`); the PC had none. Both
+    halves are pinned here: the second pass brings the answer, and it announces nothing a second time.
+    """
+    corpus = workspace / "replay-corpus"
+    (corpus / "相册").mkdir(parents=True, exist_ok=True)
+    good = corpus / "好的一份.txt"
+    good.write_bytes(b"a verified file\n")
+    big = corpus / "相册" / "两块.bin"
+    big.write_bytes(blob(17, proto.chunk_size + 7))
+    sender = load_or_create(workspace / "replay-sender")
+    receiver = load_or_create(workspace / "replay-receiver")
+    root = workspace / "replay-received"
+    arrivals: list[list[dict]] = []
+    service = ReceiveService(receiver, "PC-Replay", lambda manifest, who, caller: True,
+                             host="127.0.0.1", port=0, root=root,
+                             on_received=lambda who, landed: arrivals.append(list(landed)))
+    service.start()
+    try:
+        files = plan([good, big], base=corpus)
+        big_file = next(f for f in files if f.relpath.endswith("两块.bin"))
+        good_rel = next(f.relpath for f in files if f.relpath.endswith("好的一份.txt"))
+        good_tail = good_rel.rsplit("/", 1)[-1]
+        by_id = {f.id: f for f in files}
+
+        def dial(name: str) -> PeerConnection:
+            conn = PeerConnection(sender, name, "127.0.0.1", service.port, receiver.served_fingerprint)
+            conn.hello()
+            conn.pair(service.current_pair_code())
+            return conn
+
+        def verdict(v: dict) -> list[str]:
+            return sorted(by_id[str(e["id"])].relpath for e in v["verified"] if e["ok"])
+
+        def rows() -> list[str]:
+            return [str(item["path"]) for batch in arrivals for item in batch]
+
+        def tail(path_str: str) -> str:
+            return path_str.replace("\\", "/").rsplit("/", 1)[-1]
+
+        conn = dial("PC-Replay-Sender")
+        snapshots: list[bytes] = []
+        real_once = conn._once
+
+        def spy(method, path, body, headers, pace_ms=0):
+            status, payload, raw = real_once(method, path, body, headers, pace_ms)
+            if method == "POST" and path.endswith("/finalize"):
+                snapshots.append(raw)
+            return status, payload, raw
+
+        conn._once = spy
+        conn.offer(files)
+        conn.push_missing(files, conn.state(), None, 3)
+        landing = root / conn.offer_id
+        # The disk says otherwise: the same length, the wrong bytes. Nothing is missing, so only a
+        # digest can refuse this one - and that refusal is what §4's resend arrives on.
+        bad = landing / big_file.relpath
+        bad.write_bytes(b"X" * bad.stat().st_size)
+        first = conn.finalize()
+        check("磁盘与台账对不上时，这一份被拒且缺块当场点名",
+              verdict(first) == [good_rel]
+              and [e["missing"] for e in first["verified"] if not e["ok"]] == [[0, 1]],
+              first["verified"])
+        again = conn.finalize()
+        check("重投的那一问不再把同一个文件报第二遍",
+              verdict(again) == verdict(first) and len(rows()) == 1 and tail(rows()[0]) == good_tail,
+              [verdict(again), rows()])
+        conn.push_missing(files, conn.state(), None, 3)
+        settled = conn.finalize()
+        check("补好之后这一单全过，每一份字节只在收到的文件里出现一次",
+              len(verdict(settled)) == 2 and sorted(map(tail, rows())) == sorted([good_tail, "两块.bin"]),
+              [verdict(settled), rows()])
+
+        # The re-post is not merely harmless - it is the answer the sender needs, so it has to stay an
+        # answer. By now the resume ledger has handed itself back; the offer itself has not gone away.
+        check("整单校验通过后，续传台账自己让位", (landing / STATE_FILE).is_file() is False,
+              str(landing / STATE_FILE))
+        after = conn.finalize()
+        check("台账没了，重投的这一问仍答得出而不是「没这单」", verdict(after) == verdict(settled),
+              after["verified"])
+        check("重投 finalize 的应答逐字节相同",
+              len(snapshots) >= 2 and snapshots[-1] == snapshots[-2], len(snapshots))
+        kept = conn.state()
+        check("state 也还认这一单", kept.get("offer_id") == conn.offer_id
+              and all(not e["missing"] for e in kept["files"]), kept)
+
+        # Keyed by destination, not by name: a second batch with the same relpaths lands somewhere else,
+        # and to the person reading the list those are different bytes.
+        second = dial("PC-Replay-Second")
+        second.offer(files)
+        second.send(files, None)
+        check("另一单的同名文件是新的一行，不是重复", len(set(rows())) == 4 and len(rows()) == 4, rows())
+
+        # And the sender half itself: the first connection dies mid-request, the second carries the
+        # answer - then stops trying. A peer that answers nothing is a failure after one resend, not
+        # after a hundred.
+        real_connect = conn._connect
+        boomed = [0]
+
+        def flaky(always: bool):
+            def arm():
+                out = real_connect()
+                if always or boomed[0] == 0:
+                    def boom(*args, **kwargs):
+                        boomed[0] += 1
+                        raise ConnectionResetError("对面把这根连接关了")
+                    out.request = boom  # type: ignore[method-assign]
+                return out
+            return arm
+
+        conn._connect = flaky(False)
+        try:
+            rescued = conn.finalize()
+        finally:
+            conn._connect = real_connect
+        check("第一趟连接被关掉，第二趟把答案带回来",
+              verdict(rescued) == verdict(settled) and boomed[0] == 1, boomed[0])
+        check("重发那一趟不再多报一次收到的文件", len(rows()) == 4, rows())
+
+        boomed[0] = 0
+        conn._connect = flaky(True)
+        try:
+            conn.finalize()
+            check("没人接的电话重发一次就收口", False, "finalize returned")
+        except (ConnectionResetError, OSError) as exc:
+            check("没人接的电话重发一次就收口", boomed[0] == 2, [boomed[0], type(exc).__name__])
+        finally:
+            conn._connect = real_connect
+
+        # The boundary the guard must not cross: the offer being *gone* is the one case where a
+        # re-posted verify has no answer to give.
+        conn.abort()
+        expect_error("收回这单之后重投，才轮到「没这单」", "OFFER_UNKNOWN", conn.finalize)
+    finally:
+        service.stop()
+
+
 def main() -> int:
     proto = protocol_spec.load()
     REPORT.write_text("", encoding="utf-8")
@@ -1782,6 +1926,7 @@ def main() -> int:
         phase_offer_reply(proto, workspace)
         phase_chunk_reply(proto, workspace)
         phase_chunk_reply_lost(proto, workspace)
+        phase_finalize_replay(proto, workspace)
         phase_discovery(proto, workspace)
         phase_reverse_pin(proto, workspace)
         phase_shared_identity(proto, workspace)

@@ -801,6 +801,38 @@ py -X utf8 scripts/check_protocol.py
       间接证词（共用状态机本轮一行未改，两道编译门没跑）；"不带 `X-Sha256` 的 PUT"在真机上没人试过——量它要的是**改发送方**，而合同说的恰好是
       发送方必发，所以本轮把这句话记在纸上、各端量了一次，没有替它造一条设备腿。
 
+31. **#184：合同 §4 保活陷阱那句「发送方看到连接被关要重连重发一次」——手机这一问的 `finalize` 改前没有第二趟，而补出来的第二趟会把同一个文件报两遍**
+    （动的是合同、手机共用发送方 `cs-client.uts` 里 `finalize` 那一支、这一端浏览器替身的一处注入加五条腿、PC 接收侧三行、PC 门禁一个新相、一道守卫；
+    **两个宿主（`app-android`、`app-harmony`）与共用接收内核 `cs-receive.uts` 一个字节没改**，所以两道编译门**本轮没跑**；完整账目在
+    `../docs/feature-matrix.md` §6 第 35 条）
+    - **手机端缺的是那一趟**：`cs-client.uts:482` 发完 `finalize` 以后，`status == 0`（读不到应答）从前直接落进 `status != 200` 那一支，
+      整单被报成失败——而对面**很可能已经验完收下**，这一端只是没读到那句回答。合同 §4 那句「发送方看到连接被关要重连重发一次」在 PC 是
+      传输层的 `for attempt in (0, 1)`（每条请求都有第二趟），在手机是路由层的各条规矩：清单那一问一秒后再问、分块那一问先问一次 `state`，
+      `finalize` 这一问两样都没有。补的是 `cs-client.uts:488-491`：`finalize(offerId, isRetry, reasked)` 多带一个"这是第几趟"，
+      `status == 0 && codeOf(body) != 'CANCELLED' && !reasked` 时 `setTimeout((): void => { finalize(offerId, isRetry, true) }, 1000)` ——
+      一秒后**再问一次，只一次**。这一端每条请求本来就重拨一条新连接，所以第二趟落在手机上就是重新拨、原样再问。
+    - **重投带来一条新的义务**：接收方验完删的是那份续传台账、不是这一单（PC 只删 `.chuanshu.state.json`，`finalizeReply` 只写 `complete`），
+      所以重投拿到的是**同一份字节**——于是"同一个文件到了"这件事只能报一次。手机共用内核从 #35 起就有这道闸（`cs-receive.uts:1042-1052`
+      的 `hasArrival`，登记那一支在 `:1060` 先问一次），**PC 改前没有**：改前探针（`.probe/r18_before_probe.txt`，那一趟是把 `app/net/receive.py`
+      换成 `HEAD` 那份跑的）量到 `finalize#2` 把整表又报一遍、第三与第四趟各报一遍（`on_received` 一共四次）；补完三行按落点筛的闸以后同一份
+      探针是 `['好的一份.txt', '相册/两块.bin']` 两次、不多不少（`.probe/r18_after_probe.txt`）。
+    - **这一端两条接收腿加三条发送腿**（`web/index.uts:2458` 起、`:2852` 起；替身新增 `ChunkSwallow.muteFinalize` / `finalizeAsks`，
+      注入在 `:2614`、计数在 `:2572`），档位 `浏览器`：**接收自检 142 → 144 项全部通过**、**发送自检 36 → 39 项全部通过**
+      （`.probe/r18_browser.txt`，屏上逐条读到）。发送侧那三条是「`finalize` 那一问读不到应答时这一单**没被判死**」「它没有把已经落齐的字节
+      重写一遍：这一单只写过一次块」「此刻对方只被出示过一次 `finalize`：第二趟在那一秒之后」。**这一档证到这儿为止**——那一秒之后的第二趟
+      是不是真的把已经收下的一单救回来，浏览器里问的是替身自己，活手机上要造一个"第一趟吞掉 `finalize` 应答"的对端才算数
+      （形状同 #173 那条清单腿：安卓 `adb forward` + 一个会吞回复的桩，鸿蒙 `hdc fport` 同一条）。**这一端还欠的设备腿**：
+      `pack --iscustom` 出来的自定义基座上跑一次「手机发 → 桩吞掉 finalize 第一趟 → 屏上日志先说『这一问没读到对方的应答，一秒后再问一次』、
+      最后说『对方已收下 N 个文件』」；`cs-client.uts` 这一支改的是共用发送方，安卓与鸿蒙都跑它，两道编译门本轮没跑（改的都是脚本层，
+      没动原生半边），下一轮上机前先过 `HBuilderX cli compile` 那道门。
+    - **守卫 19 → 20 行**（`check_finalize_replay()`，`mobile/scripts/check_protocol.py:896`，`main()` 在 `:1042` 调用）：那五句话必须在 §4 纸上；
+      PC 发送方必须有 `for attempt in (0, 1)`；`cs-client.uts` 必须有那三处字面量（带 `reasked` 的签名、`!reasked` 那一支、那一秒后的重问）；
+      PC 接收侧必须有 `_reported`、必须按落点筛、`handle_finalize` 里不许再出现"把整表报出去"那一句；共用内核必须有 `hasArrival` 的定义
+      **并且登记那一支真的在问它**；这一端替身必须还能注入并计数；两头的腿数各有下限；门禁那一相必须存在且被调用。
+      **23 处守卫负向每一处单独红**（`.probe/r18_negatives.py` → `.probe/r18_guard_negatives.txt`），还原后 `rc=0` 全绿；**另有 4 处门禁负向**
+      （`.probe/r18_phase_negatives.py` → `.probe/r18_phase_negatives.txt`）把 PC 那道闸真拆掉再跑那一相，四条分别红在
+      「重投的那一问不再把同一个文件报第二遍」（两处）、`补好之后这一单全过…只出现一次`、「另一单的同名文件是新的一行」，还原再跑 `RESULT ALL PASS`。
+
 M2a 的最小切口是"手机发、PC 收"：扫（或粘贴）PC 的二维码拿到地址与完整指纹，用户只核对同屏的
 一次性配对码——PC 侧接收端已经跑绿，手机只要把
 `/v1/pair`、`/v1/offer`、`PUT chunk`、`/v1/finalize` 四条打出去就能有结论，发现层可以先不做。

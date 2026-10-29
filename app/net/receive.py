@@ -342,6 +342,11 @@ class ReceiveService:
         # a batch they declined could be accepted by an accident of the second dialog.
         self._answered: dict[str, str] = {}
         self._asking: set[str] = set()
+        # §4 lets a sender resend the request whose reply it could not read, and `finalize` is one of
+        # those requests. A file this machine has already announced is announced once: the second
+        # verdict for the same bytes is the same news, and telling it twice puts two rows in the
+        # arrival list for one file. Mirrors `hasArrival` in cs-receive.uts.
+        self._reported: set[str] = set()
         self._tokens: dict[str, str] = {}
         #: When each peer last said anything with a token, and when this machine last leaned on
         #: the session it dialled out. Both feed the idle reclaim; neither is ever sent anywhere.
@@ -811,8 +816,11 @@ class ReceiveService:
                 landed.append({"relpath": str(file["relpath"]), "size": int(file["size"]), "path": str(target)})
             else:
                 log.warning("finalize rejected %s: %s", file["relpath"], "missing chunks" if missing else "digest mismatch")
-        if landed and self.on_received is not None:
-            self.on_received(state.who, landed)
+        if landed:
+            fresh = [e for e in landed if str(e["path"]) not in self._reported]
+            self._reported.update(str(e["path"]) for e in fresh)
+            if fresh and self.on_received is not None:
+                self.on_received(state.who, fresh)
         if all(item["ok"] for item in results):
             # Nothing left to resume, and a state file is exactly what an interrupted offer looks
             # like after a restart: leaving it here would re-adopt a finished transfer as one. Say
