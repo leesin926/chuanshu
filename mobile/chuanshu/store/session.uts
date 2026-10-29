@@ -24,7 +24,7 @@ import {
 	BufferCallback,
 	HexCallback
 } from '@/uni_modules/cs-transport/utssdk/cs-client.uts'
-import { TRANSPORT_PORT, PAIR_CODE_DIGITS, PASSPHRASE_CHARS, SESSION_IDLE_S, codeReject, passReject, nameReject, digitsOnly, formatSize, parsePairUrl } from '@/uni_modules/cs-transport/utssdk/cs-protocol.uts'
+import { TRANSPORT_PORT, PAIR_CODE_DIGITS, PASSPHRASE_CHARS, SESSION_IDLE_S, RandFn, codeReject, passReject, nameReject, digitsOnly, formatSize, parsePairUrl } from '@/uni_modules/cs-transport/utssdk/cs-protocol.uts'
 import { selfInfo, signPair, request, prepareFile, readChunk, digestHex, transportMocked, transportNote, lanCheck } from '@/uni_modules/cs-transport'
 // #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
 import { pinnedFor, unpinPeer, receiveStart, receiveStop, receiveStatus } from '@/uni_modules/cs-transport'
@@ -112,6 +112,7 @@ import {
 	storeDropFile,
 	storeFileExists,
 	storeLinkKind,
+	randomHex,
 	digestBytes,
 	fingerprintOfKey,
 	verifySignature,
@@ -374,7 +375,14 @@ let discRunning = false
 let discRanOnce = false
 
 // #ifdef APP-HARMONY
-const recvInbox: Inbox = newInbox()
+/** spec §3's random source for this end's three secrets, handed to the inbox the state machine below
+ *  mints them from. A `const` wrapper rather than the imported `randomHex` itself, because the name the
+ *  ArkTS half exports is a function and this is the position a value is wanted. */
+const pageRand: RandFn = (byteLen: number): string => {
+	return randomHex(byteLen)
+}
+
+const recvInbox: Inbox = newInbox(pageRand)
 let recvSelf: LocalPeer | null = null
 /** The two documents as they were when last written, so a refresh that changed nothing writes nothing. */
 let lastTrustText = ''

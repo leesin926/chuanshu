@@ -936,6 +936,25 @@ py -X utf8 scripts/check_protocol.py
     - **顺带欠的那一半（设备档）**：`'?'` 那一桶在活设备上的样子——同一台陌生机器反复重连、每次读不到地址，五次以后这一路被拒而
       另一路照进——只有 `门禁`（PC）与 `浏览器`（共用状态机）两档，设备档从来没有人量过；本轮至少把那句写进了合同，下一个宿主
       换成"每条连接一个干净桶"会被守卫直接判红。
+37. **#190：第二十四轮欠的那一档——三个秘密改由宿主铸，手机这一半只有守卫的文字判据；五条新腿写好了还没跑过，两道编译门也没跑**
+    - **欠什么**：`web/index.uts` 第 20 组五条 §3 随机源腿已经写好（四个脚本化的源在 `:209-231`，腿在 `:2575-2611`）。这一档上一次真跑
+      出来是 144 项（`.probe/r22_web_after.txt`，#188 那一趟），待办 36 那五条和这五条都还没进过浏览器，所以两组一起跑通的预期是
+      `144 → 154`；本轮动了 `cs-protocol.uts`（`RandFn` 与 `pickFrom`）、`cs-receive.uts`（`Inbox.rand`、`newInbox(rand)`、
+      三个铸密函数）、四个宿主（`app-android/index.uts` + `CsWire.kt`、`app-harmony/index.uts`、`app-ios/index.uts`、`web/index.uts`）
+      和鸿蒙那一页 `store/session.uts`，所以还欠两道编译门（Kotlin / ArkTS）。这三样本轮一个都没跑。
+    - **为什么这一条比待办 36 更硬**：`Inbox.rand` 是一个**函数类型的类属性**（`cs-receive.uts:231`）。本地那份生成出来的 Kotlin
+      里没有这种东西的先例——UTS 里其余的函数类型都是函数参数，没有一个是躺在 dataclass 形状的类字段上、由 `newInbox` 赋进去的。
+      还有四处也是新写或改形：ArkTS 那侧 `cryptoFramework.createRandom().generateRandomSync(n)` 返回的 `DataBuf` 取 `.data` 再转 hex、
+      浏览器那侧 `crypto.getRandomValues(out)` 的 typed-array 类型、iOS 那侧 `randomHex(byteLen)` 把 UTS 的 `number` 收成 Swift 的 `Int`、
+      以及 `pickFrom` 里那个带界的 draw 循环。这些在编译器上是什么形状，本轮不知道——不要拿"守卫绿了"当"编得过"。
+    - **现在能说什么**：本轮结论只到 `门禁 + 守卫`。门禁 `phase_random_source()` 七条腿全绿（234 条 PASS 里的 263-269 行，
+      `.probe/r24_gate_final.txt`），量的是 PC 那侧"把源换掉，答案跟着换"；守卫 23 行 OK（`.probe/r24_guard.txt`）说的是
+      "纸面点名五个源、内核只问宿主、五处调用点都带了源"。**手机那三个数出自宿主的密码学源，目前没编过、没跑过**；在那之前
+      别说手机上这三个数已经是密码学的。
+    - **怎么跑（要用户手动做）**：开 HBuilderX → `mobile/chuanshu` → 运行到浏览器，在「我的」页按一次「接收自检」；两道编译门走
+      同一个 CLI（`cli.exe launch app-android --project E:\wowo3\mobile\chuanshu --compile true`、
+      `cli.exe launch app-harmony --project E:\wowo3\mobile\chuanshu --compile true --buildType debug`，见本页开头那四条）。真机/模拟器档还欠的那条：
+      活手机上配对码那六格**非空**、且两次重启给的是两个不同的码——今天这条只有 `门禁`（PC 进程）与 `浏览器`（未跑）两档。
 
 M2a 的最小切口是"手机发、PC 收"：扫（或粘贴）PC 的二维码拿到地址与完整指纹，用户只核对同屏的
 一次性配对码——PC 侧接收端已经跑绿，手机只要把

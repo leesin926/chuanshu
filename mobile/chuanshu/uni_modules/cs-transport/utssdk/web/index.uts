@@ -14,8 +14,12 @@ import {
 	pairMessage,
 	parseJson,
 	numList,
+	isFullFingerprint,
 	randomHex,
 	newPassphrase,
+	newPairCode,
+	RandFn,
+	PAIR_CODE_DIGITS,
 	PASSPHRASE_CHARS,
 	PAIR_CODE_MAX_FAILS,
 	PAIR_CODE_LOCK_S,
@@ -184,11 +188,45 @@ function hexOf(bytes: Uint8Array): string {
 }
 
 function randomBytes(len: number): Uint8Array {
+	// The browser's cryptographic generator (§3): the page's stand-in key, its ids and - through
+	// `harnessRand` below - the three secrets the shared kernel mints all come from here. `btoa` two
+	// functions down is the same kind of Web API, so this target does pass browser globals through.
 	const out = new Uint8Array(len)
-	for (let i = 0; i < len; i++) {
-		out[i] = Math.floor(Math.random() * 256)
-	}
+	crypto.getRandomValues(out)
 	return out
+}
+
+/** §3: the function each host hands to `newInbox`. On this target the host is the tab. */
+const harnessRand: RandFn = (byteLen: number): string => {
+	return hexOf(randomBytes(byteLen))
+}
+
+/* Four scripted sources for §3's self-check legs below. A hand that mints a secret cannot be watched,
+ *  but it can be *replaced* - and then the secret itself says which hand made it. */
+
+/** Thirty-two bytes as hex: `0a`..`19` twice. Six of them read as digits, eight as passphrase letters,
+ *  and all thirty-two as the session token. */
+const SCRIPTED_HEX = '0a0b0c0d0e0f101112131415161718190a0b0c0d0e0f10111213141516171819'
+const scriptedRand: RandFn = (byteLen: number): string => {
+	return SCRIPTED_HEX
+}
+
+/** `fa`..`fe` - the five values a byte has that ten digits do not divide into - then `01`..`09`. Long
+ *  enough for a six-digit code, too short for eight passphrase symbols on purpose. */
+const DROPPED_HEX = 'fafbfcfdfe010203040506070809'
+const droppedRand: RandFn = (byteLen: number): string => {
+	return DROPPED_HEX
+}
+
+/** The same five, sixteen bytes deep: a 32-letter alphabet divides 256, so none of these is dropped. */
+const DROPPED16_HEX = 'fafbfcfdfe0102030405060708090a0b'
+const dropped16Rand: RandFn = (byteLen: number): string => {
+	return DROPPED16_HEX
+}
+
+/** The host that armed nothing. */
+const emptyRand: RandFn = (byteLen: number): string => {
+	return ''
 }
 
 function b64(bytes: Uint8Array): string {
@@ -505,20 +543,11 @@ let pinnedFp = ''
  *  request's base64 SPKI, the only identity a stand-in with no TLS handshake has. */
 let trustedKey = ''
 
-function newCode(): string {
-	const digits = '0123456789'
-	let out = ''
-	// Six, because protocol.json says so (pair_code_digits); a shorter code here would let the page
-	// accept something the real PC would never issue.
-	for (let i = 0; i < 6; i++) {
-		out = out + digits.charAt(Math.floor(Math.random() * 10))
-	}
-	return out
-}
-
 function resetPeer(): void {
-	peer.code = newCode()
-	peer.passphrase = newPassphrase(PASSPHRASE_CHARS)
+	// §3's two printable secrets, minted by the same two functions the shared kernel uses and off this
+	// tab's generator: the demo PC and a phone answer a stranger with the same promise.
+	peer.code = newPairCode(harnessRand, PAIR_CODE_DIGITS)
+	peer.passphrase = newPassphrase(harnessRand, PASSPHRASE_CHARS)
 	peer.fingerprint = hexOf(sha256Bytes(utf8('chuanshu-demo-pc|' + peer.code)))
 	peer.token = ''
 	peer.paired = false
@@ -892,7 +921,7 @@ export function request(
 
 /* ================================================== this device as a receiver */
 
-const recvInbox = newInbox()
+const recvInbox = newInbox(harnessRand)
 /** The stand-in for filesDir. A chunk written here is only as durable as the tab, which is enough to
  *  drive the state machine and nowhere near enough to prove the file system - so the offset writes
  *  and the whole-file re-read are the parts worth reading carefully, and the durability they claim is
@@ -1421,7 +1450,7 @@ function sliceOf(file: Uint8Array, start: number, length: number): Uint8Array {
 export function receiveSelfReport(): string {
 	ensureSimPc()
 	const out: string[] = []
-	const box = newInbox()
+	const box = newInbox(harnessRand)
 	let token = ''
 	let pass = 0
 	let fail = 0
@@ -1500,7 +1529,7 @@ export function receiveSelfReport(): string {
 	// 5b. spec §7 is a set on each side, and a receiver reads the sender's only from this body - it never
 	// dials back for a hello. These two legs run on their own box, because an extra pending offer in the
 	// one below would move every count of it.
-	const vBox = newInbox()
+	const vBox = newInbox(harnessRand)
 	const vPaired = askPairOn(vBox, SIM_PEER_ID, currentPairCode(vBox, nowSeconds()), passphraseOf(vBox, nowSeconds()), simKey)
 	const vObj = jsonOf(vPaired)
 	const vToken = vObj == null ? '' : vObj!.getString('token', '')
@@ -1527,7 +1556,7 @@ export function receiveSelfReport(): string {
 	// `send C:\a\report.txt D:\b\report.txt` 就是这么把两个 id 报成同一个名字的），#128 让每一单
 	// 有自己的目录，管的是两「单」之间；同一份清单里的两个同名条目，这一端此前把 land 记了两次同一个
 	// 字符串，后一条的字节直接盖在前一条身上。改之前这一腿是红的：前一条 finalize 过不了。
-	const twinBox = newInbox()
+	const twinBox = newInbox(harnessRand)
 	const twinPair = askPairOn(twinBox, SIM_PEER_ID, currentPairCode(twinBox, nowSeconds()), passphraseOf(twinBox, nowSeconds()), simKey)
 	const twinPairObj = jsonOf(twinPair)
 	const twinToken = twinPairObj == null ? '' : twinPairObj!.getString('token', '')
@@ -1586,7 +1615,7 @@ export function receiveSelfReport(): string {
 	// 还得收」和「多一段 / 多一字节必须拒」凑成一对，才分得出 `>` 与 `>=`；`max_path_depth` 此前只躺在
 	// `protocol.json` 里，纸面那份清单没有它，三个数字也一条行为腿都没有（`check_protocol.py` 比的是常量相等）。
 	// 点开头的段与保留名这两条，合同现在写的是「一律拒、不分平台」，腿就在共用状态机上量这一端的读法。
-	const limitBox = newInbox()
+	const limitBox = newInbox(harnessRand)
 	const limitPair = askPairOn(limitBox, SIM_PEER_ID, currentPairCode(limitBox, nowSeconds()), passphraseOf(limitBox, nowSeconds()), simKey)
 	const limitPairObj = jsonOf(limitPair)
 	const limitToken = limitPairObj == null ? '' : limitPairObj!.getString('token', '')
@@ -1641,7 +1670,7 @@ export function receiveSelfReport(): string {
 	}
 	const bulkReply = askLimitOffer(bulkFiles)
 	const pendingBeforeSize = snapshot(limitBox, nowSeconds()).pendingOfferIds.length
-	const sizeBox = newInbox()
+	const sizeBox = newInbox(harnessRand)
 	const sizePair = askPairOn(sizeBox, SIM_PEER_ID, currentPairCode(sizeBox, nowSeconds()), passphraseOf(sizeBox, nowSeconds()), simKey)
 	const sizePairObj = jsonOf(sizePair)
 	const sizeToken = sizePairObj == null ? '' : sizePairObj!.getString('token', '')
@@ -1658,7 +1687,7 @@ export function receiveSelfReport(): string {
 	// 全都只判码名：把 403 改成 400，一条都不会红。号本身错了在手机上是有代价的——宿主把 `reply.status` 原样
 	// 写进线上响应（`app-android/index.uts` 的 `replyJson(reply.status, …)`），对面 PC 按合同表读它。
 	// 这里量的是四格还没被号判过的码；422/507/403(DECLINED) 三格各自的腿本来就带着号，400 那几格刚在 5b/5d 补上。
-	const errBox = newInbox()
+	const errBox = newInbox(harnessRand)
 	const errPair = askPairOn(errBox, SIM_PEER_ID, currentPairCode(errBox, nowSeconds()), passphraseOf(errBox, nowSeconds()), simKey)
 	const errPairObj = jsonOf(errPair)
 	const errToken = errPairObj == null ? '' : errPairObj!.getString('token', '')
@@ -1669,7 +1698,7 @@ export function receiveSelfReport(): string {
 	const busy = askPairOn(errBox, '203.0.113.41', currentPairCode(errBox, nowSeconds()), passphraseOf(errBox, nowSeconds()), b64(randomBytes(32)))
 	check('§7 码表：PEER_BUSY 线上回 429', codeOfReply(busy) == 'PEER_BUSY' && busy.status == 429, busy.status.toString())
 	// 错的配对码要落在一台干净的盒子上：`box` 在第 1 组已经被五次尝试打过锁，那一格回的是 429 不是 403。
-	const codeBox = newInbox()
+	const codeBox = newInbox(harnessRand)
 	const codeNow = currentPairCode(codeBox, nowSeconds())
 	const wrongOn = codeNow == '000000' ? '111111' : '000000'
 	const badCode = askPairOn(codeBox, SIM_PEER_ID, wrongOn, passphraseOf(codeBox, nowSeconds()), simKey)
@@ -1733,7 +1762,7 @@ export function receiveSelfReport(): string {
 	// 它判的是清单收不收，从没成一单带目录的文件，也没读过落点。这一组把链条走完一次：配对 → 两个文件
 	//（一个嵌两层中文目录、一个平名）→ 逐块 PUT → finalize，然后按 §9 的口径读屏：两条都过整文件摘要，
 	// 且落点把目录段留着，没有被 basename 摊平。
-	const dirBox = newInbox()
+	const dirBox = newInbox(harnessRand)
 	const dirPair = askPairOn(dirBox, SIM_PEER_ID, currentPairCode(dirBox, nowSeconds()), passphraseOf(dirBox, nowSeconds()), simKey)
 	const dirPairObj = jsonOf(dirPair)
 	const dirToken = dirPairObj == null ? '' : dirPairObj!.getString('token', '')
@@ -1795,7 +1824,7 @@ export function receiveSelfReport(): string {
 	// 5g. 第十四轮巡检（#180）：§4 那一块摊开就是三端真发的字节，其中 `total_size` 说好了「接收方不拿它判任何事」。
 	// 那不能只写在纸上：拿一个谎报的总数投一单——条目自己说 7 字节，总数说 987654321——如果这一端偷偷信了那个数，
 	// 要么整单被拒，要么预先开档开出九个多亿。两头都量：登记照旧，落盘的字节按条目自己的 size。
-	const totalBox = newInbox()
+	const totalBox = newInbox(harnessRand)
 	const totalPair = askPairOn(totalBox, SIM_PEER_ID, currentPairCode(totalBox, nowSeconds()), passphraseOf(totalBox, nowSeconds()), simKey)
 	const totalPairObj = jsonOf(totalPair)
 	const totalToken = totalPairObj == null ? '' : totalPairObj!.getString('token', '')
@@ -1831,7 +1860,7 @@ export function receiveSelfReport(): string {
 	// 这条应答里的 `missing`。纸上原来画的是 `{"verified": [{"id","ok"}]}`，等于合同让发送方补传它读不到的东西
 	//（同一节上面讲落点时却已经把 `path` 算进来了，两处对同一条应答各说各话）。这一组先把这一端回的形状钉住，
 	// 再量那句句子管不到的那一格：`size: 0` 的条目分块数就是 0，被摘要推翻时也只会回一个空的缺块表。
-	const zeroBox = newInbox()
+	const zeroBox = newInbox(harnessRand)
 	const zeroPair = askPairOn(zeroBox, SIM_PEER_ID, currentPairCode(zeroBox, nowSeconds()), passphraseOf(zeroBox, nowSeconds()), simKey)
 	const zeroPairObj = jsonOf(zeroPair)
 	const zeroToken = zeroPairObj == null ? '' : zeroPairObj!.getString('token', '')
@@ -1921,7 +1950,7 @@ export function receiveSelfReport(): string {
 	check('续传台账带着落块的时刻', ledger != null && ledger!.getNumber('touched', 0) > 0 && ledger!.getNumber('created', 0) > 0)
 	if (ledger != null) {
 		ledger!.set('touched', nowSeconds() - OFFER_IDLE_S - 5)
-		const agedBox = newInbox()
+		const agedBox = newInbox(harnessRand)
 		check('过了点的台账照样接管', adoptAll(agedBox, [JSON.stringify(ledger)], nowSeconds()) == 1)
 		const agedNames: string[] = []
 		sweep(agedBox, nowSeconds(), (path: string): void => { agedNames.push(path) }, recvDigestFile)
@@ -1939,14 +1968,14 @@ export function receiveSelfReport(): string {
 	// that legitimately comes back without a code in the stranger branch. A bridge has to hand over the
 	// identity, and a box that only ever learned the leaf must still cost a code: that is the refusal
 	// which proves nothing here is trusted on an address alone.
-	const bridge = newInbox()
+	const bridge = newInbox(harnessRand)
 	const bridgeLeaf = hexOf(sha256Bytes(utf8('served-leaf-of-' + SIM_PEER_ID)))
 	adoptPin(bridge, simFp, '', '', bridgeLeaf)
 	const healed = askPairOn(bridge, '203.0.113.20', '', '', simKey)
 	const healedObj = jsonOf(healed)
 	check('桥接交身份摘要：回拨的一台不配码也能resume',
 		healed.status == 200 && healedObj != null && healedObj!.getBoolean('resumed', false))
-	const leafOnly = newInbox()
+	const leafOnly = newInbox(harnessRand)
 	adoptPin(leafOnly, bridgeLeaf, '', '', bridgeLeaf)
 	check('只按叶摘要桥接仍然要配对码 BAD_PAIR_CODE',
 		codeOfReply(askPairOn(leafOnly, '203.0.113.21', '', '', simKey)) == 'BAD_PAIR_CODE')
@@ -1966,7 +1995,7 @@ export function receiveSelfReport(): string {
 	// CsStore.kt:52，这里的 recvPrepare 走同一条规则），所以一块没落和刚落一块，落盘字节数都回「整个文件」。
 	// 一个量不出区别的数不能当答案，于是真行为成了合同：读坏的台账一单也不认领，发送方那份清单再投一次
 	// 就是全缺登记的一单，finalize 仍然是唯一的结论。丢的只是那几块本来要重传的字节。
-	const lostBox = newInbox()
+	const lostBox = newInbox(harnessRand)
 	let lostToken = ''
 	const lostPair = jsonOf(askPairOn(lostBox, SIM_PEER_ID, currentPairCode(lostBox, nowSeconds()), passphraseOf(lostBox, nowSeconds()), simKey))
 	lostToken = lostPair == null ? '' : lostPair!.getString('token', '')
@@ -2057,7 +2086,7 @@ export function receiveSelfReport(): string {
 		sameBytes(new Uint8Array(unescapeChunk(mixedPacked.bytes, 'stu2')), new Uint8Array(mixedPacked.bytes)))
 	// 上机那一支要的是「按值判」和「按有没有判」唯一能被区分出来的那两条腿：同一份打包后的字节，配正确的头
 	// 要落回原文，配一个不认识的头必须被拒——老分支在第二条上会把它反解成原文收下，屏上一切正常。
-	const eBox = newInbox()
+	const eBox = newInbox(harnessRand)
 	const ePair = jsonOf(askPairOn(eBox, SIM_PEER_ID, currentPairCode(eBox, nowSeconds()), passphraseOf(eBox, nowSeconds()), simKey))
 	const eToken = ePair == null ? '' : ePair!.getString('token', '')
 	const eAsk = (method: string, path: string, jsonBody: string): WireReply => {
@@ -2111,7 +2140,7 @@ export function receiveSelfReport(): string {
 	// 碰这一单自己的字节——而这一单的字节刚刚传满并校验过了，落点上的东西还合清单里那个校验和，
 	// 于是它不是半个文件。
 	if (ledger != null) {
-		const staleBox = newInbox()
+		const staleBox = newInbox(harnessRand)
 		adoptAll(staleBox, [JSON.stringify(ledger)], nowSeconds())
 		const staleNames: string[] = []
 		sweep(staleBox, nowSeconds(), (path: string): void => { staleNames.push(path) }, recvDigestFile)
@@ -2125,7 +2154,7 @@ export function receiveSelfReport(): string {
 	// 记录就是手机做的事；浏览器没有磁盘，收件箱是那个 Map，所以它同样能回答文件还在不在。
 	const receipts = arrivalsAll(box)
 	check('传完的文件进了收到清单', receipts.length == 2)
-	const bootBox = newInbox()
+	const bootBox = newInbox(harnessRand)
 	check('开机读回收到清单', adoptArrivals(bootBox, receipts) == 2)
 	const bootSnap = snapshot(bootBox, nowSeconds())
 	markLanded(bootSnap.rows, (path: string): boolean => { return recvStore.has(path) })
@@ -2172,7 +2201,7 @@ export function receiveSelfReport(): string {
 	check('空间不足后分配好的文件也回滚了', !recvStore.has(landOf(fullId, SCRATCH_TEXT)))
 
 	// 11. spec §3: a session that stops moving gives the slot back on its own.
-	const idle = newInbox()
+	const idle = newInbox(harnessRand)
 	const idleCode = currentPairCode(idle, nowSeconds())
 	const idleSecret = passphraseOf(idle, nowSeconds())
 	const idleAsk = (method: string, path: string, jsonBody: string, useToken: string): WireReply => {
@@ -2244,7 +2273,7 @@ export function receiveSelfReport(): string {
 	// 14. spec §4: one offer_id is one question to the person holding this phone. The sender re-posts the
 	// same manifest on purpose - a poll whose reply could not be read tries again (#96) - so every answer
 	// this end gives has to outlive that re-post. Its own box, for the same reason as 5b.
-	const qBox = newInbox()
+	const qBox = newInbox(harnessRand)
 	const qPaired = askPairOn(qBox, SIM_PEER_ID, currentPairCode(qBox, nowSeconds()), passphraseOf(qBox, nowSeconds()), simKey)
 	const qObj = jsonOf(qPaired)
 	const qToken = qObj == null ? '' : qObj!.getString('token', '')
@@ -2304,7 +2333,7 @@ export function receiveSelfReport(): string {
 	// rather than a nicety. The half that was missing in code was the *when* of the abort: a pending offer
 	// already lives in this end's inbox, so its DELETE is a withdrawal, not an unknown id, and the card has
 	// to stop asking instead of allocating files for a peer that walked away.
-	const replyBox = newInbox()
+	const replyBox = newInbox(harnessRand)
 	const replyPair = askPairOn(replyBox, SIM_PEER_ID, currentPairCode(replyBox, nowSeconds()),
 		passphraseOf(replyBox, nowSeconds()), simKey)
 	const replyObj = jsonOf(replyPair)
@@ -2382,7 +2411,7 @@ export function receiveSelfReport(): string {
 	// 17. spec §4's chunk replies read as bytes (#183). The paper used to draw none of them: no body for the
 	// `200`, no detail for either `422`, and 「最多 3 次」 for what is three writes. The kernel has always
 	// answered all of it, so these legs read the exact key sets - the sentence and the bytes cannot drift.
-	const ckBox = newInbox()
+	const ckBox = newInbox(harnessRand)
 	const ckPair = jsonOf(askPairOn(ckBox, SIM_PEER_ID, currentPairCode(ckBox, nowSeconds()),
 		passphraseOf(ckBox, nowSeconds()), simKey))
 	const ckToken = ckPair == null ? '' : ckPair!.getString('token', '')
@@ -2471,7 +2500,7 @@ export function receiveSelfReport(): string {
 	// 重发落在 finalize 上。PC 每一趟 finalize 都会把这一单已验过的文件重新报一次——同一个文件在「收到的
 	// 文件」里多出第二行；手机这一端按落点去过重（`hasArrival`）。这一腿量的是那条去过重本身：全绿之后重投
 	// finalize，清单不多一行，答复还是同一份字节。
-	const rpBox = newInbox()
+	const rpBox = newInbox(harnessRand)
 	const rpPair = jsonOf(askPairOn(rpBox, SIM_PEER_ID, currentPairCode(rpBox, nowSeconds()),
 		passphraseOf(rpBox, nowSeconds()), simKey))
 	const rpToken = rpPair == null ? '' : rpPair!.getString('token', '')
@@ -2497,7 +2526,7 @@ export function receiveSelfReport(): string {
 	// 锁住那一刻起再等 60 秒"。它们在第 59 秒给出同一个答案、在第 61 秒给出相反的答案，而三端做的是前者。
 	// 这一组把内核的 now 当尺子用，量那件纸面从没写下的事：拒的是次数不是码、被拒的尝试不给自己续期、
 	// 密码猜错和配对码猜错共用一个桶、"来源"按地址分桶、开门那一刻由最早那一次失败决定。
-	const tBox = newInbox()
+	const tBox = newInbox(harnessRand)
 	const tAt = nowSeconds()
 	const tCode = currentPairCode(tBox, tAt)
 	const tSecret = passphraseOf(tBox, tAt)
@@ -2522,7 +2551,7 @@ export function receiveSelfReport(): string {
 	check('§3 门在第 61 秒开：60 秒从最早那一次失败起算，不是从被锁住那一刻起算',
 		tOpenObj != null && tOpenObj!.getString('token', '') != '', tOpen.body)
 
-	const uBox = newInbox()
+	const uBox = newInbox(harnessRand)
 	const uAt = nowSeconds()
 	const uCode = currentPairCode(uBox, uAt)
 	const uSecret = passphraseOf(uBox, uAt)
@@ -2543,6 +2572,44 @@ export function receiveSelfReport(): string {
 		uOtherObj != null && uOtherObj!.getString('token', '') != '' && failsOf(uBox, '203.0.113.43') == 0,
 		uOther.body)
 
+	// 20. 第二十四轮巡检（#190）：§3 那两句只写了「随机」，而 PC 的三个数一直出自 `secrets`，手机的三个
+	// 出自共用内核的 `Math.random()`。这一轮把源交到宿主手里，于是这一组量的不是分布——是把内核的源换成
+	// 一只假手，看那三个数跟不跟着变。三样都跟着变，才说明它们真的出自那一个源；不跟着变的，是内核自己
+	// 另铸了一份。除不尽要丢哪几个字节（250 以上）也在这组里，因为那五个字节直接决定答案是 `123456`
+	// 还是取模糊出来的 `012345`。
+	const srcBox = newInbox(scriptedRand)
+	const srcAt = nowSeconds()
+	const srcCode = currentPairCode(srcBox, srcAt)
+	const srcSecret = passphraseOf(srcBox, srcAt)
+	const srcPair = askPairAt(srcBox, '203.0.113.44', srcCode, srcSecret, b64(randomBytes(32)), srcAt)
+	const srcObj = jsonOf(srcPair)
+	const srcToken = srcObj == null ? '' : srcObj!.getString('token', '')
+	check('§3 码、密码、token 三样都出自宿主递进来的那一个源：假源给什么就是什么',
+		srcCode == '012345' && srcSecret == 'LMNPQRST' && srcToken == SCRIPTED_HEX,
+		srcCode + '/' + srcSecret + '/' + srcToken.length.toString())
+
+	const dropCode = currentPairCode(newInbox(droppedRand), nowSeconds())
+	check('§3 一个字节除不尽 10：`fa`..`fe` 那五个丢掉再抽下一个，不是拿 250 取模',
+		dropCode == '123456', dropCode)
+	const keepSecret = passphraseOf(newInbox(dropped16Rand), nowSeconds())
+	check('§3 除得尽就一个字节也不浪费：32 个字母的密码把那十六个字节全用完',
+		keepSecret == '45678BCD', keepSecret)
+	const bareBox = newInbox(emptyRand)
+	check('§3 没装源的收件箱不发证：它答空的，而不是一个看着正常的 000000',
+		currentPairCode(bareBox, nowSeconds()) == '' && passphraseOf(bareBox, nowSeconds()) == '')
+
+	const liveA = newInbox(harnessRand)
+	const liveB = newInbox(harnessRand)
+	const liveAt = nowSeconds()
+	const liveCodeA = currentPairCode(liveA, liveAt)
+	const liveCodeB = currentPairCode(liveB, liveAt)
+	const livePair = askPairAt(liveA, '203.0.113.45', liveCodeA, passphraseOf(liveA, liveAt), b64(randomBytes(32)), liveAt)
+	const liveObj = jsonOf(livePair)
+	const liveToken = liveObj == null ? '' : liveObj!.getString('token', '')
+	check('§3 换成真源：两台各铸各的 6 位码，token 是 32 字节的十六进制',
+		liveCodeA.length == PAIR_CODE_DIGITS && liveCodeA != liveCodeB && isFullFingerprint(liveToken),
+		liveCodeA + '/' + liveCodeB + '/' + liveToken.length.toString())
+
 	out.push(fail == 0 ? '接收自检 ' + pass.toString() + ' 项全部通过' : '接收自检失败 ' + fail.toString() + ' 项，通过 ' + pass.toString() + ' 项')
 	return out.join('\n')
 }
@@ -2557,7 +2624,7 @@ export function receiveSelfReport(): string {
  *
  *  A counter object rather than captured locals: Kotlin forbids a closure mutating a local `let`. */
 class ChunkSwallow {
-	inbox: Inbox = newInbox()
+	inbox: Inbox = newInbox(harnessRand)
 	/** Which chunk write (1-based) loses its reply; -1 eats every one, 0 eats none. */
 	nth: number = 0
 	peerBlind: boolean = false

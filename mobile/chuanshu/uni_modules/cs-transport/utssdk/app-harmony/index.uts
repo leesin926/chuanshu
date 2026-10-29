@@ -125,12 +125,19 @@ function sliceBytes(b: Uint8Array, from: number, len: number): Uint8Array {
 	return out
 }
 
+/** spec §3: what this phone keeps secret for the other end - and the ids and the leaf's serial number
+ *  below - comes off the platform's cryptographic generator, not off `Math.random()`. The sync half of
+ *  that API is the one this file already uses for digests (`createMd` above). */
 function randomBytes(n: number): Uint8Array {
-	const out = new Uint8Array(n)
-	for (let i = 0; i < n; i++) {
-		out[i] = Math.floor(Math.random() * 256) & 0xff
-	}
-	return out
+	const made = cryptoFramework.createRandom().generateRandomSync(n)
+	return made.data
+}
+
+/** The same bytes in the lowercase hex the shared kernel asks each host for, and exported because on
+ *  this platform the receiving state machine runs in the page: `newInbox` is called there, and §3's
+ *  token, pair code and passphrase are minted by it. */
+export function randomHex(byteLen: number): string {
+	return hexOf(randomBytes(byteLen))
 }
 
 function sha256Hex(b: Uint8Array): string {

@@ -15,7 +15,7 @@
  *  Swift it calls has never been through a Swift compiler, because that step needs Xcode. So every claim
  *  below about how the platform behaves is still a claim, and the cs-identity probe is the first thing
  *  that has to be run on a Mac before any of it counts as evidence. */
-import { TRANSPORT_PORT, DISCOVERY_PORT, ANNOUNCE_INTERVAL_S, MDNS_SERVICE_SHORT } from '../cs-protocol.uts'
+import { TRANSPORT_PORT, DISCOVERY_PORT, ANNOUNCE_INTERVAL_S, MDNS_SERVICE_SHORT, RandFn } from '../cs-protocol.uts'
 import {
 	Roster, newRoster, candidatesOf, applyAnnounce, applyTxt, forgetMdns, sweepPeers,
 	channelNote, buildAnnounce, buildTxt, prefixOf, markVerified, VIA_UDP, selfReport
@@ -395,7 +395,15 @@ export function servedFingerprint(): string {
 
 /* ================================================== this device as a receiver */
 
-const recvInbox: Inbox = newInbox()
+/** spec §3's source for this end's three secrets, and it is the end's own `SecRandomCopyBytes`
+ *  (`CsBytes.randomHex`). Recorded but not proven: iOS was terminated, so nothing builds this file
+ *  any more - and an unbuilt half is exactly why §3 now names the source instead of leaving each end
+ *  to read 随机 as it likes. */
+const recvRand: RandFn = (byteLen: number): string => {
+	return CsBytes.randomHex(byteLen)
+}
+
+const recvInbox: Inbox = newInbox(recvRand)
 let recvSelf: LocalPeer | null = null
 let recvStartNote = '还没开始监听'
 /** The two documents as they were when last written, so a refresh that changed nothing writes nothing. */

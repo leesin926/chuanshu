@@ -4,7 +4,7 @@
  *  Every call leaves the main thread. The protocol itself lives in ../cs-client.uts and is the
  *  same code the browser runs; this file only moves bytes, which is why the two halves are able to
  *  disagree about what has been proven and agree about what is on the wire. */
-import { TRANSPORT_PORT, DISCOVERY_PORT, ANNOUNCE_INTERVAL_S, MDNS_SERVICE_SHORT, nameWithDefault } from '../cs-protocol.uts'
+import { TRANSPORT_PORT, DISCOVERY_PORT, ANNOUNCE_INTERVAL_S, MDNS_SERVICE_SHORT, RandFn, nameWithDefault } from '../cs-protocol.uts'
 import Build from 'android.os.Build'
 import Activity from 'android.app.Activity'
 
@@ -29,7 +29,7 @@ import {
  *  uses and the entry does not is dropped from the compiled module. Naming them here is what makes the
  *  browser's and the phone's copy of cs-protocol.uts literally the same file. */
 export {
-	TRANSPORT_PORT, PAIR_CODE_DIGITS, PASSPHRASE_CHARS, PAIR_CODE_STATIC, SESSION_IDLE_S,
+	TRANSPORT_PORT, PAIR_CODE_DIGITS, PASSPHRASE_CHARS, PAIR_CODE_STATIC, SESSION_IDLE_S, RandFn,
 	codeReject, passReject, nameReject, nameWithDefault, digitsOnly, formatSize, parsePairUrl
 } from '../cs-protocol.uts'
 export {
@@ -416,7 +416,15 @@ export function unpinPeer(host: string, port: number, cb: (dropped: boolean, mes
 
 /* ================================================== this device as a receiver */
 
-const recvInbox: Inbox = newInbox()
+/** spec §3: the session token, the pair code and the passphrase this phone hands out are drawn from
+ *  `SecureRandom` in Kotlin (`CsWire.randomHex`), not from the loop the shared code uses for ids.
+ *  A `const` rather than `CsWire::randomHex` because UTS passes a lambda here and emits no method
+ *  reference. */
+const recvRand: RandFn = (byteLen: number): string => {
+	return CsWire.randomHex(byteLen)
+}
+
+const recvInbox: Inbox = newInbox(recvRand)
 let recvSelf: LocalPeer | null = null
 let recvStartNote = '还没开始监听'
 let lastTrustText = ''

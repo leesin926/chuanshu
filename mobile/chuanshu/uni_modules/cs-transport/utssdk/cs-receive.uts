@@ -34,12 +34,13 @@ import {
 	chunkCount,
 	chunkSizeAt,
 	isFullFingerprint,
+	newPairCode,
 	newPassphrase,
 	numList,
 	pairMessage,
 	parseJson,
 	pathReject,
-	randomHex,
+	RandFn,
 	versionsOverlap
 } from './cs-protocol.uts'
 
@@ -221,10 +222,23 @@ export class Inbox {
 	 *  ask again on a new connection cannot tell a decline from a delivery nobody has looked at yet, so
 	 *  without this a decline would reopen the same dialog every poll. */
 	settled: SettledOffer[] = []
+	/** Where this device's three secrets come from (spec §3): the session token, the pair code and the
+	 *  passphrase. The host that made this inbox put the platform's cryptographic generator here -
+	 *  `SecureRandom` on Android, `cryptoFramework.createRandom` on Harmony, `getRandomValues` in a
+	 *  browser - because the shared code that mints them has no such thing of its own. The literal below
+	 *  is not a fallback: `newInbox` replaces it on every end, and if one ever forgot to, this answers
+	 *  empty and the pairing code shows up empty on that device's own screen. */
+	rand: RandFn = (byteLen: number): string => {
+		return ''
+	}
 }
 
-export function newInbox(): Inbox {
-	return new Inbox()
+/** The only way to get a receiving state machine: an inbox without a random source cannot mint the
+ *  values §3 promises, so the source is not something a host may leave out. */
+export function newInbox(rand: RandFn): Inbox {
+	const box = new Inbox()
+	box.rand = rand
+	return box
 }
 
 export class FileRow {
@@ -322,26 +336,17 @@ function pendingReply(): WireReply {
 	return out
 }
 
-function newPairCode(): string {
-	const digits = '0123456789'
-	let out = ''
-	for (let i = 0; i < PAIR_CODE_DIGITS; i++) {
-		out = out + digits.charAt(Math.floor(Math.random() * 10))
-	}
-	return out
-}
-
 /** Generated on demand rather than on a timer: a phone that spends most of its life backgrounded has
  *  no business keeping a timer alive, and the PC's current_pair_code() uses the same lazy shape.
  *  With PAIR_CODE_STATIC the pair minted here is kept for good - the code and the passphrase are a
  *  printable promise, not a one-time token - and only rotatePairing() below replaces them. */
 export function currentPairCode(inbox: Inbox, now: number): string {
 	if (inbox.pairCode == '' || inbox.passphrase == '') {
-		inbox.pairCode = newPairCode()
-		inbox.passphrase = newPassphrase(PASSPHRASE_CHARS)
+		inbox.pairCode = newPairCode(inbox.rand, PAIR_CODE_DIGITS)
+		inbox.passphrase = newPassphrase(inbox.rand, PASSPHRASE_CHARS)
 		inbox.pairCodeUntil = now + PAIR_CODE_TTL_S
 	} else if (!PAIR_CODE_STATIC && now > inbox.pairCodeUntil) {
-		inbox.pairCode = newPairCode()
+		inbox.pairCode = newPairCode(inbox.rand, PAIR_CODE_DIGITS)
 		inbox.pairCodeUntil = now + PAIR_CODE_TTL_S
 	}
 	return inbox.pairCode
@@ -355,8 +360,8 @@ export function passphraseOf(inbox: Inbox, now: number): string {
 /** New material for both secrets. Pins and live sessions are untouched: this only changes what a
  *  stranger has to get right before it is allowed to pin us. */
 export function rotatePairing(inbox: Inbox, now: number): void {
-	inbox.pairCode = newPairCode()
-	inbox.passphrase = newPassphrase(PASSPHRASE_CHARS)
+	inbox.pairCode = newPairCode(inbox.rand, PAIR_CODE_DIGITS)
+	inbox.passphrase = newPassphrase(inbox.rand, PASSPHRASE_CHARS)
 	inbox.pairCodeUntil = now + PAIR_CODE_TTL_S
 }
 
@@ -896,7 +901,9 @@ function pairReply(
 		}
 	}
 	addNonce(inbox, nonce, now)
-	const token = randomHex(32)
+	// 32 bytes off the host's generator, hex - the same `secrets.token_hex(32)` the PC answers with. This
+	// is the bearer value of §3: whoever holds it is that peer until the session is reclaimed.
+	const token = inbox.rand(32)
 	setToken(inbox, fingerprint, token, now)
 	return okWith({
 		token: token,

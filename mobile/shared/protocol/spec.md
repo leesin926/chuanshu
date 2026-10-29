@@ -112,6 +112,27 @@ chuanshu://p?h=<host>&p=<port>&v=<protocol_version>&f=<fingerprint_hex>&c=<6位�
 `X-Chuanshu-Auth: <token>`。**已配对指纹再次连入时跳过配对码和密码**，但仍会弹一次"是否接收"
 确认（见 §4）。
 
+这三个数——`token`、6 位码、8 位密码——是接收方替对端保守的秘密：猜中任何一个就等于顶下那台设备，
+所以它们必须由**本平台的密码学随机源**给出（PC `secrets`、安卓 `java.security.SecureRandom`、
+鸿蒙 `cryptoFramework.createRandom`、浏览器 `crypto.getRandomValues`），不能是 `Math.random()` 那种
+状态可推演的伪随机。字母表与长度照上面那两句；一个字节 256 个值除不尽字母表大小时（10 位数字就是），
+要**丢掉**凑不齐的那几个字节再抽下一个，而不是直接取模——取模会让前几个符号比后几个更常出现。
+反过来，`peer_id`、offer 与文件的 id、`nonce` 只是标识，合同对它们只要求各不相同（§1、§4），不指定随机源。
+
+（2026-10-30 第二十四轮巡检：上面那两句是这一轮补上去的，因为补之前纸面只写了「随机」和「32 字节」，
+而三端把这两个字读成了两件事。PC 从头到尾用 `secrets`——`app/net/identity.py:50` 的码、`:55` 的密码、
+`app/net/receive.py:626` 的 token；手机三个都出自共用内核，而内核在改之前用的是 `Math.random()`（下面那
+几个 `cs-*.uts` 的行号都是改前那一份的）：
+`cs-protocol.uts:94` 那个逐字节循环喂给 `cs-receive.uts:899` 的 token，同一个源的还有 `:106` 的密码和
+`cs-receive.uts:329` 的码。安卓编译出来的那一头就是 `index.kt` 里的 `Math.floor(Math.random() * 256)`，
+也就是 `java.lang.Math.random()`——一台既用 `CsIdentity.kt:85` 的 `SecureRandom` 铸自己的 `peer_id`、
+又用伪随机铸会话 token 的机器。这一轮把源换成宿主递给内核的一个函数：`cs-protocol.uts` 里那个类型叫
+`RandFn`（"给我 n 个字节的 hex"），`Inbox.rand` 由 `newInbox(rand)` 在每台设备上装好，内核里那三个铸密
+的函数从此只问 `inbox.rand`，`randomHex` 留在原处只管标识。装不上就没有收件箱——`newInbox()` 那个不带
+参数的写法在四端都已消失，这是守卫量的那一条。丢掉多余字节那一句也照做了：码用 250 为界（250 = 25×10），
+密码不用丢（256 除得尽 32）。鸿蒙那半边顺手把自己文件里的 `randomBytes` 也接到同一个源上，因为它铸的
+是套接字那边的证书序列号与 id；iOS 已终止，`app-ios/index.uts` 递的是那端本来就有的 `CsBytes.randomHex`。）
+
 一次只允许一台设备连着（点对点传输的语义，不是并发下载）：某个 fingerprint 手里有有效 token 时，
 别的设备首次配对会拿到 `429 PEER_BUSY`（`detail.reason = "one peer at a time"`，`detail.peer` 是
 当前那台的名字）。已连着的那台自己重连不受影响；持有方点「断开」、接收服务重启、**或这台设备连续

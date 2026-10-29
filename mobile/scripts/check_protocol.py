@@ -1221,6 +1221,156 @@ def check_pair_throttle(body: dict) -> None:
              "clause of §3's sentence, and the phone's kernel is the body they measure")
 
 
+def check_random_source(body: dict) -> None:
+    """§3's three secrets come out of each platform's cryptographic generator, and every end has to say which.
+
+    Round twenty-four (#190) read 「返回随机会话 token（32 字节）」 and 「`k` 是 32 字母表 8 位」 - both of
+    which said 随机 and stopped there. The PC minted all three with `secrets`; the shared phone kernel minted
+    all three with `Math.random()`, on an Android host that reaches for `SecureRandom` the moment it needs a
+    `peer_id`. So this guard holds four things: the paper names the source and the drop-when-indivisible rule,
+    the kernel asks its host for the bytes instead of inventing them, no body can obtain an inbox without
+    naming one, and each of the five hosts actually names its platform's generator.
+    """
+    note = body["transport"].get("note", "")
+    for needle, why in (
+        ("java.security.SecureRandom", "the Android half of §3's source is a fact about the contract, not a "
+                                       "comment someone may delete"),
+        ("cryptoFramework.createRandom", "Harmony's generator belongs on the paper the same way"),
+        ("crypto.getRandomValues", "the browser harness is a fifth end, and it is the one the phone kernel's "
+                                   "JS copy runs in"),
+        ("never from `Math.random()`", "the whole finding: 随机 used to be readable as this"),
+        ("taken modulo", "the bias §3 now forbids, so the rule and its name have to stay together"),
+    ):
+        if needle not in note:
+            fail(f"protocol.json's transport.note no longer says {needle!r} - {why}")
+
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    section = spec.split("## 3.", 1)[1].split("\n## ", 1)[0] if "## 3." in spec else ""
+    flat = re.sub(r"\s+", "", section)
+    for needle, why in (
+        ("本平台的密码学随机源", "「随机」 alone is what let three ends read three things"),
+        ("不能是`Math.random()`", "the sentence has to name the thing it rules out or the next host re-does it"),
+        ("要**丢掉**凑不齐的那几个字节", "rejection sampling is the second half of §3's entropy promise"),
+        ("而不是直接取模", "modulo is what the phones' own id loop does, and it is not bias-free"),
+        ("只是标识", "the distinction that keeps this promise off `peer_id`, offer ids and nonces"),
+    ):
+        if re.sub(r"\s+", "", needle) not in flat:
+            fail(f"§3 no longer says {needle!r} - {why}")
+
+    root = HERE.parent
+    sdk = HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk"
+    kernel = (sdk / "cs-receive.uts").read_text(encoding="utf-8")
+    kernel_code = "\n".join(line for line in kernel.splitlines()
+                            if not line.strip().startswith(("//", "*", "/*")))
+    if "Math.random" in kernel_code:
+        fail("cs-receive.uts rolls its own random bytes again - §3's three secrets are the kernel's only "
+             "entropy and this file is shared by four hosts that cannot agree on one generator")
+    if re.search(r"^\s*randomHex,\s*$", kernel, re.M):
+        fail("cs-receive.uts imports randomHex again - that function is §3's answer for *identifiers*, and "
+             "leaving it in the import list is how the next credential gets minted off it")
+    for literal, why in (
+        ("rand: RandFn", "the Inbox no longer carries the host's source, so the kernel is back to guessing"),
+        ("export function newInbox(rand: RandFn): Inbox",
+         "an inbox can be made without a source again - the one shape that lets a host forget to arm itself"),
+        ("const token = inbox.rand(32)",
+         "the session token is not read off the host any more, and a bearer value that is guessable is a peer"),
+        ("newPairCode(inbox.rand, PAIR_CODE_DIGITS)", "the pair code stopped asking the host for bytes"),
+        ("newPassphrase(inbox.rand, PASSPHRASE_CHARS)", "the passphrase stopped asking the host for bytes"),
+    ):
+        if literal not in kernel:
+            fail(f"cs-receive.uts no longer contains {literal!r} - {why}")
+
+    proto = (sdk / "cs-protocol.uts").read_text(encoding="utf-8")
+    if "export type RandFn = (byteLen: number) => string" not in proto:
+        fail("cs-protocol.uts lost the RandFn type - the hosts have no name for what they hand the kernel")
+    loop = proto.split("export function randomHex", 1)[1].split("\n}", 1)[0] if "export function randomHex" in proto else ""
+    outside = "\n".join(line for line in proto.replace(loop, "").splitlines()
+                        if not line.strip().startswith(("//", "*", "/*")))
+    if "Math.random" not in loop:
+        fail("randomHex no longer rolls Math.random() - fine, but then the guard's next predicate is stale")
+    if "Math.random" in outside:
+        fail("cs-protocol.uts sprouted a second Math.random() outside randomHex - ids may use it (§3 calls "
+             "them 只是标识); nothing else may")
+    for literal, why in (
+        ("return pickFrom(rand, '0123456789', 250, digits)",
+         "250 is 25*10: the largest multiple of ten inside a byte, and the drop step §3 just made law"),
+        ("return pickFrom(rand, PASSPHRASE_ALPHABET, 256, chars)",
+         "32 divides 256, so the passphrase must not discard a single byte"),
+    ):
+        if literal not in proto:
+            fail(f"cs-protocol.uts no longer contains {literal!r} - {why}")
+
+    ident_py = (root / "app" / "net" / "identity.py").read_text(encoding="utf-8")
+    recv_py = (root / "app" / "net" / "receive.py").read_text(encoding="utf-8")
+    for text, name, literal in ((ident_py, "app/net/identity.py", 'secrets.choice("0123456789")'),
+                                (ident_py, "app/net/identity.py", "secrets.choice(PASSPHRASE_ALPHABET)"),
+                                (recv_py, "app/net/receive.py", "secrets.token_hex(32)")):
+        if literal not in text:
+            fail(f"{name} no longer mints §3's secret with {literal!r} - secrets.choice is unbiased by "
+                 f"construction, which is why the PC has no drop step to copy")
+    if re.search(r"\brandom\.(choice|randint|getrandbits|random)\b", ident_py + recv_py):
+        fail("the PC reaches for `random.` for a §3 credential - the Mersenne Twister's state is recoverable "
+             "from a few outputs, and this is the sentence round twenty-four wrote against")
+
+    hosts = (
+        ("app-android/index.uts", "newInbox(recvRand)"),
+        ("app-harmony/index.uts", "cryptoFramework.createRandom().generateRandomSync(n)"),
+        ("app-ios/index.uts", "newInbox(recvRand)"),
+        ("app-ios/CsBytes.swift", "SecRandomCopyBytes(kSecRandomDefault, count, raw)"),
+        ("web/index.uts", "crypto.getRandomValues(out)"),
+    )
+    for host, literal in hosts:
+        if literal not in (sdk / host).read_text(encoding="utf-8"):
+            fail(f"{host} no longer contains {literal!r} - §3 names this end's generator, and nothing else "
+                 f"in this repo proves the kernel was handed real bytes")
+    # CsWire.kt's `SecureRandom().nextBytes(bytes)` appears twice in the file - newId() mints identifiers
+    # with it too - so the predicate has to be about the function §3 names, not about the line.
+    wire = (sdk / "app-android" / "CsWire.kt").read_text(encoding="utf-8")
+    minted = wire.split("fun randomHex", 1)[1].split("\n}", 1)[0] if "fun randomHex" in wire else ""
+    if "SecureRandom().nextBytes(bytes)" not in minted:
+        fail("app-android/CsWire.kt's randomHex - the function the Android host hands the kernel - no longer "
+             "draws from SecureRandom; newId() two lines above it may keep using one, but that is an identifier")
+    page = (HERE / "chuanshu" / "store" / "session.uts").read_text(encoding="utf-8")
+    if "newInbox(pageRand)" not in page:
+        fail("store/session.uts arms the Harmony inbox with something other than pageRand - on that platform "
+             "the *page* owns the receive inbox, so this is the only place its source can be named")
+
+    tree = root / "mobile" / "chuanshu"
+    for path in sorted(tree.glob("**/*.uts")) + sorted(tree.glob("**/*.uvue")):
+        if "unpackage" in path.parts or "_archive" in path.parts:
+            continue
+        if re.search(r"\bnewInbox\(\s*\)", path.read_text(encoding="utf-8")):
+            fail(f"{path.relative_to(root)} calls newInbox() with no source - §3's three secrets would come "
+                 f"from the empty default, and an empty pair code is a code nobody can type")
+
+    selftest = (root / "scripts" / "protocol_selftest.py").read_text(encoding="utf-8")
+    if "def phase_random_source(" not in selftest or \
+            re.search(r"^\s+phase_random_source\(proto, workspace\)$", selftest, re.M) is None:
+        fail("scripts/protocol_selftest.py has no random-source phase in its run - which hand minted the "
+             "three secrets is unmeasured on the tier that can actually run them")
+    phase = selftest.split("def phase_random_source", 1)[1].split("\ndef ", 1)[0]
+    for literal, why in (
+        ("identity_mod.secrets", "the phase patches the module attribute, not the global `secrets` - patching "
+                                 "the stdlib would follow the test into every other phase"),
+        ("receive_mod.secrets", "the token's source lives in app/net/receive.py, a different namespace from "
+                               "identity.py, and a patch on one proves nothing about the other"),
+        ("identity_mod.secrets = real_secrets",
+         "the patched generator is not handed back - a stub that outlives the phase makes every leg below it "
+          "a measurement of the stub"),
+        ("receive_mod.secrets = real_receive_secrets",
+         "the token's patched generator leaks out of the phase, and the pair legs after it are no longer "
+          "about the platform source"),
+    ):
+        if literal not in phase:
+            fail(f"phase_random_source() no longer contains {literal!r} - {why}")
+
+    harness = (sdk / "web" / "index.uts").read_text(encoding="utf-8")
+    legs = len(re.findall(r"check\(\s*'§3 (码、密码、token 三样都出自宿主递进来的那一个源|一个字节除不尽 10|除得尽就一个字节也不浪费|没装源的收件箱不发证|换成真源)", harness))
+    if legs < 5:
+        fail(f"the H5 receiver self-check holds {legs} of the five random-source legs - each is one clause of "
+             f"§3's new sentence, and the scripted source is the only way to see which hand minted a secret")
+
+
 def main() -> int:
     stamp_path = CONTRACT / "SOURCE.json"
     for name in ("protocol.json", "spec.md", "SOURCE.json"):
@@ -1272,6 +1422,7 @@ def main() -> int:
         fail(f"pair_code_ttl_s {ttl}: a code that outlives the glance at the screen is no code at all")
 
     check_pair_throttle(body)
+    check_random_source(body)
     check_uts_mirror(body)
     check_limits_in_prose(body)
     check_error_table(body)
@@ -1297,6 +1448,8 @@ def main() -> int:
           + f", {body['transport']['passphrase_chars']}-char passphrase")
     print(f"OK  §3's throttle is one sliding window in four places: {body['transport']['pair_code_max_fails']} "
           f"failures per source, {body['transport']['pair_code_lock_s']}s each, in memory only")
+    print("OK  §3's three secrets are minted by the host's generator on all five ends; the kernel asks, the "
+          "hosts answer, and a byte that does not divide the alphabet is thrown away instead of bent")
     print("OK  vendored copies match their stamps")
     print("OK  cs-protocol.uts mirrors the contract")
     print("OK  §5 names every limit a receiver refuses a transfer on")

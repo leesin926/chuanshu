@@ -354,6 +354,16 @@ object CsWire {
         return hexOf(bytes)
     }
 
+    /** spec §3: the three secrets the shared kernel mints - the session token, the pair code and the
+     *  passphrase - come out of here, so they are `SecureRandom` bytes like this phone's own `peer_id`
+     *  and not the `Math.random()` the kernel uses for ids. `Number` in the signature because that is
+     *  the type UTS passes a `number` as; `ByteArray` wants it back as an `Int`. */
+    fun randomHex(byteLen: Number): String {
+        val bytes = ByteArray(byteLen.toInt())
+        SecureRandom().nextBytes(bytes)
+        return hexOf(bytes)
+    }
+
     // -------------------------------------------------------------------- file access
 
     /** The last thing that went wrong on a read, kept because a `null` slice has to say why: the UTS

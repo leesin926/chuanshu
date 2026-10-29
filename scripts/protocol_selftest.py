@@ -32,6 +32,8 @@ from cryptography import x509  # noqa: E402
 from cryptography.hazmat.primitives.asymmetric import ed25519, rsa  # noqa: E402
 
 from app.net import errors  # noqa: E402
+from app.net import identity as identity_mod  # noqa: E402
+from app.net import receive as receive_mod  # noqa: E402
 from app.net import spec as protocol_spec  # noqa: E402
 from app.net.identity import fingerprint_of_public_key, load_or_create  # noqa: E402
 from app.net.receive import STATE_FILE, ReceiveService, sanitize_relpath  # noqa: E402
@@ -2238,6 +2240,150 @@ def phase_pair_throttle(proto: protocol_spec.Protocol, workspace: Path) -> None:
         service.stop()
 
 
+def phase_random_source(proto: protocol_spec.Protocol, workspace: Path) -> None:
+    """§3's three secrets: whose hand minted each one, and what that hand is allowed to hand back.
+
+    Round twenty-four (#190) read 「返回随机会话 `token`（32 字节）」 and 「`k` 是 32 字母表 8 位」. Both said
+    随机 and stopped, and the four ends filled the gap differently: the PC has always gone through
+    ``secrets`` (``app/net/identity.py:51``, ``:56``, ``app/net/receive.py:626``) while the phone kernel rolled
+    ``Math.random()`` - a generator whose state a peer that saw a few outputs could work out, which is exactly
+    what a bearer token is for. The paper now names the source, so the legs below are about *that* promise:
+    swap the generator for a scripted hand and every one of the three secrets has to follow it, because a
+    credential that does not change with the source is one the body minted somewhere else.
+
+    The patch is on the module attribute - ``identity_mod.secrets`` - not on the stdlib ``secrets`` module, so
+    the other phases, and the nonces minted inside this one, keep their real generator either way.
+    """
+    class Stub:
+        """A hand instead of a generator: it answers whatever the leg needs and counts being asked."""
+
+        def __init__(self, char: str, token: str = "") -> None:
+            self.char = char
+            self.token = token
+            self.choice_calls = 0
+            self.hex_sizes: list[int] = []
+
+        def choice(self, seq):
+            self.choice_calls += 1
+            return self.char
+
+        def token_hex(self, n):
+            self.hex_sizes.append(n)
+            return self.token
+
+    real_secrets = identity_mod.secrets
+    stubbed = Stub("7")
+    identity_mod.secrets = stubbed
+    try:
+        fake_code = identity_mod.new_pair_code(proto.pair_code_digits)
+        fake_phrase = identity_mod.new_passphrase(proto.passphrase_chars)
+    finally:
+        identity_mod.secrets = real_secrets
+    check("§3 码与密码没有第二只手：源换成假的那一只手给什么就是什么",
+          fake_code == "7" * proto.pair_code_digits
+          and fake_phrase == "7" * proto.passphrase_chars,
+          f"{fake_code} {fake_phrase}")
+    check("§3 每一位各问一次：6 位码问 6 次、8 位密码问 8 次，没有谁多要也没有谁少要",
+          stubbed.choice_calls == proto.pair_code_digits + proto.passphrase_chars,
+          stubbed.choice_calls)
+
+    receiver = load_or_create(workspace / "random-receiver")
+    service = ReceiveService(receiver, "PC-Random", lambda manifest, who, caller: True,
+                             host="127.0.0.1", port=0, root=workspace / "random-received")
+    service.start()
+    stranger = load_or_create(workspace / "random-stranger")
+
+    def pair_body() -> dict:
+        nonce = secrets.token_hex(16)
+        leaf = stranger.declared_tls_fingerprint
+        message = protocol_spec.pair_message(stranger.peer_id, nonce, leaf)
+        body = {
+            "peer_id": stranger.peer_id,
+            "name": "Random-Stranger",
+            "protocol_version": proto.version,
+            "compatible_versions": list(proto.compatible_versions),
+            "nonce": nonce,
+            "public_key": base64.b64encode(stranger.raw_public_key()).decode(),
+            "signature": base64.b64encode(stranger.key.sign(message)).decode(),
+            "code": service.current_pair_code(),
+            "secret": service.passphrase(),
+        }
+        if leaf:
+            body["tls_fingerprint"] = leaf
+        return body
+
+    def release() -> None:
+        # §3's one-peer-at-a-time would shadow the second pair of these legs; the throttle would too.
+        service._tokens.clear()
+        service._seen.clear()
+        service._held_by = ""
+
+    fake_token = "ab" * 32
+    token_stub = Stub("7", fake_token)
+    real_receive_secrets = receive_mod.secrets
+    receive_mod.secrets = token_stub
+    try:
+        minted = service.handle_pair(pair_body(), "10.0.0.31")
+    finally:
+        receive_mod.secrets = real_receive_secrets
+    check("§3 token 就是那 32 个字节：问的是 32，答上线的也是那一只手的原话，中间没人重铸",
+          minted.get("token") == fake_token and token_stub.hex_sizes == [32],
+          f"{minted.get('token')} {token_stub.hex_sizes}")
+
+    release()
+    first = service.handle_pair(pair_body(), "10.0.0.32").get("token", "")
+    release()
+    second = service.handle_pair(pair_body(), "10.0.0.33").get("token", "")
+    check("§3 不动源的时候形状不动：token 是 32 字节的十六进制，两次配对不是同一个",
+          re.fullmatch(r"[0-9a-f]{64}", first) is not None
+          and re.fullmatch(r"[0-9a-f]{64}", second) is not None and first != second,
+          f"{len(first)} {len(second)} {first == second}")
+
+    live_code = identity_mod.new_pair_code(proto.pair_code_digits)
+    live_phrase = identity_mod.new_passphrase(proto.passphrase_chars)
+    check("§3 配对码只有数字、密码只有那 32 个字母：字母表与长度照纸上那两句",
+          set(live_code) <= set("0123456789") and len(live_code) == proto.pair_code_digits
+          and set(live_phrase) <= set(identity_mod.PASSPHRASE_ALPHABET)
+          and len(live_phrase) == proto.passphrase_chars,
+          f"{live_code} {live_phrase}")
+    check("§3 每一台铸的码不一样：那不是一个数被抄了两次",
+          identity_mod.new_pair_code(proto.pair_code_digits) !=
+          identity_mod.new_pair_code(proto.pair_code_digits),
+          live_code)
+
+    # The last leg closes the loop the first two only half proved: a minted secret is not just *shaped*
+    # like the source's output, it is the value the door then accepts - so there is no third hand between
+    # the generator and the comparison.
+    minter = load_or_create(workspace / "random-mints")
+    code_stub = Stub("4")
+    identity_mod.secrets = code_stub
+    try:
+        minter.rotate_pairing(proto.pair_code_digits, proto.passphrase_chars)
+    finally:
+        identity_mod.secrets = real_secrets
+    armed = ReceiveService(minter, "PC-Random-Mints", lambda manifest, who, caller: True,
+                           host="127.0.0.1", port=0, root=workspace / "random-minted")
+    armed.start()
+    try:
+        door_code, door_phrase = armed.current_pair_code(), armed.passphrase()
+        body = pair_body()
+        body["code"], body["secret"] = door_code, door_phrase
+        nonce = secrets.token_hex(16)
+        leaf = stranger.declared_tls_fingerprint
+        body["nonce"] = nonce
+        body["signature"] = base64.b64encode(
+            stranger.key.sign(protocol_spec.pair_message(stranger.peer_id, nonce, leaf))).decode()
+        accepted = armed.handle_pair(body, "10.0.0.34")
+        check("§3 那一只手铸的码，就是这道门认的码：门与铸密共用一只手，没有第二份",
+              door_code == "4" * proto.pair_code_digits
+              and door_phrase == "4" * proto.passphrase_chars
+              and isinstance(accepted.get("token"), str) and len(accepted.get("token", "")) == 64,
+              f"{door_code} {door_phrase} {accepted.get('token', '')[:8]}")
+    finally:
+        armed.stop()
+        service.stop()
+
+
 def main() -> int:
     proto = protocol_spec.load()
     REPORT.write_text("", encoding="utf-8")
@@ -2265,6 +2411,7 @@ def main() -> int:
         phase_reverse_pin(proto, workspace)
         phase_shared_identity(proto, workspace)
         phase_pair_throttle(proto, workspace)
+        phase_random_source(proto, workspace)
     phase_catalogue(proto)
     check("chunks per file match the contract", proto.chunk_size == 4194304, proto.chunk_size)
     # The four shapes §7 can arrive in; the wire legs above are what prove both ends consult them.

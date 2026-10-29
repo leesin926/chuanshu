@@ -1829,6 +1829,57 @@ Xcode，够不到任何一档编译门**——它改的原因只是共用的 sto
       「不落盘」那条也只有 `门禁` 一条腿（那只浏览器替身的清单本来就只活在内存里，测不出第二个意思）。
     - **文档同步**：`docs/feature-matrix.md:110`（#162 那一行）与 `:676` 的 `app/net/receive.py:564` 一并改到量到的 `:603`，
       并在 110 那行注明这两个数字自第二十三轮起读合同的键。
+41. **#190：合同逐条巡检第二十四轮——§3 那两句只写了「随机」：PC 用 `secrets`，共用内核用 `Math.random()`，而同一台安卓用自己的 `SecureRandom` 铸 `peer_id`**
+    （动的：`protocol/spec.md:114-120` 那一段新增 + `:122-133` 第二十四轮注、`protocol/protocol.json` 的 `transport.note` 扩了四个源与
+    丢掉/取模那半句、手机的 `cs-protocol.uts`（`RandFn` / `pickFrom`）与 `cs-receive.uts`（`Inbox.rand`）、四个宿主
+    `app-android/index.uts` + `CsWire.kt`、`app-harmony/index.uts`、`app-ios/index.uts`、`web/index.uts`、鸿蒙那一页
+    `store/session.uts`、守卫、门禁、浏览器替身（**五条新腿写了，这一档本轮没跑**——见待办 37））
+    - **句子读起来是对的，做法差了一个数量级**：「返回随机会话 `token`（32 字节）」和「`k` 是 32 字母表 8 位（约 40 bit 以上）」
+      都只写了"随机"。PC 那三个数从头到尾出自 `secrets`——`app/net/identity.py:50` 的码、`:55` 的密码、`app/net/receive.py:626` 的 token；
+      手机这三个数都出自共用内核，而改之前的内核自己铸字节：`cs-protocol.uts` 的 `randomHex` 是一个逐字节 `Math.random() * 256` 的循环，
+      喂给 `cs-receive.uts` 的 token、码与密码。安卓把它编成 `Math.floor(Math.random() * 256)`，也就是 `java.lang.Math.random()`——
+      同一台机器 `CsIdentity.kt:85` 用 `SecureRandom` 铸自己的 `peer_id`，却用伪随机铸会话 token。Mersenne Twister 的状态从几条输出就能
+      复原，而这条 token 是 §3 的 bearer：猜中它等于顶下那台设备。
+    - **修法不是"每端各改各的"，是把那只手交进内核**：`cs-protocol.uts:110` 添类型 `RandFn`（"给我 n 个字节的 hex"），`:122` 的
+      `pickFrom(rand, alphabet, keep, count)` 按 §3 那句丢掉凑不齐的字节；`cs-receive.uts:231` 的 `Inbox.rand` 由 `:238`
+      的 `newInbox(rand)` 装，三个铸密函数从此只问 `inbox.rand`（`:345/349/363` 的码、`:346/364` 的密码、`:906` 的 token）。
+      `Inbox.rand` 那个字段默认值是**答空**，不是兜底的伪随机——装不上源的收件箱发不出配对码，屏上就是一个空的六格，
+      这比"看着正常但可推演"好。`randomHex` 留在 `cs-protocol.uts:94` 只管标识，`cs-receive.uts` 的 import 里把它删掉了。
+    - **两条界是这一轮同时立起来的，但方向要说清**：改之前手机铸码是 `Math.floor(Math.random() * 10)` 一位一位摇（`cs-receive.uts:329`），
+      压根没经过字节，所以它**没有**取模偏置的问题——它错在源。这一轮把源换成宿主递进来的**字节**以后，取模偏置才第一次变成一个真实的风险，
+      所以丢掉那句必须跟着一起来：`pickFrom` 的 `keep` 是参数——数字用 250（`250 = 25×10`，`fa`..`fe` 那五个字节丢掉再抽下一个），
+      密码用 256（32 个字母除得尽一个字节，**一个字节也不该丢**）。`:150` 传 250、`:156` 传 256，守卫按这两行逐字比，
+      谁把哪一个挪了都会响——把数字那格写成 256 就退回取模，把密码那格写成 250 就白丢八个可用值。
+    - **合同把"标识"和"密码"分成两件事**：`peer_id`、offer 与文件的 id、`nonce` 只要求各不相同（§1、§4），不指定随机源——这一句写在
+      新增段落的最后一行，因为它决定 `randomHex` 能不能留在原地：能，但只能给标识用。鸿蒙那半边顺手把自己文件里的 `randomBytes`
+      接到同一个源（`app-harmony/index.uts:139` 新增导出的 `randomHex`），因为它铸的是套接字那侧的证书序列号与 id；iOS 已终止，
+      `app-ios/index.uts:402` 递的是那端本来就有的 `CsBytes.randomHex`（`SecRandomCopyBytes`）。
+    - **守卫**（`py -X utf8 mobile/scripts/check_protocol.py`，`.probe/r24_guard.txt`）：22 行 OK → **23 行 OK、`rc=0`**。新的
+      `check_random_source()`（`mobile/scripts/check_protocol.py:1224`，注册在 `check_pair_throttle` 之后、`check_uts_mirror` 之前）按五件事：
+      纸面那四句 + `protocol.json` 的 note 点名四个源；内核不许出现 `Math.random`（按剥掉注释的文本判，也不许把 `randomHex` 请回 import）；
+      `newInbox` 的签名与五个调用点——包括一处全树扫 `newInbox()` 无参写法；五个宿主各自的高熵调用字面量；PC 侧 `secrets.choice` /
+      `token_hex(32)` 且在 `identity.py` + `receive.py` 上反向禁 `random.`；门禁那一相在场且交得回真源；H5 那五条腿一条都不能少。
+      本轮为它改过一处判据：安卓那一格原来比的是 `SecureRandom().nextBytes(bytes)` 这一行，而 `CsWire.kt` 的 `newId()` 里同一行也在——
+      把 `randomHex` 换成 `Random()` 守卫照样绿。现在切成 `fun randomHex` 那个函数体切片（跟 `cs-protocol.uts` 里 `randomHex` 用过的同一招）。
+    - **负向 32/32**（`.probe/red24.py` → `.probe/r24_red.txt`）：每条新谓词各自被弄红一次、按字节还原并复验。第一轮 27/32，四处是驱动自己的错：
+      两条 SKIP 是 CRLF（仓库这几个文件是 CRLF，用例里写的 `\n` 指同一处换行，补了 `fit()`）；两条 MISS 一条是 `rand: RandFn` 这个字面量
+      本来出现两次（字段 + `newInbox` 形参），只改第一处当然还绿，补 `all_occurrences`；一条是守卫用 `{needle!r}` 打出的引号那对是单引号。
+      第五条 MISS 是上一段说的那处判据不灵——本轮把它当成缺陷修掉了，不是把用例改掉。另外 `vendor_protocol.py` 那一趟撞上一次 Windows
+      句柄没放开的写失败，停在旧摘要上，守卫替我们报的是"protocol.json 与戳记不符"、测不到真正那一条谓词；驱动给 vendor 那一步也加了重试。
+    - **门禁**（`scripts/protocol_selftest.py`，`.probe/r24_gate_final.txt`）：新相 `phase_random_source()`（`:2243`，注册在
+      `phase_pair_throttle` 之后）七条腿，整份 **`RESULT ALL PASS`、234 条 PASS**（227 → 234）。这一相的读数是"把源换掉，答案跟着换"：
+      拿 `Stub` 替掉 `identity` / `receive` 两个模块属性（不是 stdlib 的 `secrets`，`finally` 里交回去），码与密码都变成那位常数
+      （`777777 77777777`），每一位各问一次所以是 14 次，token 上线的是 `ab`×32 且只问了一次 32 字节；不动源的时候形状不动
+      （两次配对都是 64 个十六进制、且不相同）；最后一腿是铸密与守门共用一只手——`rotate_pairing` 换到 `Stub('4')` 上以后，
+      那道门认的就是 `444444`（`:263-269`）。
+    - **档位与欠的腿（`mobile/README.md` 待办 37）**：`浏览器` 这一档本轮**没跑**，所以没有 `接收自检 149 → 154` 这个数——
+      `web/index.uts:2575-2611` 那五条腿（假源、丢字节、不丢字节、没装源、真源）连同四个脚本化的源（`:209-231`）已写好，但这一档要
+      HBuilderX 把 web 目标起在 vite 5173 上，这台机器现在既没有 5173 在听、HBuilderX 也没开，起它不在我的动作范围里（要用户手动开）。
+      两道编译门（Kotlin / ArkTS）同样没跑，而这一轮动的正是上一轮列为"没有先例"的那种写法：`Inbox.rand` 是一个**函数类型的类属性**，
+      生成出来的 Kotlin 里本地缓存没有可比照的东西。所以本轮结论只到 `门禁 + 守卫`：**手机那三个数"出自宿主"目前只有守卫的文字判据撑着，
+      没编过、没跑过**——写在待办 37 第一行，别当已经过。
+    - **一句话的形状**：这一轮跟第二十三轮是一对——那轮量的是"纸面那句没把行为定下来"，这轮量的是"纸面那句定得太松，松到三端各自
+      填了自己的答案"。同一句「随机」，写死了就是这一轮的段落，写松了就是改之前那台安卓：铸 `peer_id` 的手是密码学的，铸会话 token 的手不是。
 
 ### 需要用户点头才能做的四件事
 - 唤醒/解锁并使用那台个人鸿蒙真机（#45/#46 + 鸿蒙发现真机腿）。

@@ -87,7 +87,10 @@ export function utf8Len(text: string): number {
 }
 
 /** Ids are hex so they survive both JSON and a URL path segment. Built by hand rather than with
- *  number.toString(16), which on Android runs on a Double. */
+ *  number.toString(16), which on Android runs on a Double.
+ *  This is what an *identifier* is made of - an offer id, a file id, a nonce - and nothing else.
+ *  spec §3's three secrets do not come from here: a loop over `Math.random()` has a state a peer
+ *  could work out, and those three are what a peer would have to guess to take someone's session. */
 export function randomHex(byteLen: number): string {
 	let out = ''
 	for (let i = 0; i < byteLen; i++) {
@@ -98,14 +101,59 @@ export function randomHex(byteLen: number): string {
 	return out
 }
 
-/** The second secret, minted alongside the pair code (spec §3). Same hand-built pick as randomHex
- *  for the same reason: Math.random() answers a Double and toString on Android is not portable. */
-export function newPassphrase(chars: number): string {
+/** `byteLen` unpredictable bytes, as 2*byteLen lowercase hex.
+ *  spec §3: the session token, the pair code and the passphrase come out of this, and shared code
+ *  cannot make it - the same file has to run in a browser tab and on a phone - so each host hands
+ *  one of these to `newInbox`, backed by what that platform calls its cryptographic generator
+ *  (`secrets` is the PC's, `SecureRandom` Android's, `cryptoFramework.createRandom` Harmony's,
+ *  `crypto.getRandomValues` the browser's). */
+export type RandFn = (byteLen: number) => string
+
+function hexByteAt(text: string, at: number): number {
+	return hexValue(text.charAt(at * 2)) * 16 + hexValue(text.charAt(at * 2 + 1))
+}
+
+/** `count` symbols of `alphabet`, drawn off the host's bytes.
+ *  `keep` is how many of a byte's 256 values may be used without bias. 32 divides 256, so a
+ *  passphrase discards nothing; 10 does not, and the largest multiple of it inside a byte is 250 -
+ *  a byte at or above that is thrown away and the next one taken. Handing a whole byte straight to
+ *  `% 10` would make 0-5 come out more often than 6-9, and a six-digit code read aloud across a
+ *  table is worth those two bits. */
+function pickFrom(rand: RandFn, alphabet: string, keep: number, count: number): string {
+	const size = alphabet.length
+	const need = count + 8
 	let out = ''
-	for (let i = 0; i < chars; i++) {
-		out = out + PASSPHRASE_ALPHABET.charAt(Math.floor(Math.random() * PASSPHRASE_ALPHABET.length))
+	// A real generator fills `count` symbols on the first draw; this only counts the draws a host that
+	// answers something other than hex would otherwise repeat forever, on the phone's main thread.
+	for (let draw = 0; out.length < count; draw++) {
+		if (draw > 31) {
+			return ''
+		}
+		const text = rand(need)
+		if (text.length < need * 2) {
+			// A host that armed nothing gets an empty code on its own screen. Decoding the bytes that
+			// are not there would answer `0`, which is a code like any other to whoever reads it.
+			return ''
+		}
+		for (let i = 0; i < need && out.length < count; i++) {
+			const b = hexByteAt(text, i)
+			if (b >= 0 && b < keep) {
+				out = out + alphabet.charAt(b - Math.floor(b / size) * size)
+			}
+		}
 	}
 	return out
+}
+
+/** The pair code, from §3's host source (250 of a byte's 256 values are usable - see pickFrom). */
+export function newPairCode(rand: RandFn, digits: number): string {
+	return pickFrom(rand, '0123456789', 250, digits)
+}
+
+/** The second secret, minted alongside the pair code (spec §3). 256 divides this alphabet, so every
+ *  byte the host made counts. */
+export function newPassphrase(rand: RandFn, chars: number): string {
+	return pickFrom(rand, PASSPHRASE_ALPHABET, 256, chars)
 }
 
 /** The exact bytes POST /v1/pair's signature covers, built in one place the way app/net/spec.py
