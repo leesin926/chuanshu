@@ -384,7 +384,7 @@ E:\android-sdk\emulator\emulator.exe -avd chuanshu34b -no-window -no-audio -no-b
 ### 仓库门禁（`scripts/`）
 | 脚本 | 覆盖 |
 |---|---|
-| `protocol_selftest.py` | 合同镜像、七个端点、路径清洗（含中文目录）、多文件带目录、断点续传（含杀接收进程后 `reopen`）、整文件摘要推翻台账时台账作废（#127）、并发身份目录、节奏已在下限时的体中止只重写那一块（#130）、那一问也没人答时一次都不重写（#137）、§7 按两个集合的交集判版本 + 没报集合时按它印出的那一个数兜底，收发两个方向各两条腿（#144）、同一个 `offer_id` 重投清单只问用户一次——还挂着时回"还没人决定"、答过拒绝的回同一句、这一单已经结束的回 `OFFER_UNKNOWN`，八条腿（#145）、**台账读坏了怎么办**：先量「一块刚落，落点已经等于清单声明的整个长度」，再把那份台账撕掉一半，于是认领不到任何一单、`state` 回 `OFFER_UNKNOWN`、同一份清单再投登记成全缺、每块都真重写、finalize 仍然把这一单收成通过（#165，原文 `.probe/c165_selftest.txt`：122 条 PASS，`RESULT ALL PASS`）、**§4 零字节转义读成两句**：三条纯函数腿打在 `protocol_spec.escape_chunk/unescape_chunk` 上（只有 0x1B 的体不转义、有 0x00 才转义且线上一个零字节都不剩、原样回来逐字节一致），三条线腿打在真的 `ReceiveService` 上（带着 `X-Chunk-Escape: stu` 的体落盘后等于原文；**陌生头值 `stu2` 原样进内核**——由长度/摘要拒成 `CHUNK_DIGEST_MISMATCH` 422，而不是被偷偷反解；同一块幂等重投**照样把 `touched` 写到盘上**，这一条就是 §4 那句「每个请求都是这一单的心跳」，改前它只在内存里翻一下（`.probe/p167.log`：128 条 PASS，`RESULT ALL PASS`；那条心跳腿做过负向验证——`.probe/neg167.py` 临时把 `state.persist()` 改成不落盘，同一趟读出 `FAIL … (1793215553.2003748, 1793215553.2003748)`（原文 `.probe/neg167_fail.txt`），两个数一样说明盘上那个值一动没动；还原后重跑仍是 128 条全过（`.probe/p167_final.log`））、**§3 那句「端口/地址变了画面要重画」里公告的那一半**（#171）：`phase_discovery` 里两条新腿，只在两台都把 mDNS 通道跑成 `ok` 时才进场（任一通道不可用就整段跳过，不拿跳过冒充通过），把 `discovery.local_ipv4` 临时换成 `198.51.100.7` 后按 announce tick 等自家盖章，再由**对面那台** `_zeroconf.get_service_info()` 解析本实例，断言 `parsed_addresses()` 只有那一个新地址；还原函数后再等一次挪回本机真地址，断言记录跟着回来——这一条就是为什么修法必须是"撤播—改—重登"而不是 `update_service` 只重播（第一版那么写时这条腿读到 `['198.51.100.7', '192.168.2.233']`，对面缓存里旧的还活着）。全文件现为 **130 条 PASS、`RESULT ALL PASS`** |
+| `protocol_selftest.py` | 合同镜像、七个端点、路径清洗（含中文目录）、多文件带目录、断点续传（含杀接收进程后 `reopen`）、整文件摘要推翻台账时台账作废（#127）、并发身份目录、节奏已在下限时的体中止只重写那一块（#130）、那一问也没人答时一次都不重写（#137）、§7 按两个集合的交集判版本 + 没报集合时按它印出的那一个数兜底，收发两个方向各两条腿（#144）、同一个 `offer_id` 重投清单只问用户一次——还挂着时回"还没人决定"、答过拒绝的回同一句、这一单已经结束的回 `OFFER_UNKNOWN`，八条腿（#145）、**台账读坏了怎么办**：先量「一块刚落，落点已经等于清单声明的整个长度」，再把那份台账撕掉一半，于是认领不到任何一单、`state` 回 `OFFER_UNKNOWN`、同一份清单再投登记成全缺、每块都真重写、finalize 仍然把这一单收成通过（#165，原文 `.probe/c165_selftest.txt`：122 条 PASS，`RESULT ALL PASS`）、**§4 零字节转义读成两句**：三条纯函数腿打在 `protocol_spec.escape_chunk/unescape_chunk` 上（只有 0x1B 的体不转义、有 0x00 才转义且线上一个零字节都不剩、原样回来逐字节一致），三条线腿打在真的 `ReceiveService` 上（带着 `X-Chunk-Escape: stu` 的体落盘后等于原文；**陌生头值 `stu2` 原样进内核**——由长度/摘要拒成 `CHUNK_DIGEST_MISMATCH` 422，而不是被偷偷反解；同一块幂等重投**照样把 `touched` 写到盘上**，这一条就是 §4 那句「每个请求都是这一单的心跳」，改前它只在内存里翻一下（`.probe/p167.log`：128 条 PASS，`RESULT ALL PASS`；那条心跳腿做过负向验证——`.probe/neg167.py` 临时把 `state.persist()` 改成不落盘，同一趟读出 `FAIL … (1793215553.2003748, 1793215553.2003748)`（原文 `.probe/neg167_fail.txt`），两个数一样说明盘上那个值一动没动；还原后重跑仍是 128 条全过（`.probe/p167_final.log`））、**§3 那句「端口/地址变了画面要重画」里公告的那一半**（#171）：`phase_discovery` 里两条新腿，只在两台都把 mDNS 通道跑成 `ok` 时才进场（任一通道不可用就整段跳过，不拿跳过冒充通过），把 `discovery.local_ipv4` 临时换成 `198.51.100.7` 后按 announce tick 等自家盖章，再由**对面那台** `_zeroconf.get_service_info()` 解析本实例，断言 `parsed_addresses()` 只有那一个新地址；还原函数后再等一次挪回本机真地址，断言记录跟着回来——这一条就是为什么修法必须是"撤播—改—重登"而不是 `update_service` 只重播（第一版那么写时这条腿读到 `['198.51.100.7', '192.168.2.233']`，对面缓存里旧的还活着）。全文件现为 **244 条 PASS、`RESULT ALL PASS`**（`.probe/r26_gate.txt`，#192 那一趟；本行"130 条"那个数是 #171 时写的，其后 §4/§5/§7 的巡检轮次与 §3 那四轮（#189 节流、#190 随机源、#191 来源范围四条腿、#192 两个可选键六条腿）都只记在 §6，没回来改这一行） |
 | `ui_selftest.py` | 图形界面四页、接收确认弹窗、设置窗口、7 语言 |
 | `cli_selftest.py` | CLI 八条子命令端到端（含 `receive` 的 offer 计时器） |
 | `linux_selftest.py` | Linux 侧 27 条断言，Qt-free（stdout **和** stderr 都要读：发现通道写的是 stderr） |
@@ -1930,6 +1930,60 @@ Xcode，够不到任何一档编译门**——它改的原因只是共用的 sto
       三端各自填了答案"，这一轮是**句子写了一件没有实现体的事**，而且那件事的真相在操作系统里、还不在跑测试的这台机器上。
       前两轮的量法（改代码去追句子）这一轮反过来了：改句子去追代码，并且把"谁也不许再把它写成判据"钉成一条 ban。
 
+43. **#192：合同逐条巡检第二十六轮——§3 那句「`secret` 是可选字段：没有它 = 旧构建」：「没有它」在两端读成两件事，同一条 `{"secret": null}` 一边配上、一边烧名额**
+    （动的：`protocol/spec.md` 那两句改写（`:101` 叶指纹、`:108` 密码）+ `:116-130` 第二十六轮注、`protocol/protocol.json` 的 `transport.note`（2015 → 2571 字）、
+    **`app/net/receive.py:609-610` 那一行判断改法**、守卫新增 `check_optional_secret()`（`mobile/scripts/check_protocol.py:1478`，注册在 `:1643`）、
+    门禁新增 `phase_optional_secret()`（`scripts/protocol_selftest.py:2491`，注册在 `:2617`，另加一个槽位哨兵类 `:47` 与两个实例 `:61-62`）、
+    浏览器替身新增第 22 组三条腿（`web/index.uts:2688-2738`，**这一档本轮没跑**，见待办 39）；`cs-receive.uts` / `cs-protocol.uts` /
+    四个宿主**一个字节没动**——本轮的结论是"内核那侧的读法是对的，PC 追上去"）
+    - **「没有它」这句话没有定义，而两个接收体各自填了相反的答案**：§3 写「`secret` 是可选字段：没有它 = 发送方是还没有密码概念的
+      旧构建，只用 `code` 配对」。这一轮去量"没有它"在两边各是什么：PC `receive.py:609` 原本判的是**键在不在**
+      （`if "secret" in body and not hmac.compare_digest(...)`），共用内核 `cs-receive.uts` 的 `pairReply` 从第一天起判的是
+      **这一格空不空**（`body.get('secret') != null`）。于是同一条 `{"secret": null}`——合法 JSON、也是把可选字段序列化出来最自然的
+      一种写法——在手机上只靠码就配上，在 PC 上答 `BAD_PAIR_CODE {reason: "passphrase"}`，**并顺手烧掉那个来源五枚名额里的一枚**
+      （`.probe/r26_before.txt`：②null → `BAD_PAIR_CODE` / 桶 1）。同一句纸面下的第三种读法它也已经在那儿了：`{"secret": ""}`
+      两边都答 `passphrase`，而这是**唯一一种我们自己的发送方不会发出去的体**（`pairJson` 在长度为 0 时直接把键省掉）。
+    - **选哪一边不是选文本：这里有一处已经上线的读法，另一处是它的对照**：内核那一侧 `!= null` 同时管着两件事——把 null 读成"没带"，
+      又把空串读成"错误猜测"，正是这句话要的两种情形各半；PC 那一侧只把"没带"读成键不在，剩下半句是对的。所以本轮把 PC 改成内核的
+      读法（`offered = body.get("secret")` + `if offered is not None and not hmac.compare_digest(str(offered), self.passphrase())`），
+      而不是反过来。改后同一份对照（`.probe/r26_after_pc.txt`）：①省略 PAIRED / 桶 0、②null PAIRED / 桶 0、③"" `passphrase` / 桶 1、
+      ⑤错密码 `passphrase` / 桶 1、⑥码错 detail 仍是 `null`（合同只给 `secret` 那一支点名 `reason`）——**四格变、两格没变，
+      变的正好是"键在但没值"那一族**。
+    - **纸面原来两句都写的是错的读法，而且错的方式不一样**：叶指纹那一句写「接收方按**请求体里有没有这个键**决定验哪一条」，
+      而它描述的实现（`str(body.get("tls_fingerprint") or "")` 与 `body.getString('tls_fingerprint', '')`）**按值**读——
+      三端早就一致，是句子在骗下一个人；`secret` 那一句则连"没有它"都没定义。本轮两句一起改：前者写成「按**这一格有没有值**决定」
+      并把三种"没带"列出来（键不在 / null / 空串），后者定义 **键不在或值是 null = 没有它；空串不是没有它，它是一次错误的猜测**，
+      并保留发送方那一半（`if secret:` / `if (secret.length > 0)`：留空时**省略键**，别发空串）。把空串留在"错误猜测"那一侧是
+      故意的——反过来写就等于"用户在密码框里留了空"会悄悄退化成"这台接收方只认六位数"。
+    - **守卫**（`.probe/r26_red.txt` 收尾）：24 行 OK → **25 行 OK、`rc=0`**。`check_optional_secret()` 按七组：note 那三句
+      （`not by key presence` / `` `secret` absent or JSON null `` / `an empty string is NOT absence`）；§3 那五句 + 一条 **ban**
+      （不许把「请求体里有没有这个键」写回来，判据先把以 `（20` 开头的巡检注剔掉——第二十五轮那一招）；PC `handle_pair` 那条 ban
+      （`"secret" in body` 正则，先剥注释行）+ 三行字面量；内核 `pairReply` 的 `body.get('secret') != null`、`secretMatches` 的
+      两行（`diff = diff | (ca! ^ cb!)` / `return diff == 0`）加一条 **ban**（不许出现 `if (ca != cb)` 那种短路）；两个发送方各钉
+      省略空串那一行；门禁那一相在场且含 `if secret_slot is not _ABSENT:` / `body["secret"] = secret_slot` / `_code_failures`；
+      H5 那三条腿的腿名。
+    - **负向 27/27**（`.probe/red26.py`）：第一轮 26/27，唯一那条 MISS 是**驱动自己写的用例无效**——它把
+      `body['secret'] = secret` 改成 `body['secret'] = secret.trim()`，而守卫那条判据是子串比，改后的文本仍然包含要找的那一句，
+      所以那一格从没被弄红过；换成 `body['secret'] = written` 才真的断开。**这一处改用例，不改判据**——判据本身没错，
+      错的是我以为已经弄红了它。收尾守卫 `rc=0`、25 行 OK，全部按字节还原并复验。
+    - **门禁**（`.probe/r26_gate.txt`）：新相 `phase_optional_secret()` 六条腿，整份 **`RESULT ALL PASS`、244 条 PASS**（238 → 244）。
+      这一相要喂的是"本端发送方写不出来的体"，所以它不走 `send.py` 的 `pair()`，而是自己拼 body，两个哨兵
+      （`_ABSENT` = 键不在、`_SELF` = 用本机那张叶）把"省掉这一格"和"这一格写 null"分成两件事；每一腿一个新身份 + 一个新收件箱，
+      因为第一次配对成功就把单会话名额占了（PEER_BUSY），而已经钉过的那把钥匙再来时只凭签名答，根本走不到这一格。
+      顺带量到的一件事：`release()` 清 token 与名额，但 `_code_failures` 那一本按来源记的账不清——所以"这一腿烧了几枚"是可读的，
+      六条腿的桶各自独立，这正是本轮要的判据（②那格改前是 1、改后是 0）。
+    - **档位与欠的腿（`mobile/README.md` 待办 39）**：`浏览器` 这一档本轮**没跑**（第 22 组三条腿已写好），所以还没有
+      `接收自检 144 → 159` 这个数——待跑的腿现在是待办 36 那五条、37 那五条、38 那两条、本轮这三条。本轮**没动**
+      Kotlin/ArkTS 那两侧的任何文件（PC 追上内核，不是内核追上 PC），所以不欠新编译债；待办 36、37 那两道门照旧欠着。
+      `真机/模拟器` 这一档本轮也不出一条腿：这三格量的都是"接收体怎么读一个 JSON 值"，手机侧那份代码一行没改，
+      要升档只能靠浏览器档把 `pairReply` 真喂一次那两种体。
+    - **一句话的形状**：第二十三到二十六轮连着看是同一句话的四个面——「句子没定行为」→「句子定太松、三端各自填」→
+      「句子写了一件没有实现体的事」→ 这一轮「**同一条句子里，两端把同一个词读成两件事，而其中一端已经在场上**」。
+      前三轮要么改代码要么改句子，这一轮两样都做，而且改动的方向由"哪一种读法已经把两种情形都覆盖了"决定，
+      不是由"哪一端先写"决定。附带一条本轮踩到的工程坑（已进 §7）：vendored 那两份的换行是**按字节抄**的，
+      `mobile/shared/protocol/protocol.json` 又标了 `-text`，所以只要 `protocol/protocol.json` 被 `git checkout` 还原成 CRLF，
+      重新 vendor 就会产生 149 行整文件假变更——先源文件转 LF、再 vendor，diff 才会只剩真正那一行。
+
 ### 需要用户点头才能做的四件事
 - 唤醒/解锁并使用那台个人鸿蒙真机（#45/#46 + 鸿蒙发现真机腿）。
 - 跑 `pack --iscustom`（Android 自定义基座，#36/#90 的钥匙，也是 #143 那条"退到后台还收得到"的钥匙）。
@@ -2138,6 +2192,11 @@ Xcode，够不到任何一档编译门**——它改的原因只是共用的 sto
   跑出来的读数应当是旧行为自己的证据——这一条腿读出 `(1793215553.2003748, 1793215553.2003748)`
   （`.probe/neg167_fail.txt`），两个数一样，也就是盘上那个 `touched` 一动没动。做完立刻改回来，并用 `grep` 确认
   临时标记（`NEG167`）在源码里已经一个都不剩。
+- **重新 vendor 之前先看 `protocol/protocol.json` 的换行**（#192）：`mobile/scripts/vendor_protocol.py` 是 `write_bytes` 逐字节抄，
+  而 `mobile/shared/protocol/protocol.json` 在 git 里标的是 `-text`（不参与换行归一，`git ls-files --eol` 读得出），源文件却标
+  `text=auto eol=lf`。一次 `git checkout protocol/protocol.json` 会把工作区那份还原成 **CRLF**（这台机器 `core.autocrlf=true`），
+  随后 vendor 就抄出一份 149 行的整文件假变更——真正改过的那一行被埋在假变更里，`git diff` 翻不到它。做法：改完源文件先把它的字节
+  换成 LF（`b.replace(b"\r\n", b"\n")` 再 `write_bytes`），然后 vendor，摘要与 vendored 那份才会一起回到"只有一行差异"的形状。
 
 ## 8. 索引
 

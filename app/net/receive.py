@@ -606,9 +606,13 @@ class ReceiveService:
                 if code != self.current_pair_code():
                     failures.append(time.time())
                     raise protocol_spec.ProtocolError("BAD_PAIR_CODE")
-                if "secret" in body and not hmac.compare_digest(str(body.get("secret") or ""), self.passphrase()):
+                offered = body.get("secret")
+                if offered is not None and not hmac.compare_digest(str(offered), self.passphrase()):
                     # A wrong passphrase is the same mistake as a wrong code as far as the
                     # sender is concerned, and a single error code keeps both builds honest.
+                    # Absence is read off the *value*, the same way the leaf key above is (§3): a
+                    # sender that serialises its optional field as null has no passphrase to offer,
+                    # and it must not spend one of this source's five tries for a field it didn't fill.
                     failures.append(time.time())
                     raise protocol_spec.ProtocolError("BAD_PAIR_CODE", {"reason": "passphrase"})
                 self.identity.trust(fingerprint, peer_id, name, declared, declared_leaf)

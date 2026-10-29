@@ -1475,6 +1475,118 @@ def check_pair_scope(body: dict) -> None:
              f"as a plain string, so these are the only legs that can feed it an address no LAN socket reports")
 
 
+def check_optional_secret(body: dict) -> None:
+    """§3's two optional pair keys are read off their *value*; the paper used to say "is the key there".
+
+    Round twenty-six (#192) took 「接收方按请求体里有没有这个键决定验哪一条」 and 「`secret` 是可选字段：没有它 =
+    旧构建」 as one question - what does 没有它 mean on the wire - and measured three bodies against the two
+    bodies that answer them. PC read `tls_fingerprint` by value (`receive.py:554`, so absent, null and "" all
+    mean "my leaf is my identity key") but read `secret` by *key presence* (`:609` before this round), while the
+    shared kernel has only one reading for it (`cs-receive.uts:877`, `body.get('secret') != null`). A sender that
+    serialises its optional field as JSON null - which is what a platform-side encoder does by habit - therefore
+    got `403 BAD_PAIR_CODE {reason: "passphrase"}` and lost one of its source's five tries on the PC, and paired
+    on the code alone on the phone. The PC was moved to the kernel's reading and the rule is now on the paper in
+    both directions: null or absent is absence, and an empty string is a wrong guess - a blank passphrase box must
+    never silently downgrade a pair to the 6-digit code, which is the second layer §3 names right after this.
+    """
+    note = body["transport"].get("note", "")
+    for needle, why in (
+        ("not by key presence", "the two readings are the finding; without the name on the paper the next host "
+                                "picks either"),
+        ("`secret` absent or JSON null", "the half that says what absence means, which is what both ends now do"),
+        ("an empty string is NOT absence", "the half that keeps a blank passphrase box from downgrading to code-only"),
+    ):
+        if needle not in note:
+            fail(f"protocol.json's transport.note no longer says {needle!r} - {why}")
+
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    section = spec.split("## 3.", 1)[1].split("\n## ", 1)[0] if "## 3." in spec else ""
+    prose = "\n".join(p for p in section.split("\n\n") if not p.lstrip().startswith("（20"))
+    flat = re.sub(r"\s+", "", prose)
+    if re.sub(r"\s+", "", "请求体里有没有这个键") in flat:
+        fail("§3 says the receiver decides which preimage to verify by whether the key is in the body again - "
+             "no end reads it that way: both take the value, and a body whose key carries null or \"\" is \"no leaf\"")
+    for needle, why in (
+        ("这一格有没有值", "the sentence that replaces it, and the one the two pair bodies implement"),
+        ("键不在，或者值是null", "absence has a definition now, because the two ends disagreed about it in code"),
+        ("空串不是\"没有它\"", "the deliberate other half: a blank field is a wrong guess, not a legacy sender"),
+        ("常量时间比较", "§3 names how the value is compared, so a `==` on a secret would not pass as 逐字相等"),
+        ("直接省略这个键", "the sender-side rule that the receiving rule above is built around"),
+    ):
+        if re.sub(r"\s+", "", needle) not in flat:
+            fail(f"§3 no longer says {needle!r} - {why}")
+
+    root = HERE.parent
+    sdk = HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk"
+    recv_py = (root / "app" / "net" / "receive.py").read_text(encoding="utf-8")
+    send_py = (root / "app" / "net" / "send.py").read_text(encoding="utf-8")
+    kernel = (sdk / "cs-receive.uts").read_text(encoding="utf-8")
+    proto_uts = (sdk / "cs-protocol.uts").read_text(encoding="utf-8")
+
+    handler = recv_py.split("def handle_pair", 1)[1].split("\n    def ", 1)[0]
+    handler_code = "\n".join(l for l in handler.splitlines() if not l.strip().startswith("#"))
+    if re.search(r'["\']secret["\']\s+in\s+body', handler_code):
+        fail("the PC's handle_pair decides the passphrase by whether the key is in the body - that is the reading "
+             "§3 retired: a sender that writes its optional field as null would spend one of five tries and get "
+             "a different answer than the phone kernel gives the same bytes")
+    for literal, why in (
+        ('offered = body.get("secret")', "absence is read off the value, which is the kernel's one reading"),
+        ("if offered is not None and not hmac.compare_digest(str(offered), self.passphrase()):",
+         "the whole rule on one line: null pairs on the code alone, \"\" is a wrong guess, compared without "
+         "short-circuiting"),
+        ('str(body.get("tls_fingerprint") or "")', "§3 reads the leaf key the same way, and this is the line that "
+                                                   "makes a body carrying null or \"\" mean \"my leaf is my key\""),
+    ):
+        if literal not in handler:
+            fail(f"handle_pair no longer contains {literal!r} - {why}")
+
+    pair_fn = kernel.split("function pairReply(", 1)[1].split("\n}", 1)[0]
+    if "body.get('secret') != null" not in pair_fn:
+        fail("the shared kernel no longer reads the passphrase with body.get('secret') != null - that is the "
+             "reading §3 settled on, and the PC was moved to it, so a kernel that changes would split the ends again")
+    matches = kernel.split("function secretMatches(", 1)[1].split("\n}", 1)[0] if "function secretMatches" in kernel else ""
+    for literal, why in (
+        ("diff = diff | (ca! ^ cb!)", "the non-short-circuit compare §3 calls 常量时间比较"),
+        ("return diff == 0", "the answer comes out of the whole string, not out of the first difference"),
+    ):
+        if literal not in matches:
+            fail(f"secretMatches no longer contains {literal!r} - {why}")
+    if re.search(r"if\s*\(\s*ca\s*!=\s*cb\s*\)", matches):
+        fail("secretMatches short-circuits on the first differing character - §3 promised a constant-time compare")
+
+    pair_sender = send_py.split("def pair(", 1)[1].split("\n    def ", 1)[0] if "def pair(" in send_py else ""
+    if 'if secret:\n            request["secret"] = secret' not in pair_sender:
+        fail("the PC sender no longer omits an empty secret (if secret: / request[\"secret\"]) - §3 says a blank "
+             "field must not go on the wire, because every receiver that keeps the passphrase concept reads it as "
+             "one wrong guess")
+    mint = proto_uts.split("export function pairJson(", 1)[1].split("\n}", 1)[0] if "export function pairJson" in proto_uts else ""
+    if "if (secret.length > 0)" not in mint or "body['secret'] = secret" not in mint:
+        fail("the shared sender no longer omits the secret key when the field is empty - the same rule as the PC's, "
+             "on the half that three phone hosts compile")
+
+    selftest = (root / "scripts" / "protocol_selftest.py").read_text(encoding="utf-8")
+    if "def phase_optional_secret(" not in selftest or \
+            re.search(r"^\s+phase_optional_secret\(proto, workspace\)$", selftest, re.M) is None:
+        fail("scripts/protocol_selftest.py has no optional-secret phase in its run - what a receiver reads as "
+             "absence is a fact about the pair path, and only the tier that pairs can measure it")
+    phase = selftest.split("def phase_optional_secret", 1)[1].split("\ndef ", 1)[0]
+    for literal, why in (
+        ('if secret_slot is not _ABSENT:', "absence on these legs means the key is left off - so the null and "
+                                           "blank legs really put a value on the wire, which is the whole question"),
+        ('body["secret"] = secret_slot', "the slot is written verbatim: a JSON null and an empty string must reach "
+                                         "the handler as those exact bytes, not be filtered on the way"),
+        ("_code_failures", "the leg has to read the bucket, not just the code - burning a try is half the harm"),
+    ):
+        if literal not in phase:
+            fail(f"phase_optional_secret() no longer contains {literal!r} - {why}")
+
+    harness = (sdk / "web" / "index.uts").read_text(encoding="utf-8")
+    legs = len(re.findall(r"check\(\s*'§3 (这一格的 null 算没有它|空串不是没有它|这一格空不空)", harness))
+    if legs < 3:
+        fail(f"the H5 receiver self-check holds {legs} of the three optional-key legs - the kernel is the end "
+             f"whose reading the PC was moved to, and only this tier can hand it a body no sender of ours writes")
+
+
 def main() -> int:
     stamp_path = CONTRACT / "SOURCE.json"
     for name in ("protocol.json", "spec.md", "SOURCE.json"):
@@ -1528,6 +1640,7 @@ def main() -> int:
     check_pair_throttle(body)
     check_random_source(body)
     check_pair_scope(body)
+    check_optional_secret(body)
     check_uts_mirror(body)
     check_limits_in_prose(body)
     check_error_table(body)
@@ -1557,6 +1670,8 @@ def main() -> int:
           "hosts answer, and a byte that does not divide the alphabet is thrown away instead of bent")
     print("OK  §3 pairs whoever knocks: three ends bind the wildcard, no pair path tests the source's range, "
           "and the LAN edge is the installer's remoteip=LocalSubnet rule rather than a line of this contract")
+    print("OK  §3's two optional pair keys are read off their value on both ends: null is absence and pairs on "
+          "the code alone, an empty string is a wrong guess, and neither sender writes a blank secret to the wire")
     print("OK  vendored copies match their stamps")
     print("OK  cs-protocol.uts mirrors the contract")
     print("OK  §5 names every limit a receiver refuses a transfer on")

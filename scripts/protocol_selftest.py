@@ -44,6 +44,24 @@ REPORT.parent.mkdir(parents=True, exist_ok=True)
 fails: list[str] = []
 
 
+class _Slot:
+    """A wire value that a dict cannot carry: this round's legs are about exactly that.
+
+    ``None`` is a real answer here (a JSON null), so "leave the key off" and "let the peer serve its own
+    signing key as the leaf" need their own markers rather than a falsy value the handler would read.
+    """
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __repr__(self) -> str:
+        return f"<{self.name}>"
+
+
+_ABSENT = _Slot("键不在")
+_SELF = _Slot("用本机那张叶")
+
+
 def check(name: str, ok: bool, info="") -> None:
     line = ("PASS  " if ok else "FAIL  ") + name + (f": {info}" if info != "" else "")
     with REPORT.open("a", encoding="utf-8") as fh:
@@ -2470,6 +2488,103 @@ def phase_pair_scope(proto: protocol_spec.Protocol, workspace: Path) -> None:
     service.stop()
 
 
+def phase_optional_secret(proto: protocol_spec.Protocol, workspace: Path) -> None:
+    """§3's two optional pair keys are read off their value, so null is absence and "" is a wrong guess.
+
+    Round twenty-six (#192) asked 「没有它」 - what does a receiver treat as a missing optional field - and the
+    two bodies that answer it answered differently for the same bytes. PC read the passphrase by *key presence*
+    (`"secret" in body`) while the shared kernel reads it by value (`body.get('secret') != null`), so a sender
+    that serialises its optional field as JSON null paired on the code alone on a phone and got
+    `BAD_PAIR_CODE {reason: "passphrase"}` plus one of its five tries burnt on the PC (`.probe/r26_before.txt`).
+    The PC is now on the kernel's reading; these legs hold the rule in both directions, because the other half -
+    an empty string is *not* absence - is what stops a blank passphrase box from quietly downgrading a pair to
+    the 6-digit code. The leaf legs are the same question one line earlier in the same handler, and there the
+    two ends already agreed: the paper had the wrong words for it.
+    """
+    receiver = load_or_create(workspace / "optsec-receiver")
+    service = ReceiveService(receiver, "PC-Optional-Secret", lambda manifest, who, caller: True,
+                             port=0, root=workspace / "optsec-received")
+    service.start()
+    code, secret = service.current_pair_code(), service.passphrase()
+
+    def release() -> None:
+        service._tokens.clear()
+        service._seen.clear()
+        service._held_by = ""
+
+    def pair(source: str, secret_slot, leaf_slot, *, use_code: str | None = None,
+             who=None) -> tuple[str, str, int]:
+        """Send one pair body whose optional slots are set exactly as a foreign sender might write them.
+
+        ``secret_slot``/``leaf_slot`` of ``_ABSENT`` leave the key off; ``None`` puts a JSON null on the wire.
+        Returns (code, detail, tries spent in this source's bucket) - the bucket is half the measurement,
+        because spending a try is the harm the old reading did.
+        """
+        who = who or load_or_create(workspace / f"optsec-{source}")
+        nonce = secrets.token_hex(16)
+        if leaf_slot is _SELF:
+            signed = who.declared_tls_fingerprint
+        elif leaf_slot is _ABSENT or leaf_slot is None or leaf_slot == "":
+            signed = ""
+        else:
+            signed = str(leaf_slot)
+        message = protocol_spec.pair_message(who.peer_id, nonce, signed)
+        body = {
+            "peer_id": who.peer_id,
+            "name": "Opt-Secret-Peer",
+            "protocol_version": proto.version,
+            "compatible_versions": list(proto.compatible_versions),
+            "nonce": nonce,
+            "public_key": base64.b64encode(who.raw_public_key()).decode(),
+            "signature": base64.b64encode(who.key.sign(message)).decode(),
+            "code": code if use_code is None else use_code,
+        }
+        if leaf_slot is _SELF:
+            body["tls_fingerprint"] = signed
+        elif leaf_slot is not _ABSENT:
+            body["tls_fingerprint"] = leaf_slot
+        if secret_slot is not _ABSENT:
+            body["secret"] = secret_slot
+        try:
+            token = service.handle_pair(body, source).get("token", "")
+            return ("PAIRED", token[:12], len(service._code_failures.get(source, [])))
+        except protocol_spec.ProtocolError as error:
+            return (error.code, json.dumps(error.detail, ensure_ascii=False),
+                    len(service._code_failures.get(source, [])))
+
+    absent = pair("optsec-absent", _ABSENT, _SELF)
+    release()
+    null = pair("optsec-null", None, _SELF)
+    release()
+    blank = pair("optsec-blank", "", _SELF)
+    release()
+    wrong = pair("optsec-wrong", "ZZZZZZZZ", _SELF)
+    release()
+    right = pair("optsec-right", secret, _SELF)
+    release()
+    bad_code = pair("optsec-badcode", secret, _SELF,
+                    use_code=("1" if code[0] != "1" else "2") + code[1:])
+    release()
+    leaf_null = pair("optsec-leaf-null", secret, None)
+    release()
+    leaf_blank = pair("optsec-leaf-blank", secret, "")
+
+    check("§3 「没有它」读的是这一格的值不是键在不在：密码那一节省略、给 null，两个都只靠码配上",
+          absent[0] == "PAIRED" and null[0] == "PAIRED" and null[2] == 0 and absent[2] == 0,
+          f"{absent} {null}")
+    check("§3 空串不是「没有它」：它是一次错误的猜测，答 passphrase 并烧掉那一格里的一枚名额",
+          blank[0] == "BAD_PAIR_CODE" and blank[1] == '{"reason": "passphrase"}' and blank[2] == 1, blank)
+    check("§3 密码写错了也是这一句、这一格：与空串同一种答、同样烧一枚（合同只给 secret 那一支点名 reason）",
+          wrong[0] == "BAD_PAIR_CODE" and wrong[1] == '{"reason": "passphrase"}' and wrong[2] == 1, wrong)
+    check("§3 值对才配得上：同一把钥匙带对的密码拿到 token",
+          right[0] == "PAIRED" and re.fullmatch(r"[0-9a-f]{12}", right[1]) is not None, right)
+    check("§3 码错的那一支不写 reason：detail 是空的，「passphrase」只在密码那一格错的时候出现",
+          bad_code[0] == "BAD_PAIR_CODE" and bad_code[1] == "null", bad_code)
+    check("§3 叶指纹那一格同读法：null 与空串都算\"我的叶就是签名的这把钥匙\"，三段前像照样配上",
+          leaf_null[0] == "PAIRED" and leaf_blank[0] == "PAIRED", f"{leaf_null} {leaf_blank}")
+    service.stop()
+
+
 def main() -> int:
     proto = protocol_spec.load()
     REPORT.write_text("", encoding="utf-8")
@@ -2499,6 +2614,7 @@ def main() -> int:
         phase_pair_throttle(proto, workspace)
         phase_random_source(proto, workspace)
         phase_pair_scope(proto, workspace)
+        phase_optional_secret(proto, workspace)
     phase_catalogue(proto)
     check("chunks per file match the contract", proto.chunk_size == 4194304, proto.chunk_size)
     # The four shapes §7 can arrive in; the wire legs above are what prove both ends consult them.

@@ -1336,6 +1336,56 @@ function askPairAt(box: Inbox, client: string, useCode: string, useSecret: strin
 		recvPrepare, recvWrite, recvDigestFile, recvDrop)
 }
 
+/** One value `pairJson` writes on purpose, so the harness can find that slot again afterwards.
+ *  The string is long and contains no JSON punctuation; the splice below checks it landed. */
+const SLOT_MARK = 'R26SecretSlot'
+
+/** A pair body whose `secret` (and optionally `tls_fingerprint`) slot says exactly what a sender writes.
+ *  §3's 「没有它」 is a claim about this one slot, and `pairJson` cannot produce the bodies the round needed:
+ *  it omits an empty value, so null and `""` have to be pasted in over the value the harness just wrote.
+ *  A splice that misses returns the body untouched, so the leg goes red instead of quietly measuring
+ *  whatever else came back. */
+function pairBodySlots(withKey: string, code: string, secretRaw: string, leafRaw: string): string {
+	const nonce = randomHex(16)
+	const signature = b64(sha256Bytes(utf8(pairMessage(SIM_PEER_ID, nonce, ''))))
+	const baked = pairJson(SIM_PEER_ID, SIM_NAME, nonce, withKey, signature, code, SLOT_MARK, '')
+	const mark = '"secret":"' + SLOT_MARK + '"'
+	const at = baked.indexOf(mark)
+	const head = at < 0 ? '' : baked.substring(0, at)
+	const tail = at < 0 ? '' : baked.substring(at + mark.length)
+	if (at < 0 || tail != '}') {
+		return baked
+	}
+	let body = ''
+	if (secretRaw == '') {
+		const comma = head.lastIndexOf(',')
+		if (comma < 0) {
+			return baked
+		}
+		body = head.substring(0, comma) + tail
+	} else {
+		body = head + secretRaw + tail
+	}
+	if (leafRaw != '') {
+		body = body.substring(0, body.length - 1) + ',"tls_fingerprint":' + leafRaw + '}'
+	}
+	return body
+}
+
+/** The same pair request with a body the shared sender could never have built. */
+function askPairRawAt(box: Inbox, client: string, jsonBody: string, at: number): WireReply {
+	const req = new Req()
+	req.method = 'POST'
+	req.path = '/v1/pair'
+	req.json = jsonBody
+	req.token = ''
+	req.body = new ArrayBuffer(0)
+	req.sha = ''
+	req.client = client
+	return handleReceive(box, receiverSelf(), at, req, recvHex, recvKeyFp, recvVerify,
+		recvPrepare, recvWrite, recvDigestFile, recvDrop)
+}
+
 /** How many failures this source has left in the receiver's window. Read out of the same list the
  *  kernel counts, because the claim being measured is about that list's shape, not about a reply. */
 function failsOf(box: Inbox, client: string): number {
@@ -2634,6 +2684,57 @@ export function receiveSelfReport(): string {
 		&& scopeForwardedObj != null && scopeForwardedObj!.getString('token', '') != ''
 		&& scopeBlindObj != null && scopeBlindObj!.getString('token', '') != '',
 		scopeLoop.body + '|' + scopeForwarded.body + '|' + scopeBlind.body)
+
+	// 22. 第二十六轮巡检（#192）：§3 那两个可选键的「没有它」——纸面原本写「按请求体里有没有这个键」，PC 的密码
+	// 那一格也真就判的是键在不在，而共用内核从第一天起判的是这一格空不空。于是同一条 `{"secret": null}` 在两端
+	// 答相反（本轮把 PC 改成与内核一致）。这一组只有这一档能喂出那种体：我们自己的发送方永远省略空值，
+	// `pairJson` 造不出 null，所以这里把那一格直接贴上线。每一趟一个新收件箱——第一次配对成功就把单会话名额占了，
+	// 下一趟换一把钥匙进来只会撞到 PEER_BUSY，那量的就不是这一格了。
+	const optAt = nowSeconds()
+	const optBoxA = newInbox(harnessRand)
+	const optBoxB = newInbox(harnessRand)
+	const optBoxC = newInbox(harnessRand)
+	const optBoxD = newInbox(harnessRand)
+	const optBoxE = newInbox(harnessRand)
+	const optKeyA = b64(randomBytes(32))
+	const optKeyB = b64(randomBytes(32))
+	const optKeyC = b64(randomBytes(32))
+	const optKeyD = b64(randomBytes(32))
+	const optKeyE = b64(randomBytes(32))
+	const optOmit = askPairRawAt(optBoxA, '203.0.113.60',
+		pairBodySlots(optKeyA, currentPairCode(optBoxA, optAt), '', ''), optAt)
+	const optNull = askPairRawAt(optBoxB, '203.0.113.61',
+		pairBodySlots(optKeyB, currentPairCode(optBoxB, optAt), 'null', ''), optAt)
+	const optOmitObj = jsonOf(optOmit)
+	const optNullObj = jsonOf(optNull)
+	check('§3 这一格的 null 算没有它：密码那一节省略与写成 null，内核答的是同一句「只靠码配上」',
+		optOmitObj != null && optOmitObj!.getString('token', '') != ''
+		&& optNullObj != null && optNullObj!.getString('token', '') != ''
+		&& failsOf(optBoxB, '203.0.113.61') == 0,
+		optOmit.body + '|' + optNull.body)
+	const optBlank = askPairRawAt(optBoxC, '203.0.113.62',
+		pairBodySlots(optKeyC, currentPairCode(optBoxC, optAt), '""', ''), optAt)
+	const optBlankObj = jsonOf(optBlank)
+	const optBlankDetail = optBlankObj == null ? null : optBlankObj!.getJSON('detail')
+	const optAfterBlank = askPairRawAt(optBoxC, '203.0.113.62',
+		pairBodySlots(optKeyC, currentPairCode(optBoxC, optAt), 'null', ''), optAt)
+	const optAfterBlankObj = jsonOf(optAfterBlank)
+	check('§3 空串不是没有它：那一格写空串答 passphrase、并往这个来源的桶里记一次，随后写 null 照样配上',
+		optBlankObj != null && optBlankObj!.getString('code', '') == 'BAD_PAIR_CODE'
+		&& optBlankDetail != null && optBlankDetail!.getString('reason', '') == 'passphrase'
+		&& failsOf(optBoxC, '203.0.113.62') == 1
+		&& optAfterBlankObj != null && optAfterBlankObj!.getString('token', '') != '',
+		optBlank.body + ' | 桶 ' + failsOf(optBoxC, '203.0.113.62').toString() + ' | ' + optAfterBlank.body)
+	const optLeafNull = askPairRawAt(optBoxD, '203.0.113.63',
+		pairBodySlots(optKeyD, currentPairCode(optBoxD, optAt), '', 'null'), optAt)
+	const optLeafBlank = askPairRawAt(optBoxE, '203.0.113.64',
+		pairBodySlots(optKeyE, currentPairCode(optBoxE, optAt), '', '""'), optAt)
+	const optLeafNullObj = jsonOf(optLeafNull)
+	const optLeafBlankObj = jsonOf(optLeafBlank)
+	check('§3 这一格空不空那一读法也管叶指纹：null 与空串都算「我的叶就是签名的这把钥匙」，三段前像配上',
+		optLeafNullObj != null && optLeafNullObj!.getString('token', '') != ''
+		&& optLeafBlankObj != null && optLeafBlankObj!.getString('token', '') != '',
+		optLeafNull.body + '|' + optLeafBlank.body)
 
 	out.push(fail == 0 ? '接收自检 ' + pass.toString() + ' 项全部通过' : '接收自检失败 ' + fail.toString() + ' 项，通过 ' + pass.toString() + ' 项')
 	return out.join('\n')
