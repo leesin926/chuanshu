@@ -1984,6 +1984,63 @@ Xcode，够不到任何一档编译门**——它改的原因只是共用的 sto
       `mobile/shared/protocol/protocol.json` 又标了 `-text`，所以只要 `protocol/protocol.json` 被 `git checkout` 还原成 CRLF，
       重新 vendor 就会产生 149 行整文件假变更——先源文件转 LF、再 vendor，diff 才会只剩真正那一行。
 
+44. **#193：合同逐条巡检第二十七轮——§3 那句「三条路都会释放这个名额」：闲置那条三端都有，「断开」和「不再监听」在手机这一半压根没有身体**
+    （动的：`protocol/spec.md:159-172` 那三句拆成三条 + `:174` 起第二十七轮注、`protocol/protocol.json` 的 `transport.note`（2571 → 3373 字）、
+    **`app/net/receive.py:434` 那个 `release()` 的答法**、共用内核新增 `releaseSession()`（`cs-receive.uts:424`）与 `releaseSessions()`（`:449`）、
+    四处宿主各一份同名出口（`web/index.uts:1225`/`:1233`、`app-android/index.uts:801`/`:813`、鸿蒙在 `store/session.uts:724`/`:730` 就地定义）、
+    两个调用点（`onDisconnect()` 的 `:1388`、`onRecvListenStop()` 的 `:1026`）、守卫新增 `check_session_release()`
+    （`mobile/scripts/check_protocol.py:1590`，注册在 `:1842`）、门禁新增 `phase_session_release()`（`scripts/protocol_selftest.py:2588`，
+    注册在 `:2701`）、浏览器替身新增第 23 组八条腿（`web/index.uts:2771-2800`，**这一档本轮没跑**，见待办 40）；`cs-protocol.uts` / `cs-client.uts`
+    / 两台页面的模板**没动**——合同说的这一格是接收方手里的名额，跟线上一个字节都新增不了）
+    - **「都会释放」这句是三条并列写的，而三端读出来只剩两条**：`sweep` 那条（连续 `session_idle_timeout_s` 不带 token 就收回）三端都有，
+      PC 的「接收服务重启」也是真的——但真的是**顺带**的：`stop_listening` 把整个 `ReceiveService` 对象丢掉，token 表跟着走，
+      没有一个字节写着"释放"。手机这两条今天一个身体都没有：`onDisconnect()` 从 #124 起只做发送方取消，`markDisconnected` 里
+      `receiveHoldSlot('')` 收回的是**本机拨出去**那一格，而对方拨进来时发到这台手机收件箱里的那枚 token，除了闲置钟没人能动它；
+      `receiveStop()`（安卓 `app-android/index.uts:687`、鸿蒙 `app-harmony/index.uts:2688`）只关端口，**收件箱活在监听器旁边**，
+      于是手机上「不再监听 → 开始监听」这一趟重启量不出重启：旧的那台还占着名额，第三台进来只会拿到 `PEER_BUSY`。
+    - **顺带量到 PC 的 `release()` 答的是另一个问题**：它原来 `return had_token`——「这台对端有没有被发过 token」。而本机拨出去的那台
+      只有 `_held_by` 那一格、没有 token（token 是对面发的），于是设备卡上按「断开」时它答 `False`。同一个问题三端要一个答案，
+      所以改成 `had_token or had_slot`（`:434`），与本轮内核 `releaseSession` 的 `return held` 是同一句判断；调用点两处
+      （`_disconnect_selected` 与 `forget`）本来就在调它，不动。
+    - **补的是那半个身体，不是那条句子**：内核 `releaseSession(inbox, fingerprint)` 按名字收回**两半**（`inbox.tokens` 里那一枚 + `inbox.heldBy`
+      那一格），`releaseSessions(inbox)` 走 `activePeers(inbox)` 一次请走全部并把个数还给日志；两处都不碰 `trusted`——**释放不等于撤销**
+      是这一轮的边界，被请出去的那台留空配对码、只凭签名就能配回来（门禁 284 行那条 `resumed 为真`）。iOS 已终止，所以那条
+      `#ifdef` 只写 `APP-ANDROID || WEB`，鸿蒙那份桥在 `session.uts` 里就地定义（它 import 不到模块入口，这是 #91 就有的平台规则）。
+    - **纸面这一轮添了一条谁也没实现过的边界**：拆到第三个「断开」时发现手机上那三个按钮都挂在 `s.connected` 上
+      （`store/session.uts:1251` 的 `attachSession` 只在本机拨出去过时置它），「我的」页那条「PC 断开」读的是 `s.pcIn` ← `demoPcConnected()`
+      （`:860`），是浏览器演示卡专用的、真机上没有对应物。所以**对端单向拨进来、本机从没拨出去过**的那一种，手机上没有按钮可点。
+      本轮把这句写进正文（`:163`）而不是临时补一个按钮——补按钮是产品决定（要在哪个页、按了以后那台还在传的单怎么办），
+      巡检有权改的是"纸面不许暗示它已经在那儿了"。
+    - **守卫**（`.probe/r27_guard.txt`）：25 行 OK → **26 行 OK、`rc=0`**。`check_session_release()` 按八组：note 那五句；§3 那七句 +
+      一条 **ban**（不许把三条并回一句逗号并列）+ 一条**位置判据**（那句「本机没有「断开」可点」必须坐在第一条路里面，
+      在「手机是传输详情」与「二是接收服务重启」之间——把限定挪到后面的读者仍会把「断开」读成每台都能点）；PC `release()`
+      三行字面量 + `^\s*return had_token$` 那条 ban + 两个调用点 + `_refresh_peers` 那一格拨出半的 repaint；内核两处字面量 +
+      **不许 `releaseSession` 里出现 `trusted`**；web／安卓两座桥；鸿蒙就地那两份 + 两个调用点 + 那条 `#ifdef`；门禁那一相在场且含
+      四格；H5 那八条腿的腿名。
+    - **负向 42/42**（`.probe/red27.py` → `.probe/r27_red.txt`）：note 5 / 纸面 8（含那条 ban 与那条位置判据）/ PC 6（含 ban、两个调用点、
+      那一格 repaint）/ 内核 5（含不许动 `trusted` 那条 ban）/ 宿主桥 6（web 2、安卓 2、鸿蒙就地 2）/ 调用点与 `#ifdef` 3 /
+      门禁 5 / H5 4，一轮跑红，每条报的是自己那一句；收尾守卫 `rc=0`、26 行 OK，
+      全部按字节还原并复验。其中两条是本轮新写的判据自己下场：把「手机那个按钮…」那句挪位与删掉，各红一次。
+    - **门禁**（`.probe/r27_gate.txt`）：新相 `phase_session_release()` 八条腿（报告 280-287 行），整份 **`RESULT ALL PASS`、252 条 PASS**（244 → 252）。
+      这一相量的是 PC 那个真实 `ReceiveService`：占名额 → 第二台吃 `PEER_BUSY` → `release` 答 `True` → 下一台配上 → 旧 token
+      `NOT_PAIRED` 且 `caller_fingerprint` 空 → 留空码重配 `resumed` 为真 → **本机拨出去那台（只有 `_held_by`）也答 `True` 且
+      `active_peers()` 空** → 没占名额的那台答 `False` 且不动别人那一格 → 新建一个接收器即「重启」，旧 token 什么也不是。
+      跑这一相之前先修了上一轮的一处自伤：`red` 驱动还原时把 `def main()` 那一行连带删了（`protocol_selftest.py` 只剩函数体），
+      靠 `ast.parse` 与整份重跑确认补回。
+    - **档位与欠的腿（`mobile/README.md` 待办 40）**：本轮**动了手机端要编译的那四份文件**（`cs-receive.uts`、`web/index.uts`、
+      `app-android/index.uts`、`store/session.uts`），所以欠 Kotlin 与 ArkTS 两道编译门；两趟都想去跑，CLI 两次都答
+      「未检测到已打开的HBuilderX，请先执行 cli open 启动 HBuilderX 后再重试」——起 IDE 不是我的动作，这两条从"欠跑"变成"欠开"。
+      `浏览器` 那一档也照旧要用户手起（运行到浏览器 → 「我的」页「接收自检」）：待跑的腿现在是待办 36 那五条、37 那五条、
+      38 那两条、39 那三条、本轮这**八条**，预期 `144 → 159 → 167`。**手机侧那两半的释放今天只到 `门禁 + 守卫`**——
+      门禁量的是 PC 那个 `release()`，守卫按文本比的是内核 `releaseSession`，那八趟在活浏览器里跑出什么，本轮不知道。
+    - **留在桌上的一条不对称**：撤销那一侧本轮没碰——PC 设置里的「撤销」（`forget`）顺手释放会话，手机的「取消固定」（`unpin`）不释放。
+      合同 §3 说这两件事是两件事（释放 ≠ 撤销），但没说撤销该不该连带收回名额；这一句要不要定、往哪边定，是 §6 那道口径题形状的另一格。
+    - **一句话的形状**：二十六轮是「同一个词两端读成两件事」，二十七轮是**「一句并列里三件事，只有一件真的写在三端身上，
+      另外两件一端有、一端是顺带、一端压根没有」**。同一条句子的失效方式多了一种：不是读歪，是**只有一条有人实现，另外两条
+      靠"PC 那边恰好是这样"被当成通例写了下来**。附带一条本轮又踩一次的工程坑：改 `protocol/protocol.json` 那一句时用
+      `json.dumps` 整体重写，把三处本来压成一行的数组摊成了 30 行假变更——合同 JSON 的改动仍然只能按字节替换那一串，
+      改完 `git diff --stat` 必须是 1 行。
+
 ### 需要用户点头才能做的四件事
 - 唤醒/解锁并使用那台个人鸿蒙真机（#45/#46 + 鸿蒙发现真机腿）。
 - 跑 `pack --iscustom`（Android 自定义基座，#36/#90 的钥匙，也是 #143 那条"退到后台还收得到"的钥匙）。

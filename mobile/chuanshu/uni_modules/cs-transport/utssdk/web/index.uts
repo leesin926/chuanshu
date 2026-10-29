@@ -67,6 +67,7 @@ import {
 	VerifyFn,
 	WireReply,
 	WriteFn,
+	activePeers,
 	adoptAll,
 	adoptArrivals,
 	adoptPin,
@@ -77,6 +78,8 @@ import {
 	markLanded,
 	newInbox,
 	passphraseOf,
+	releaseSession,
+	releaseSessions,
 	restartLike,
 	resolveOffer,
 	rotatePairing,
@@ -1215,6 +1218,20 @@ export function receiveRotatePairing(): string {
  *  the one it is dialled in through (spec §3). The page calls it on connect and on disconnect. */
 export function receiveHoldSlot(fingerprint: string): void {
 	holdSlotFor(recvInbox, fingerprint, nowSeconds())
+}
+
+/** Take one peer's session away (spec §3, 持有方点「断开」). Same name and shape on every platform:
+ *  the page calls it when the user closes a connection, whatever door that peer came through. */
+export function receiveRelease(fingerprint: string): boolean {
+	return releaseSession(recvInbox, fingerprint)
+}
+
+/** Closing the receiver gives everybody's slot back (spec §3, 接收服务重启). A browser harness has no
+ *  port to close, so this is here because the page asks the same question on every platform - and
+ *  because it is the one leg that can prove a phone's 不再监听 does not leave a stranger holding the
+ *  single session. */
+export function receiveReleaseAll(): number {
+	return releaseSessions(recvInbox)
 }
 
 /** The sender's heartbeat: the peer this device dialled never shows up in an inbound request, so this
@@ -2735,6 +2752,55 @@ export function receiveSelfReport(): string {
 		optLeafNullObj != null && optLeafNullObj!.getString('token', '') != ''
 		&& optLeafBlankObj != null && optLeafBlankObj!.getString('token', '') != '',
 		optLeafNull.body + '|' + optLeafBlank.body)
+
+	// 23. 第二十七轮巡检（#193）：§3 那三条把名额还给下一台的路，手机这一半原本只有闲置那一条走得通。
+	// 「持有方点断开」与「不再监听」这两条本轮才进内核（releaseSession / releaseSessions），量的就是这一份：
+	// 一次收回这台对端占着的两半、旧 token 立刻不算话、而信任那一份纹丝不动。
+	const rel = newInbox(harnessRand)
+	const relAt = nowSeconds()
+	const relCode = currentPairCode(rel, relAt)
+	const relSecret = passphraseOf(rel, relAt)
+	const relKeyA = b64(randomBytes(32))
+	const relKeyB = b64(randomBytes(32))
+	const relFpA = recvKeyFp(relKeyA)
+	const relFpB = recvKeyFp(relKeyB)
+	const relPairA = askPairAt(rel, '203.0.113.70', relCode, relSecret, relKeyA, relAt)
+	const relPairAObj = jsonOf(relPairA)
+	const relTokenA = relPairAObj == null ? '' : relPairAObj!.getString('token', '')
+	const relBusyB = askPairAt(rel, '203.0.113.71', relCode, relSecret, relKeyB, relAt)
+	check('§3 释放自检摆好格子：这台对端占着名额时第二台只会拿到 PEER_BUSY',
+		relTokenA != '' && relFpA != '' && codeOfReply(relBusyB) == 'PEER_BUSY', relBusyB.body)
+	holdSlotFor(rel, relFpB, relAt)
+	check('§3 一台手机的两半都在同一格名单里：对方拨进来那枚 token 与本机拨出去那一格',
+		activePeers(rel).length == 2, activePeers(rel).join(','))
+	const relGaveB = releaseSession(rel, relFpB)
+	check('§3 本机拨出去那一半也算占着名额：断开它答 true，别人那一格不动',
+		relGaveB && activePeers(rel).length == 1 && activePeers(rel)[0] == relFpA,
+		relGaveB.toString() + '|' + activePeers(rel).join(','))
+	const relMiss = releaseSession(rel, recvKeyFp(b64(randomBytes(32))))
+	check('§3 没占着名额的那一台答 false：不顺手把别人的会话一起清掉',
+		relMiss == false && activePeers(rel).length == 1, relMiss.toString())
+	const relGaveA = releaseSession(rel, relFpA)
+	const relStillTrusted = rel.trusted.length
+	check('§3 持有方点「断开」这一趟：那枚 token 按名字收回，名额空了而信任那一份没动',
+		relGaveA && rel.tokens.length == 0 && activePeers(rel).length == 0 && relStillTrusted > 0,
+		relGaveA.toString() + '|' + rel.tokens.length.toString() + '|' + relStillTrusted.toString())
+	const relOldToken = askOn(rel, SIM_PEER_ID, 'GET', '/v1/offer/x/state', '', relTokenA, new ArrayBuffer(0), '')
+	check('§3 被请出去的那台带旧 token 再请求吃 NOT_PAIRED（它自己会留空码重配对，用户看不见这一句）',
+		codeOfReply(relOldToken) == 'NOT_PAIRED', relOldToken.body)
+	const relRepair = askPairAt(rel, '203.0.113.70', '', '', relKeyA, relAt)
+	const relRepairObj = jsonOf(relRepair)
+	check('§3 释放不等于撤销：这台对端留空配对码、只靠签名就配回来，resumed 为真',
+		relRepair.status == 200 && relRepairObj != null && relRepairObj!.getBoolean('resumed', false),
+		relRepair.status.toString() + '|' + relRepair.body)
+	holdSlotFor(rel, relFpB, relAt)
+	const relTakenAll = releaseSessions(rel)
+	const relNext = askPairAt(rel, '203.0.113.71', relCode, relSecret, relKeyB, relAt)
+	const relNextObj = jsonOf(relNext)
+	check('§3 「不再监听」按名字一次请走两半：名额空了，下一台这才配得上',
+		relTakenAll == 2 && activePeers(rel).length == 0
+		&& relNextObj != null && relNextObj!.getString('token', '') != '',
+		relTakenAll.toString() + '|' + relNext.body)
 
 	out.push(fail == 0 ? '接收自检 ' + pass.toString() + ' 项全部通过' : '接收自检失败 ' + fail.toString() + ' 项，通过 ' + pass.toString() + ' 项')
 	return out.join('\n')

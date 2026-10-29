@@ -409,6 +409,51 @@ export function holdSlotFor(inbox: Inbox, fingerprint: string, now: number): voi
 	}
 }
 
+/** Take one peer's session away and give the slot back, which is what 断开 has to mean on the
+ *  receiving side too (spec §3).
+ *
+ *  The token dies here rather than when the socket closes: an inbound sender keeps writing chunks
+ *  against a session the user just believes is closed, and the next device stays refused with
+ *  PEER_BUSY until the idle clock runs out. PC's `ReceiveService.release` has done this since #53;
+ *  this is the same promise on the shared state machine, so a phone that both dialled out and was
+ *  dialled in gives up both halves with one tap.
+ *
+ *  This is not 忘记设备: the pin and the trust entry stay, so the peer released here may come back
+ *  with an empty code on its own signature, exactly like after a restart (spec §3). Offers are
+ *  untouched too - a transfer still in flight keeps its own idle window. */
+export function releaseSession(inbox: Inbox, fingerprint: string): boolean {
+	if (fingerprint == '') {
+		return false
+	}
+	let held = false
+	for (let i = inbox.tokens.length - 1; i >= 0; i--) {
+		if (inbox.tokens[i].fingerprint == fingerprint) {
+			inbox.tokens.splice(i, 1)
+			held = true
+		}
+	}
+	if (inbox.heldBy == fingerprint) {
+		inbox.heldBy = ''
+		inbox.heldSeen = 0
+		held = true
+	}
+	return held
+}
+
+/** Closing the port (不再监听): every session accepted through it ends, slot included (spec §3).
+ *
+ *  A PC gets this for free - `stop_listening` drops the receiver object and the token map with it -
+ *  while a phone keeps its inbox beside the listener, so the reclaim has to be said out loud here or
+ *  restarting the receiver leaves the old peer holding the one slot. The trust store is not part of
+ *  this; only the sessions. */
+export function releaseSessions(inbox: Inbox): number {
+	const who = activePeers(inbox)
+	for (let i = 0; i < who.length; i++) {
+		releaseSession(inbox, who[i])
+	}
+	return who.length
+}
+
 /** Say that a session is still moving, so its idle clock starts again from now.
  *
  *  The peer this device dialled never appears in an inbound request, so this is the only way its half

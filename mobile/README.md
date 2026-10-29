@@ -998,6 +998,32 @@ py -X utf8 scripts/check_protocol.py
       第一轮 26/27：唯一那条 MISS 是驱动自己的错——用例把 `body['secret'] = secret` 改成 `body['secret'] = secret.trim()`，
       而判据是子串比，改后的文本仍然**包含**它要找的那一句，所以那条判据压根没被弄红；换成 `body['secret'] = written` 才真的断开。
 
+40. **#193：第二十七轮欠的那一档——§3「三条路都会释放这个名额」在手机这一半补出了两个身体，那八条新腿写好了还没跑过，两道编译门现在连跑都跑不起来**
+    - **欠什么**：`web/index.uts` 第 23 组八条 §3 释放腿已经写好（腿名在 `:2771`、`:2774`、`:2777`、`:2781`、`:2785`、`:2789`、`:2793`、`:2800`）。
+      这一档上一次真跑出来是 144 项（`.probe/r22_web_after.txt`，#188 那一趟），待办 36 那五条、37 那五条、38 那两条、39 那三条
+      和这**八条**都没进过浏览器，所以五组一起跑通的预期是 `144 → 159 → 167`。
+      另外欠两道编译门：本轮**动了手机端要编译的四份文件**（`cs-receive.uts` 新增 `releaseSession`/`releaseSessions`、
+      `web/index.uts` 那两个出口 + 八条腿、`app-android/index.uts` 两座桥、`store/session.uts` 那两个调用点与鸿蒙就地那两份），
+      所以 Kotlin 与 ArkTS 各欠一趟。本轮想去跑这两趟：`F:\HBuilderX\cli.exe launch app-android --compile true` 与
+      `launch app-harmony --compile true --buildType debug` 两次都答
+      「未检测到已打开的HBuilderX，请先执行 cli open 启动 HBuilderX 后再重试」——起 IDE 不是我的动作，这两条从**欠跑**变成**欠开**。
+      要用户手动做：开 HBuilderX（不用打开项目），我就能把两道门跑完；`浏览器` 那一档则要 运行到浏览器 → 「我的」页按一次「接收自检」。
+    - **为什么这一格只有浏览器档能量到内核那一侧**：本轮补的是共用内核里那两个函数——三个手机平台跑的是同一份 `cs-receive.uts`，
+      而门禁那八条腿量的是 PC 那个真 `ReceiveService`（`scripts/protocol_selftest.py:2588`，报告 280-287 行），守卫对内核那两处
+      只按文本比。也就是说：手机上「断开」按下去到底有没有把对方拨进来那枚 token 收回来，今天**没有任何一档真跑过**。
+      第 23 组因此自己造一个收件箱（`newInbox(harnessRand)`），先摆好两半（一枚真 token + 一格 `holdSlotFor`），
+      再逐条问 `releaseSession` / `releaseSessions`；每一趟一个新收件箱，因为第一次配对成功就把名额占了，
+      换一把钥匙进来只会撞到 PEER_BUSY，量的就不是这一格了。
+    - **现在能说什么**：本轮结论只到 `门禁 + 守卫`。门禁 `RESULT ALL PASS`、252 条 PASS（244 → 252，`.probe/r27_gate.txt`），
+      八条里最关键的两条是「本机拨出去那台没有 token，断开它照样答 `True` 且 `active_peers()` 空」（285 行）和
+      「留空配对码、只凭签名配回来，`resumed` 为真」（284 行）——前者是 PC 那个 `release()` 本轮改的那个问题，
+      后者是"释放 ≠ 撤销"那条边界的读数。守卫 26 行 OK（`.probe/r27_guard.txt`）说的是"三端九个身体都在按名字收回两半、
+      没有一处把 `trusted` 一起清掉、纸面那七句 + 那条 ban + 那条位置判据都在"。**手机那侧的 `onDisconnect()` 今天仍只被守卫按文本比过**。
+    - **负向**：42 条用例全红（`.probe/red27.py` → `.probe/r27_red.txt`），note 5 / 纸面 8（含那条 ban 与"限定必须坐在第一条路里"
+      那条位置判据）/ PC 6（`release()` 三行 + `return had_token` 那条 ban + 两个调用点 + 名单 repaint）/ 内核 5（含不许动 `trusted` 那条 ban）/
+      宿主桥 6（web 2、安卓 2、鸿蒙就地 2）/ 调用点与 `#ifdef` 3 / 门禁 5 / H5 4，跑完按字节还原、守卫收尾 `rc=0`、26 行 OK。
+      本轮没有一条 MISS：新写的两条判据各自下场（把那句「本机没有「断开」可点」删掉、把它挪到第二条路之后），各红一次。
+
 M2a 的最小切口是"手机发、PC 收"：扫（或粘贴）PC 的二维码拿到地址与完整指纹，用户只核对同屏的
 一次性配对码——PC 侧接收端已经跑绿，手机只要把
 `/v1/pair`、`/v1/offer`、`PUT chunk`、`/v1/finalize` 四条打出去就能有结论，发现层可以先不做。

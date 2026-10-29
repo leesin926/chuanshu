@@ -2585,6 +2585,89 @@ def phase_optional_secret(proto: protocol_spec.Protocol, workspace: Path) -> Non
     service.stop()
 
 
+def phase_session_release(proto: protocol_spec.Protocol, workspace: Path) -> None:
+    """§3's three named ways the one-session slot is given back, measured on the PC's receiver.
+
+    Round twenty-seven (#193) read 「持有方点「断开」、接收服务重启、**或这台设备连续
+    session_idle_timeout_s 没有任何带 token 的请求**都会释放这个名额」 as a claim about every end, and the
+    phone's own reading is what was missing: its 断开 only ever gave back the half it took by dialling out,
+    and 不再监听 closed the port while the inbox - and the token handed to whoever dialled *in* - stayed
+    beside it (`.probe/r27_before.txt`). PC has had the whole sentence since #53, so these legs hold the PC
+    to the same words the shared kernel now answers, and one of them is a claim the old PC code got wrong on
+    its own side: `release()` used to answer "was this peer ever handed a token", which is not the question 断开
+    asks about a peer this machine dialled out to - that one occupies the slot through ``_held_by`` alone.
+    """
+    receiver = load_or_create(workspace / "sesrel-receiver")
+    service = ReceiveService(receiver, "PC-Session-Release", lambda manifest, who, caller: True,
+                             port=0, root=workspace / "sesrel-received")
+    service.start()
+    code = service.current_pair_code()
+
+    def pair(ident, *, blank_code: bool = False):
+        """A signature that verifies, so every answer below is about the slot and not about the pair code."""
+        nonce = secrets.token_hex(16)
+        leaf = ident.declared_tls_fingerprint
+        message = protocol_spec.pair_message(ident.peer_id, nonce, leaf)
+        body = {
+            "peer_id": ident.peer_id,
+            "name": "Slot-Peer",
+            "protocol_version": proto.version,
+            "compatible_versions": list(proto.compatible_versions),
+            "nonce": nonce,
+            "public_key": base64.b64encode(ident.raw_public_key()).decode(),
+            "signature": base64.b64encode(ident.key.sign(message)).decode(),
+            "code": "" if blank_code else code,
+            "tls_fingerprint": leaf,
+        }
+        try:
+            reply = service.handle_pair(body, "10.0.0.70")
+            return ("PAIRED", reply.get("token", ""), bool(reply.get("resumed", False)))
+        except protocol_spec.ProtocolError as error:
+            return (error.code, "", error.detail or {})
+
+    def fp_of(ident) -> str:
+        return fingerprint_of_public_key(
+            ed25519.Ed25519PublicKey.from_public_bytes(ident.raw_public_key()))
+
+    holder, third, dialled, nobody = (
+        load_or_create(workspace / f"sesrel-{n}") for n in ("holder", "third", "dialled", "nobody"))
+    first = pair(holder)
+    busy = pair(third)
+    check("§3 名额只有一个：第二台首次配对拿到 PEER_BUSY，detail 里是当前那台的名字",
+          first[0] == "PAIRED" and busy[0] == "PEER_BUSY"
+          and busy[2].get("reason") == "one peer at a time" and busy[2].get("peer") != "",
+          f"{first[:2]} {busy}")
+    released = service.release(fp_of(holder))
+    check("§3 持有方点「断开」这一趟：release 拿走那枚 token，答的是这台对端确实占着名额",
+          released is True and fp_of(holder) not in service._tokens, released)
+    freed = pair(third)
+    check("§3 名额真给了下一台：同一个人若不释放，这一趟只会再拿到 PEER_BUSY",
+          freed[0] == "PAIRED" and freed[1] != "", freed[0])
+    check("§3 被请出去的那台带的旧 token 不再算话（它下一次会拿到 403 NOT_PAIRED）",
+          not service.token_valid(first[1]) and service.caller_fingerprint(first[1]) == "",
+          service.caller_fingerprint(first[1]))
+    service.release(fp_of(third))
+    resumed = pair(holder, blank_code=True)
+    check("§3 释放不等于撤销：这台对端留空配对码、只靠签名就配回来，resumed 为真",
+          resumed[0] == "PAIRED" and resumed[2] is True and resumed[1] != "", resumed)
+    service.release(fp_of(holder))
+    service.hold_slot_for(fp_of(dialled))
+    held = service.release(fp_of(dialled))
+    check("§3 两半都算占着名额：本机拨出去的那台没有 token，断开它照样答 True 并把名额收回",
+          held is True and service.active_peers() == [], (held, service.active_peers()))
+    service.hold_slot_for(fp_of(dialled))
+    missed = service.release(fp_of(nobody))
+    check("§3 没占着名额的那一台：release 答 False，且不把别人那一格一起清掉",
+          missed is False and service.active_peers() == [fp_of(dialled)],
+          (missed, service.active_peers()))
+    service.release(fp_of(dialled))
+    restarted = ReceiveService(receiver, "PC-Session-Release", lambda manifest, who, caller: True,
+                               port=0, root=workspace / "sesrel-received")
+    check("§3 「接收服务重启」在 PC 是不需要新线上字段的：换一个新接收器，旧 token 一句也不认",
+          restarted._tokens == {} and not restarted.token_valid(first[1]), len(restarted._tokens))
+    service.stop()
+
+
 def main() -> int:
     proto = protocol_spec.load()
     REPORT.write_text("", encoding="utf-8")
@@ -2615,6 +2698,7 @@ def main() -> int:
         phase_random_source(proto, workspace)
         phase_pair_scope(proto, workspace)
         phase_optional_secret(proto, workspace)
+        phase_session_release(proto, workspace)
     phase_catalogue(proto)
     check("chunks per file match the contract", proto.chunk_size == 4194304, proto.chunk_size)
     # The four shapes §7 can arrive in; the wire legs above are what prove both ends consult them.

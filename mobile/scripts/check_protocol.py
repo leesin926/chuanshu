@@ -1587,6 +1587,187 @@ def check_optional_secret(body: dict) -> None:
              f"whose reading the PC was moved to, and only this tier can hand it a body no sender of ours writes")
 
 
+def check_session_release() -> None:
+    """§3's three ways back into the one-session slot: the paper named them, PC had them, the phone had one.
+
+    Round twenty-seven (#193) read 「三条路都会释放这个名额」 against the bodies that answer 断开 and 不再监听.
+    The idle window was on all three ends (PC's ``sweep``, the kernel's ``sweep``), and 「接收服务重启」 was true
+    on the PC for a reason nobody had written down - ``stop_listening`` drops the whole receiver object, token map
+    included - while a phone keeps its inbox *beside* the listener, so closing the port released nothing. And
+    「持有方点「断开」」 on a phone only ever gave back the half it took by dialling out (`receiveHoldSlot('')`),
+    leaving the token handed to whoever dialled *in* to rot until the idle clock ran out. The kernel has
+    ``releaseSession``/``releaseSessions`` now and both call sites use them; the PC's ``release()`` was moved to
+    the same question - "did this peer hold the slot", which an outbound-only peer does through ``_held_by``
+    alone - so the two ends answer the same way instead of answering two different questions.
+    """
+    note = json.loads((CONTRACT / "protocol.json").read_text(encoding="utf-8-sig"))["transport"].get("note", "")
+    for needle, why in (
+        ("three named events on every end", "the sentence is about every end; without it the next host "
+                                            "implements whichever half its own platform happens to drop"),
+        ("takes back BOTH halves", "one tap gives up the peer this end dialled and the token it handed a "
+                                   "stranger that dialled in - the half the phone used to leave behind"),
+        ("a phone's inbox outlives the listener", "why 不再监听 has to release by name instead of getting it "
+                                                  "for free the way PC's stop_listening does"),
+        ("Releasing a session is not revoking trust", "the boundary between this round and 撤销: the pin stays, "
+                                                      "so the released peer returns on its signature alone"),
+        ("a phone shows that button only for a peer it dialled out to", "the phone's 断开 is bound to s.connected, "
+                                                                       "so the peer that only dialled in has no "
+                                                                       "button on this end and the paper has to say "
+                                                                       "which road it waits for instead"),
+    ):
+        if needle not in note:
+            fail(f"protocol.json's transport.note no longer says {needle!r} - {why}")
+
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    section = spec.split("## 3.", 1)[1].split("\n## ", 1)[0] if "## 3." in spec else ""
+    prose = "\n".join(p for p in section.split("\n\n") if not p.lstrip().startswith("（20"))
+    flat = re.sub(r"\s+", "", prose)
+    if re.sub(r"\s+", "", "持有方点「断开」、接收服务重启") in flat:
+        fail("§3 lumps the three releases back into one comma-separated clause again - that is the wording that "
+             "let three ends read one sentence as two rules: the idle window and PC's drop-the-object were real, "
+             "the phone's 断开 and 不再监听 were not")
+    for needle, why in (
+        ("三条路都会释放这个名额", "the claim this round measured, and the reason the three are enumerated apart"),
+        ("两边收回的都是", "PC and the phone give back the same thing when 断开 is pressed"),
+        ("本机拨出去时登记的那一格，和对方拨进来时发给它收件箱的那枚 token",
+         "the two halves named one by one, which is what releaseSession answers in one call"),
+        ("二是接收服务重启，手机上就是「不再监听」", "the trigger is named per end, because only PC gets it by "
+	                                              "dropping the object"),
+        ("所以关端口这一趟要按名字把名额请出去", "the rule the phone had no body for until this round"),
+        ("三是这台设备连续", "the third road, the one all three ends already walked"),
+        ("本机没有「断开」可点，那一半只能等第二条或第三条路", "the phone's 断开 reads s.connected, which only "
+                                                            "holds for a peer this end dialled - the one-way "
+                                                            "inbound case has no button here, and saying so beats "
+                                                            "shipping one this round"),
+    ):
+        if re.sub(r"\s+", "", needle) not in flat:
+            fail(f"§3 no longer says {needle!r} - {why}")
+    starts, stops = flat.find("手机是传输详情"), flat.find("二是接收服务重启")
+    qualified = flat.find("本机没有「断开」可点")
+    if not (-1 < starts < qualified < stops):
+        fail("§3's phone-button clause no longer carries its own qualification (it has to sit inside the 断开 road, "
+             "between 「手机是传输详情」 and 「二是接收服务重启」) - a reader who meets the enumeration first and the "
+             "exception several sentences later reads the tap as available on every peer")
+
+    root = HERE.parent
+    sdk = HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk"
+    recv_py = (root / "app" / "net" / "receive.py").read_text(encoding="utf-8")
+    ui = (root / "app" / "ui" / "transfer.py").read_text(encoding="utf-8")
+    kernel = (sdk / "cs-receive.uts").read_text(encoding="utf-8")
+    harness = (sdk / "web" / "index.uts").read_text(encoding="utf-8")
+    android = (sdk / "app-android" / "index.uts").read_text(encoding="utf-8")
+    store = (HERE / "chuanshu" / "store" / "session.uts").read_text(encoding="utf-8")
+
+    release = recv_py.split("def release(", 1)[1].split("\n    def ", 1)[0] if "def release(" in recv_py else ""
+    for literal, why in (
+        ("had_token = self._tokens.pop(fingerprint, None) is not None", "the inbound half, by name"),
+        ("had_slot = self._held_by == fingerprint", "the half this machine took by dialling out - the question "
+                                                    "断开 asks at both doors"),
+        ("if had_token or had_slot:", "one answer for either half, which is the kernel's shape the PC was "
+                                      "moved to this round"),
+    ):
+        if literal not in release:
+            fail(f"ReceiveService.release() no longer contains {literal!r} - {why}")
+    if re.search(r"^\s*return had_token$", release, re.M):
+        fail("PC's release() answers only whether a token was handed out - a peer this machine dialled holds the "
+             "slot through _held_by and would be told it was occupying nothing")
+    for caller, where in (("def _disconnect_selected", "the device card's 断开"), ("def forget", "settings' 撤销")):
+        body = ui.split(caller, 1)[1].split("\n    def ", 1)[0] if caller in ui else ""
+        if "self._receiver.release(" not in body:
+            fail(f"{caller.replace('def ', '')} in transfer.py no longer calls the receiver's release() - "
+                 f"{where} would leave the "
+                 f"inbound peer sending chunks against a session the user believes is closed")
+    repaint = ui.split("def _refresh_peers", 1)[1].split("\n    def ", 1)[0] if "def _refresh_peers" in ui else ""
+    if "self._receiver.hold_slot_for(self._connected[0].fingerprint if len(self._connected) == 1 else \"\")" not in repaint:
+        fail("the PC roster no longer repaints the receiver's outbound half of the slot - 断开 on a peer this "
+             "machine dialled gives that half back from here, not from release()")
+
+    one = kernel.split("export function releaseSession(", 1)[1].split("\n}", 1)[0] \
+        if "export function releaseSession(" in kernel else ""
+    for literal, why in (
+        ("if (inbox.tokens[i].fingerprint == fingerprint) {", "the inbound half, taken back by name"),
+        ("if (inbox.heldBy == fingerprint) {", "and the half this device took by dialling out"),
+        ("return held", "the answer is \"this peer held the slot\", the same question PC's release() answers"),
+    ):
+        if literal not in one:
+            fail(f"cs-receive.uts's releaseSession() no longer contains {literal!r} - {why}")
+    if "trusted" in one:
+        fail("releaseSession touches the trust store - §3 says 释放不等于撤销: the released peer must still be "
+             "able to return with an empty pair code on its signature alone")
+    many = kernel.split("export function releaseSessions(", 1)[1].split("\n}", 1)[0] \
+        if "export function releaseSessions(" in kernel else ""
+    for literal, why in (
+        ("const who = activePeers(inbox)", "the same list the slot is counted from, so both halves go"),
+        ("return who.length", "关端口 has to say how many it cleared, which is what the log line counts on"),
+    ):
+        if literal not in many:
+            fail(f"cs-receive.uts's releaseSessions() no longer contains {literal!r} - {why}")
+
+    hosts = {
+        "web": (harness, "\treturn releaseSession(recvInbox, fingerprint)", "\treturn releaseSessions(recvInbox)"),
+        "app-android": (android, "released = releaseSession(recvInbox, fingerprint)", "taken = releaseSessions(recvInbox)"),
+    }
+    for name, (text, inbound, release_all) in hosts.items():
+        body = text.split("export function receiveRelease(", 1)[1].split("\n}", 1)[0] \
+            if "export function receiveRelease(" in text else ""
+        if inbound not in body:
+            fail(f"{name}/index.uts's receiveRelease() no longer calls the kernel's releaseSession with "
+                 f"{inbound!r} - a host that does not answer the slot question is the half this round added")
+        all_body = text.split("export function receiveReleaseAll(", 1)[1].split("\n}", 1)[0] \
+            if "export function receiveReleaseAll(" in text else ""
+        if release_all not in all_body:
+            fail(f"{name}/index.uts's receiveReleaseAll() no longer calls releaseSessions with {release_all!r} "
+                 f"- 不再监听 on this end would close the port and leave the old peer holding the slot")
+
+    harmony_local = store.split("function receiveRelease(fingerprint: string): boolean {", 1)[1].split("\n}", 1)[0] \
+        if "function receiveRelease(fingerprint: string): boolean {" in store else ""
+    if "return releaseSession(recvInbox, fingerprint)" not in harmony_local:
+        fail("session.uts's Harmony-local receiveRelease() no longer wraps the kernel's releaseSession - 鸿蒙 "
+             "cannot import the module entry, so this copy is the only one its 断开 has")
+    if "receiveReleaseAll(): number" not in store or "return releaseSessions(recvInbox)" not in store:
+        fail("session.uts has no Harmony-local receiveReleaseAll() over releaseSessions - the platform that "
+             "started this round would still have a 不再监听 that releases nothing")
+    disc = store.split("export function onDisconnect()", 1)[1].split("\n}", 1)[0] \
+        if "export function onDisconnect()" in store else ""
+    if "receiveRelease(session.peerFingerprint)" not in disc:
+        fail("the phone's onDisconnect() no longer releases this peer's session - that is §3's first trigger, and "
+             "before #193 the tap only ever gave back the half this end dialled")
+    stopper = store.split("export function onRecvListenStop()", 1)[1].split("\n}", 1)[0] \
+        if "export function onRecvListenStop()" in store else ""
+    if "receiveReleaseAll()" not in stopper:
+        fail("the phone's 不再监听 no longer releases the sessions beside the port it closes - a phone's inbox "
+             "outlives its listener, so this is the only place that half can be given back")
+    imported = store.split("import { receiveRelease, receiveReleaseAll }", 1)
+    if len(imported) != 2 or "#ifdef APP-ANDROID || WEB" not in imported[0].rsplit("#endif", 1)[-1]:
+        fail("the #ifdef above the phone's receiveRelease import no longer names APP-ANDROID || WEB - iOS is "
+             "terminated and 鸿蒙 defines the wrappers locally, so an import list that changes would either "
+             "compile nothing or break the Harmony build")
+
+    selftest = (root / "scripts" / "protocol_selftest.py").read_text(encoding="utf-8")
+    if "def phase_session_release(" not in selftest or \
+            re.search(r"^\s+phase_session_release\(proto, workspace\)$", selftest, re.M) is None:
+        fail("scripts/protocol_selftest.py has no session-release phase in its run - the slot is a fact about "
+             "the pair path, and only the tier that pairs can measure it")
+    phase = selftest.split("def phase_session_release", 1)[1].split("\ndef ", 1)[0]
+    for literal, why in (
+        ("service.hold_slot_for(fp_of(dialled))", "the outbound half has no token, so this is the only way to "
+                                                  "put it on the slot and ask release() about it"),
+        ("held is True and service.active_peers() == []", "the answer the PC was moved to: a peer this machine "
+                                                          "dialled did hold the slot"),
+        ("resumed[2] is True", "释放不等于撤销, measured as the reply's own flag rather than as a wish"),
+        ("restarted._tokens == {}", "§3's 「接收服务重启」 on PC is a fresh receiver, so the old token has to "
+                                    "answer nothing"),
+    ):
+        if literal not in phase:
+            fail(f"phase_session_release() no longer contains {literal!r} - {why}")
+
+    legs = len(re.findall(r"check\('§3 (释放自检摆好格子|一台手机的两半|本机拨出去那一半|没占着名额的那一台|"
+                          r"持有方点「断开」这一趟|被请出去的那台带旧 token|释放不等于撤销|「不再监听」按名字)", harness))
+    if legs < 8:
+        fail(f"the H5 receiver self-check holds {legs} of the eight release legs - the kernel is the body this "
+             f"round added, and this is the only tier that runs it as the three phone platforms will")
+
+
 def main() -> int:
     stamp_path = CONTRACT / "SOURCE.json"
     for name in ("protocol.json", "spec.md", "SOURCE.json"):
@@ -1658,6 +1839,7 @@ def main() -> int:
     check_offer_reply_shapes()
     check_chunk_reply()
     check_finalize_replay()
+    check_session_release()
 
     print(f"OK  protocol v{body['protocol_version']} from {stamp['source_repo']}@{stamp['source_commit'][:8]}")
     print(f"OK  {len(body['error_codes'])} error codes, {len(body['endpoints'])} endpoints, chunk {chunk // 1024} KiB")
@@ -1672,6 +1854,8 @@ def main() -> int:
           "and the LAN edge is the installer's remoteip=LocalSubnet rule rather than a line of this contract")
     print("OK  §3's two optional pair keys are read off their value on both ends: null is absence and pairs on "
           "the code alone, an empty string is a wrong guess, and neither sender writes a blank secret to the wire")
+    print("OK  §3's one-session slot is given back by all three roads on every end: 断开 takes both halves by "
+          "name, 不再监听 clears the sessions that outlived the port, and the idle window still sweeps alone")
     print("OK  vendored copies match their stamps")
     print("OK  cs-protocol.uts mirrors the contract")
     print("OK  §5 names every limit a receiver refuses a transfer on")

@@ -60,6 +60,11 @@ import { newRoster, applyAnnounce, applyTxt, buildAnnounce, buildTxt, sweepPeers
  *  importing there would collide with those definitions. */
 import { receiveCode, receivePassphrase, receiveRotatePairing, receiveHoldSlot, receiveSeen, receiveSnapshot, receiveDecide } from '@/uni_modules/cs-transport'
 // #endif
+// #ifdef APP-ANDROID || WEB
+/** spec §3's two user-requested releases, on the two doors a peer can reach this phone through. iOS is
+ *  terminated (2026-10-24), so its entry does not carry them and is left out of this list on purpose. */
+import { receiveRelease, receiveReleaseAll } from '@/uni_modules/cs-transport'
+// #endif
 // #ifdef APP-ANDROID || APP-IOS
 /** Both phones keep their roster inside the plugin, because on both UTS does compile against the native
  *  language and the sockets run on their own threads; the six names below are the module's own. They are
@@ -89,6 +94,8 @@ import {
 	passphraseOf,
 	rotatePairing,
 	holdSlotFor,
+	releaseSession,
+	releaseSessions,
 	seenNow,
 	sweep,
 	adoptPin,
@@ -712,6 +719,18 @@ function receiveHoldSlot(fingerprint: string): void {
 	holdSlotFor(recvInbox, fingerprint, nowSecs())
 }
 
+/** 断开 on the door the peer came in through (spec §3). Same spelling as the other platforms' module
+ *  exports, because on this platform the state machine runs next to the page. */
+function receiveRelease(fingerprint: string): boolean {
+	return releaseSession(recvInbox, fingerprint)
+}
+
+/** 不再监听 ends every session accepted through that port (spec §3). The inbox outlives the listener
+ *  here, so without this the old peer still holds the single slot when listening opens again. */
+function receiveReleaseAll(): number {
+	return releaseSessions(recvInbox)
+}
+
 /** The peer this phone dialled out to never appears in an inbound request, so this is the only place
  *  its half of the session slot can be kept honest - the sender calls it as chunks land (spec §3).
  *  Same name on every platform, because onProgress below is shared code. */
@@ -1000,6 +1019,14 @@ export function onRecvListen() {
 
 export function onRecvListenStop() {
 	log(receiveStop())
+	// spec §3's second trigger, 接收服务重启. A PC gets this for free - `stop_listening` drops the
+	// receiver object and the token map inside it - while this phone keeps its inbox beside the
+	// listener, so the sessions have to be given back by name or the peer that was mid-transfer still
+	// owns the single slot the next time the port opens.
+	const taken = receiveReleaseAll()
+	if (taken > 0) {
+		log('不再监听：连同 ' + taken.toString() + ' 台占着会话名额的对端一起请了出去')
+	}
 	disarmHold()
 	applyListen(receiveStatus())
 }
@@ -1354,6 +1381,11 @@ export function onDisconnect() {
 		log('取消了 ' + dropped.toString() + ' 条还没写完的请求')
 	}
 	// #endif
+	// spec §3's first trigger: 持有方点「断开」 gives the single session slot back. The line below gives
+	// up the half this phone took by dialling out; this is the other door - a peer that paired *into*
+	// this phone holds a token in this device's own inbox, and until #193 nothing but the idle clock
+	// could take it back, so the sender kept writing chunks against a session the user closed.
+	receiveRelease(session.peerFingerprint)
 	markDisconnected(s.pinnedFp == ''
 		? '已断开：本机还没有固定这台对端，下次连上要重新核对配对码'
 		: '已断开：指纹仍然固定，下次连上不用再核对配对码')

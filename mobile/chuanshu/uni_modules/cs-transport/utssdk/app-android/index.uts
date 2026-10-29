@@ -20,6 +20,7 @@ import {
 	HexFn, KeyFpFn, VerifyFn, PrepareFn, WriteFn, DigestFileFn, DropFn, ExistsFn,
 	LocalPeer, Req, Inbox, ReceiveSnapshot,
 	newInbox, currentPairCode, handleReceive, holdSlotFor, passphraseOf, pairingJson,
+	releaseSession, releaseSessions,
 	adoptPairing, adoptPin, adoptTrust, adoptAll, resolveOffer, rotatePairing, seenNow, settleOffer,
 	snapshot, stateAll, sweep, trustJson, arrivalsAll, adoptArrivals, markLanded
 } from '../cs-receive.uts'
@@ -792,6 +793,30 @@ export function receiveHoldSlot(fingerprint: string): void {
 		holdSlotFor(recvInbox, fingerprint, CsServe.nowSeconds())
 		return ''
 	})
+}
+
+/** spec §3's first trigger, on the door the peer came in through: 断开 takes that peer's token with it,
+ *  so a sender that dialled this phone cannot keep writing chunks against a session the user closed
+ *  and keep the single slot away from the next device. PC's `ReceiveService.release` is the same call. */
+export function receiveRelease(fingerprint: string): boolean {
+	let released = false
+	CsServe.gate(function (): string {
+		released = releaseSession(recvInbox, fingerprint)
+		return ''
+	})
+	return released
+}
+
+/** spec §3's second trigger: 不再监听 closes the port, and every session accepted through it ends with
+ *  it. The inbox outlives the listener on a phone, so the reclaim has to be said out loud - otherwise
+ *  the peer that was mid-transfer keeps the slot through the next 开始监听. */
+export function receiveReleaseAll(): number {
+	let taken = 0
+	CsServe.gate(function (): string {
+		taken = releaseSessions(recvInbox)
+		return ''
+	})
+	return taken
 }
 
 /** The sender's heartbeat, so a transfer longer than the idle window is not reclaimed by this device's

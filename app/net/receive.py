@@ -437,16 +437,21 @@ class ReceiveService:
         Revoking it here rather than waiting for the socket to close is what makes 断开 mean
         something on the receiving side too: without it an inbound peer would keep sending
         chunks against a token the user believes is gone.
+
+        Either half of the slot counts. A peer this machine dialled out to holds it through
+        ``_held_by`` without ever having been handed a token, and 断开 asks the same question at
+        both doors (spec §3) - so the answer is "this peer was holding it", not "it was handed one".
         """
         with self._lock:
-            gone = self._tokens.pop(fingerprint, None)
+            had_token = self._tokens.pop(fingerprint, None) is not None
             self._seen.pop(fingerprint, None)
-            if self._held_by == fingerprint:
+            had_slot = self._held_by == fingerprint
+            if had_slot:
                 self._held_by = ""
-        if gone is None:
-            return False
-        log.info("released the session of %s", fingerprint[:12])
-        return True
+        if had_token or had_slot:
+            log.info("released the session of %s", fingerprint[:12])
+            return True
+        return False
 
     def hold_slot_for(self, fingerprint: str) -> None:
         """Tell the receiver which peer this machine already talks to.
