@@ -456,6 +456,65 @@ def check_sender_limit() -> None:
             fail(f"{name} does not catch TooManyFilesForOffer - the refusal reaches the person as a raw traceback")
 
 
+def check_hidden_segments() -> None:
+    """§5's dot rule is per segment, and the sentence that says the *senders* obey it needs a body per segment.
+
+    Round twenty (#186) read 「发送方…也不把点开头的文件报进清单」 against `plan()`. The PC's walk came from
+    `rglob("*")` - the whole tree - while the filter read `entry.name`, the leaf. So a file under `.git`
+    was offered with the dot segment still in its relpath, and the receiver, which does check every
+    segment, answered the entire manifest with `400 PATH_REJECTED` and the innocent siblings never landed
+    (`.probe/r20_before_probe.txt` [2]); with no base the same file went out flattened to `config`,
+    the dot segment gone from the name but the bytes still on the wire ([3]/[4]). `plan()` now runs
+    `_has_dot_segment` over both the relpath and the entry's position under the folder the user picked.
+    The phone never had this hole and never needed the same body: it has no directory walk, and
+    `pathCheck` asks the receiving end's own `pathReject` about every relpath before the offer leaves.
+    """
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    section = spec.split("## 5.", 1)[1].split("\n## ", 1)[0] if "## 5." in spec else ""
+    flat = re.sub(r"\s+", "", section)
+    for needle, why in (
+        ("发送方（PC 与手机）也按段拦", "the obligation is on senders as a class, per segment - the leaf-only "
+         "reading is what shipped a `.git` segment onto the wire"),
+        ("只在叶子名上成立", "the measurement is written down; without it the next reader cannot tell a fixed "
+         "sentence from an untested one"),
+        ("_has_dot_segment", "the sentence cites the body by name, so a guard that only matches prose passes "
+         "while the filter is back to one segment"),
+        ("被拍平成 `config`", "the second hole - a flattened leaf name is a second path to the same bytes, and it "
+         "stayed open until the relpath was judged on its own"),
+        ("问的就是整条 relpath", "the phone's half is per-segment too, and it is the receiver's rejector reused, not a copy"),
+    ):
+        if re.sub(r"\s+", "", needle) not in flat:
+            fail(f"§5 no longer says {needle!r} - {why}")
+
+    send = (HERE.parent / "app" / "net" / "send.py").read_text(encoding="utf-8")
+    if send.count("_has_dot_segment(") < 3:
+        fail("app/net/send.py calls _has_dot_segment fewer than twice in plan() - the two checks are two holes: "
+             "the relpath alone leaves a folder named .私有 shipping its contents, the walked path alone leaves "
+             "them shipping as a flattened leaf name")
+    if 'if _has_dot_segment(rel) or _has_dot_segment(entry.relative_to(path)):' not in send:
+        fail("app/net/send.py's dot filter is no longer the two-part one - §5's 按段拦 on the sender is that line")
+    if 'entry.name.startswith(".")' in send:
+        fail("app/net/send.py is back to filtering the leaf name only - that is the shape that put `.git` in a "
+             "relpath and got a whole offer refused")
+
+    client = (HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk" / "cs-client.uts").read_text(encoding="utf-8")
+    if "const why = pathReject(opts.relpaths[i])" not in client:
+        fail("cs-client.uts no longer asks pathReject about each relpath before offering - the phone's sender "
+             "obeying §5 per segment is that loop")
+
+    selftest = (HERE.parent / "scripts" / "protocol_selftest.py").read_text(encoding="utf-8")
+    for literal, why in (
+        ("def phase_hidden_segments(", "§5's sender-side dot rule has no legs on the PC gate again - prose "
+         "and body can drift with nothing measuring them"),
+        ("base 摘掉、名字拍平成叶子名以后，那一份还是不进清单", "the flattened-name hole is the half a relpath-only "
+         "filter re-opens, so its leg names it"),
+        ("这一单被对面收下：一份点段都没报出去，无辜的那两份不必再为它陪葬", "the whole-offer refusal was the "
+         "user-visible cost; only an end-to-end leg tells 清单没报点段 from 这一单落地了"),
+    ):
+        if literal not in selftest:
+            fail(f"scripts/protocol_selftest.py no longer holds {literal} - {why}")
+
+
 def check_manifest_fields() -> None:
     """§4's manifest block is a claim about the wire: which keys go out, and what each one is for.
 
@@ -1073,6 +1132,7 @@ def main() -> int:
     check_spki_head()
     check_freeze_gate()
     check_sender_limit()
+    check_hidden_segments()
     check_manifest_fields()
     check_finalize_reply()
     check_offer_reply_shapes()
@@ -1096,6 +1156,7 @@ def main() -> int:
     print("OK  the three ends hand-spell the same 12-byte Ed25519 SPKI header")
     print("OK  §9's gate names a script that exists, reads as runnable on both PC platforms, and has legs on both ends")
     print("OK  §5's sender-side limit has a body in every sender: PC plan()/offer(), the phone's client, both screens")
+    print("OK  §5's dot rule is per segment on the senders too: PC plan() checks both paths, the phone asks pathReject")
     print("OK  §4's manifest block is the wire: both senders' keys, and no receiver acts on total_size")
     print("OK  §4's finalize reply is one shape on paper and in both receivers; `missing` is who both senders resend by")
     print("OK  §4's three offer replies are one shape on paper and in all four bodies; the abort knows the question still open")

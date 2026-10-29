@@ -859,6 +859,31 @@ py -X utf8 scripts/check_protocol.py
       → 红在「已经报过的那一笔写在续传台账里」加「接收方重启之后，第一份字节不再报第二遍」；认领时不读回 → 只红在后一条；闸不照名单筛
       → 红在第十八轮那三条（同进程那一趟本来就被它们看着）。三处红完，还原再跑 `RESULT ALL PASS`。
 
+33. **#186：合同 §5 那句「发送方也拦点开头的名字」——接收方按段判，PC 的发送方按叶子名判，于是一单里一个 `.git` 的名字让整单陪葬**
+    （动的是合同、PC 发送侧（`app/net/send.py::plan()`）、PC 门禁新增一相七条腿、守卫新增一条判据（OK 行 20 → 21）；
+    **两个宿主、共用接收内核 `cs-receive.uts`、共用发送方 `cs-client.uts` 与这一端的浏览器替身一个字节没改**，所以两道编译门与
+    浏览器自检**本轮没跑**；完整账目在 `../docs/feature-matrix.md` §6 第 37 条）
+    - **改前量到的**（`.probe/r20_before_probe.py` → `.probe/r20_before_probe.txt`，档位 `门禁`）：磁盘上 `工程/读我.txt`、
+      `工程/.git/config`、`工程/相册/照片.bin` 三个文件，`plan()` 带 base 报出去的是三条 relpath，**其中一条带着 `.git` 那一段**；
+      递给接收方以后整单 `400 PATH_REJECTED detail={'segment': '.git'}`，播报批次 `[]`、那两份无辜的在磁盘上也 `[]`。把 base 摘掉
+      （命令行默认的平铺形状）反倒传成，而 `.git/config` 被拍平成 `config` 落在对面。改后两条都不再出现：清单只剩两份、那一单被收下、
+      `config` 那个落点读 `False`（`.probe/r20_after_probe.txt`）。
+    - **手机这一端为什么没有这个洞**：它压根不做目录遍历——`uni.chooseFile` 交出来的是平铺的叶子名，而 `cs-client.uts:127-141` 的
+      `pathCheck` 在发送之前**逐条**问 `pathReject(opts.relpaths[i])`，用的就是接收方那一份按段判的规则，违规整单不发（屏上那句
+      「本地就拦下」）。这条判据本轮被钉进了守卫（`check_hidden_segments()`），钉的是那一行字面量还在、问的是 `relpaths` 而不是 `paths`。
+    - **手机这一半本轮没有升档去量**：`pathReject` 的按段行为在浏览器档量过（第九轮那组 5d 里「点开头的段一律拒（`.env`）」与
+      「嵌在中间那段也算（`sub/.git/config`）」两条，判的是同一个函数），**没量的是调用点**——一条 relpath 带点段的清单在手机发送时
+      是不是真的在本地停住、一个请求都没打到对面。这一端欠的那条腿：`senderSelfReport()` 里加一条 `runSender(…, 'sub/.git/config', …)`，
+      判 `!ok` 且 summary 含「本地就拦下」、并判那个假对端 `offerAsks == 0`（要跑 vite 5173 + 页面点「发送自检」才算 `浏览器` 档）；
+      再在安卓或鸿蒙各挑一个点开头的目录，看屏上说的是「本地就拦下」而不是对面那句版本/路径不兼容，才算 `真机`/`模拟器` 档。
+    - **守卫多一条判据、多一行 OK**（`check_hidden_segments()`，`mobile/scripts/check_protocol.py:459`）：纸上五句（「也按段拦」
+      「只在叶子名上成立」「`_has_dot_segment`」「被拍平成 `config`」「问的就是整条 relpath」）、PC 侧三条（`_has_dot_segment(` 三次、
+      那条两段的 `if` 逐字在、**禁止** `entry.name.startswith(".")` 回到 `send.py`）、手机侧一行、门禁侧新相与两条腿的字面量。
+      **13 处守卫负向每一处单独红**（`.probe/r20_guard_negatives.py` → `.probe/r20_guard_negatives.txt`），还原后 `rc=0`、21 行全绿；
+      **另有 3 处门禁负向**（`.probe/r20_phase_negatives.py` → `.probe/r20_phase_negatives.txt`，每处只跑 `phase_hidden_segments` 那一相）：
+      改回只判叶子名 → 红 4 条腿且那一相随后跑不完（`offer` 抛的就是线上那句 `PATH_REJECTED`）；只判 relpath → 只红"拍平那一条"；
+      只判摊开的路径 → 红两条（平铺的叶子名那一条 + 整目录自己叫 `.私有` 那一条）。三处红完，还原再跑 `FAILS=0`。
+
 M2a 的最小切口是"手机发、PC 收"：扫（或粘贴）PC 的二维码拿到地址与完整指纹，用户只核对同屏的
 一次性配对码——PC 侧接收端已经跑绿，手机只要把
 `/v1/pair`、`/v1/offer`、`PUT chunk`、`/v1/finalize` 四条打出去就能有结论，发现层可以先不做。

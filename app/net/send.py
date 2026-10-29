@@ -165,6 +165,11 @@ def _read_chunk(file: OutgoingFile, index: int, chunk_size: int) -> bytes:
         return handle.read(chunk_size)
 
 
+def _has_dot_segment(relative: Path) -> bool:
+    """Whether any *segment* of a path starts with a dot - not just the leaf name."""
+    return any(part.startswith(".") for part in relative.parts)
+
+
 def plan(paths: Iterable[Path], base: Path | None = None) -> list[OutgoingFile]:
     """Hash and name everything about to be offered.
 
@@ -178,9 +183,16 @@ def plan(paths: Iterable[Path], base: Path | None = None) -> list[OutgoingFile]:
             raise FileNotFoundError(str(path))
         entries = sorted(path.rglob("*")) if path.is_dir() else [path]
         for entry in entries:
-            if not entry.is_file() or entry.name.startswith("."):
+            if not entry.is_file():
                 continue
-            selected.append((entry, entry.relative_to(base) if base else Path(entry.name)))
+            rel = entry.relative_to(base) if base else Path(entry.name)
+            # §5's dot rule is per segment and the receiver enforces it on the whole relpath: one file
+            # under `.git` used to turn the offer into a 400 with the innocent siblings unlanded
+            # (`.probe/r20_before_probe.txt` [2]). The leaf check alone also let that file ship as
+            # `config` once no base flattened away the segment ([3]/[4]).
+            if _has_dot_segment(rel) or _has_dot_segment(entry.relative_to(path)):
+                continue
+            selected.append((entry, rel))
     # Counted before anything is read, so a batch that could only ever come back as a version
     # complaint costs one directory walk rather than a full hashing run.
     if len(selected) > limit:

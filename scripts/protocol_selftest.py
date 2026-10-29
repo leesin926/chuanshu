@@ -21,7 +21,7 @@ import tempfile
 import threading
 import time
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -1024,6 +1024,74 @@ def phase_same_name(proto: protocol_spec.Protocol, workspace: Path) -> None:
         service.stop()
 
 
+def phase_hidden_segments(proto: protocol_spec.Protocol, workspace: Path) -> None:
+    """§5's dot rule read as a claim about the *sender*: 「发送方（PC 与手机）也按段拦」.
+
+    Round twenty (#186) measured the PC half of that sentence against the wire. ``plan()`` walked
+    ``rglob("*")`` and filtered on ``entry.name.startswith(".")`` - the leaf name only - so
+    ``工程/.git/config`` was offered as ``工程/.git/config`` and the receiving end, which does apply §5 per
+    segment, answered the whole manifest with ``400 PATH_REJECTED {'segment': '.git'}``: the two
+    innocent files in that folder never landed either (``.probe/r20_before_probe.txt`` [2]). Drop the
+    base and the same entry shipped under its leaf name ``config`` - the bytes the user hides reach the
+    peer as soon as one path stops carrying the dot ([3]/[4]). The three shapes below are the three
+    ways that hole could re-open, so each one has its own leg.
+    """
+    def dots(relpath: str) -> list[str]:
+        return [p for p in PurePosixPath(relpath).parts if p.startswith(".")]
+
+    proj = workspace / "hidden-tree" / "工程"
+    (proj / ".git").mkdir(parents=True)
+    (proj / "相册").mkdir(parents=True)
+    (proj / "读我.txt").write_bytes(b"readme-" * 4)
+    (proj / ".git" / "config").write_bytes(b"[core]\n")
+    (proj / "相册" / "照片.bin").write_bytes(blob(21, 4096))
+    (proj / ".env").write_bytes(b"SECRET=1\n")
+
+    with_base = [f.relpath for f in plan([proj], base=proj.parent)]
+    check("带 base 的清单里没有一个点开头的段（§5 那句按段拦的就是这一条 relpath）",
+          all(not dots(name) for name in with_base) and sorted(with_base) == ["工程/相册/照片.bin", "工程/读我.txt"],
+          " / ".join(with_base))
+    check("点开头目录里那一份压根没进清单，而不是进去以后由对面拒掉",
+          not any(name.endswith("config") for name in with_base), " / ".join(with_base))
+
+    flat = [f.relpath for f in plan([proj])]
+    check("base 摘掉、名字拍平成叶子名以后，那一份还是不进清单",
+          sorted(flat) == ["照片.bin", "读我.txt"], " / ".join(flat))
+
+    check("叶子名自己带点的那一份照旧不报",
+          [f.relpath for f in plan([proj / ".env"])] == [], "")
+
+    hidden_root = workspace / "hidden-tree" / ".私有"
+    hidden_root.mkdir()
+    (hidden_root / "笔记.txt").write_bytes(b"note\n")
+    whole_folder = [f.relpath for f in plan([hidden_root], base=hidden_root.parent)]
+    check("用户整目录挑的是一个点开头的目录时，里面一份都不出去",
+          whole_folder == [], " / ".join(whole_folder))
+
+    sender = load_or_create(workspace / "hidden-sender")
+    receiver = load_or_create(workspace / "hidden-receiver")
+    files = plan([proj], base=proj.parent)
+    root = workspace / "hidden-received"
+    service = ReceiveService(receiver, "PC-Hidden", lambda m, who, caller: True,
+                             host="127.0.0.1", port=0, root=root)
+    service.start()
+    try:
+        conn = PeerConnection(sender, "PC-Hidden-Sender", "127.0.0.1", service.port, receiver.served_fingerprint)
+        conn.hello()
+        conn.pair(service.current_pair_code())
+        conn.offer(files)
+        result = conn.send(files)
+        verified = result["verified"]
+        check("这一单被对面收下：一份点段都没报出去，无辜的那两份不必再为它陪葬",
+              len(verified) == 2 and all(bool(v["ok"]) for v in verified), str(verified))
+        check("落地的就是那两份无辜的字节，路径里带出用户选的目录层级",
+              sorted(Path(str(v["path"])).name for v in verified) == ["照片.bin", "读我.txt"]
+              and all(Path(str(v["path"])).parent.name in ("相册", "工程") for v in verified),
+              " | ".join(str(v["path"]) for v in verified))
+    finally:
+        service.stop()
+
+
 def phase_manifest_fields(proto: protocol_spec.Protocol, workspace: Path) -> None:
     """§4's manifest block, read as a claim about the wire: every sender emits exactly the fields listed,
     and the three numbers peers never act on (`total_size`, `mtime`, `type`) stay non-binding here too.
@@ -1972,6 +2040,7 @@ def main() -> int:
         phase_offer_poll(proto, workspace)
         phase_repeated_offer(proto, workspace)
         phase_same_name(proto, workspace)
+        phase_hidden_segments(proto, workspace)
         phase_manifest_fields(proto, workspace)
         phase_finalize_reply(proto, workspace)
         phase_offer_reply(proto, workspace)
