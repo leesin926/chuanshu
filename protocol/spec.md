@@ -144,19 +144,34 @@ POST /v1/offer/{id}/finalize                 整文件校验
 DELETE /v1/offer/{id}                        中止并清理
 ```
 
-manifest：
+manifest（这份摊开就是三端今天真发上线的字节，一个不多一个不少）：
 
 ```json
 {
   "offer_id": "9f1c…",
   "protocol_version": 1,
+  "compatible_versions": [1],
+  "from": {"peer_id": "3b01…", "name": "PC-A"},
   "total_size": 3145728,
   "files": [
     {"id": "a2b0…", "relpath": "相册/IMG_0001.jpg", "size": 3145728,
-     "sha256": "…", "mtime": 1730000000}
+     "sha256": "…", "mtime": 1730000000, "type": "image/jpeg"}
   ]
 }
 ```
+
+`total_size` 由发送方求和，接收方不拿它判任何事：v1 没给"总数对不上"留错误码，三端量尺寸一律按
+每个条目自己的 `size`（PC 只有命令行应答读这一个数，GUI 与手机连读都不读）。`mtime` 与 `type` 三端
+都发、接收方都原样记进台账，但同样不驱动行为：没有哪一端把 `mtime` 写回磁盘时间，也没有哪一处屏
+读 `type`——它们今天是在场的字节，不是工作中的字段。
+
+（2026-10-29 第十四轮巡检：这一块的顶层原来只列 `offer_id`/`protocol_version`/`total_size`/`files`，
+条目里不列 `type`——而两个发送方（`app/net/send.py:424-431` 与 `cs-protocol.uts::offerJson`）发的
+就是上面这六个键、每条六个字段。`from` 是三端都发、哪一端都不读的键：谁在说话由 §3 的配对握手
+说了算，不由清单自称（PC 那句实现与注释在 `app/net/receive.py:703-708`，名字取的是钉表）。
+按「合同里不留没有实现体的字段」这条，`root` 那种三端都不发的键进不了这一块；反过来，线上在场的
+键也不该在合同里缺席。这些字节属 v1 已上线的形状，拿掉任何一个是 §7 的兼容决定——本轮只把块补齐、
+把三个数的用途说清，不删。）
 
 响应：`200 {"accepted": true}` 或 `403 {"code": "DECLINED"}`；`accepted: true` 的那一份同时带回
 每个条目已经落地的分块（与 `GET /v1/offer/{id}/state` 同一份 `files[]`）。落点不在这条应答里说：

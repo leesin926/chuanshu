@@ -1024,6 +1024,87 @@ def phase_same_name(proto: protocol_spec.Protocol, workspace: Path) -> None:
         service.stop()
 
 
+def phase_manifest_fields(proto: protocol_spec.Protocol, workspace: Path) -> None:
+    """§4's manifest block, read as a claim about the wire: every sender emits exactly the fields listed,
+    and the three numbers peers never act on (`total_size`, `mtime`, `type`) stay non-binding here too.
+
+    Round-fourteen shape (§6 第 31 条): the block listed four top-level keys; both senders have shipped
+    six for ages (`compatible_versions` arrived with §7, `from` with §3's self-announcement), and per-file
+    `type` was never named at all. The prose now says what each field is for - and the legs below prove the
+    prose: a receiver that quietly trusted the bogus sum, or stamped `mtime` onto the disk, would go red here.
+    """
+    spec = (ROOT / "protocol" / "spec.md").read_text(encoding="utf-8")
+    block = json.loads(re.search(r"```json\n(.*?)```", spec.split("## 4. 传输")[1].split("## 5.")[0], re.S).group(1))
+    contract_top = set(block.keys())
+    contract_file = set(block["files"][0].keys())
+
+    corpus = build_corpus(workspace / "fields-corpus")
+    sender = load_or_create(workspace / "fields-sender")
+    receiver = load_or_create(workspace / "fields-receiver")
+    files = plan(corpus, base=workspace / "fields-corpus")
+
+    seen: dict = {}
+
+    def capture(self: PeerConnection, method: str, path: str, json_body=None, raw_body: bytes = b"",
+                headers: dict | None = None, pace_ms: int = 0):
+        if method == "POST" and path == "/v1/offer":
+            seen.update(json_body)
+        return 403, {"code": "DECLINED"}
+
+    conn = PeerConnection(sender, "PC-Fields", "127.0.0.1", 1, receiver.served_fingerprint)
+    conn.abort = lambda: None
+    original = PeerConnection._request
+    PeerConnection._request = capture
+    try:
+        expect_error("the offer question is parked before the first byte", "DECLINED", lambda: conn.offer(files))
+    finally:
+        PeerConnection._request = original
+    check("what this sender puts on the wire is exactly the fields §4 lists",
+          set(seen.keys()) == contract_top and all(set(entry.keys()) == contract_file for entry in seen.get("files", [])),
+          f"{sorted(seen.keys())} | files[0]={sorted((seen.get('files') or [{}])[0].keys())}")
+
+    root = workspace / "fields-received"
+    service = ReceiveService(receiver, "PC-Fields-Receiver", lambda m, who, caller: True,
+                             host="127.0.0.1", port=0, root=root)
+    service.start()
+    try:
+        conn = PeerConnection(sender, "PC-Fields", "127.0.0.1", service.port, receiver.served_fingerprint)
+        conn.hello()
+        conn.pair(service.current_pair_code())
+        big = next(f for f in files if f.relpath.endswith("IMG_大文件.bin"))
+        dishonest = {"offer_id": "fieldsoffer", "protocol_version": proto.version,
+                     "compatible_versions": list(proto.compatible_versions),
+                     "from": {"peer_id": sender.peer_id, "name": "PC-Fields"},
+                     "total_size": 999_999_999_999,
+                     "files": [f.manifest() for f in files]}
+        first = service.handle_offer(dishonest, sender.fingerprint)
+        entry = next(e for e in first["files"] if e["id"] == big.id)
+        check("§4 total_size：总数谎报九个千亿，这一端照样收下，缺块照条目自己的 size 算",
+              first.get("accepted") is True and entry["missing"] == [0, 1] and entry["received"] == 0, entry)
+        lying = json.loads(json.dumps(dishonest))
+        lying["offer_id"] = "dishonest"
+        lying["files"][0]["mtime"] = 100
+        lying["files"][0]["type"] = "x-字节不会据此存在"
+        service.handle_offer(lying, sender.fingerprint)
+        landed = json.loads((root / "dishonest" / STATE_FILE).read_text(encoding="utf-8"))["files"][0]
+        check("§4 mtime/type：接收方把它们原样记进台账，一个字都不改口",
+              landed["mtime"] == 100 and landed["type"] == "x-字节不会据此存在", landed)
+        disk = [p for p in (root / "dishonest").rglob("*") if p.is_file()]
+        check("§4 mtime：没有一个字节的落盘时间被那个数写过",
+              disk and all(p.stat().st_mtime > 1_000_000 for p in disk),
+              str([p.stat().st_mtime for p in disk][:3]))
+        conn.offer_id = "fieldsoffer"
+        conn._manifest = dishonest
+        result = conn.send(files)
+        landing = next(iter([Path(str(v["path"])) for v in result["verified"] if str(v["path"]).endswith("note.pdf")]), None)
+        check("§4 total_size：整单照常过摘要，落盘字节是发出去的那些（那个谎数没挡路、也没被拿去开档）",
+              all(bool(v["ok"]) for v in result["verified"])
+              and landing is not None and landing.stat().st_size == sum(f.size for f in files if f.relpath == "note.pdf"),
+              f"{[v['ok'] for v in result['verified']]} | {landing}")
+    finally:
+        service.stop()
+
+
 def phase_discovery(proto: protocol_spec.Protocol, workspace: Path) -> None:
     """Two symmetric peers finding each other, then promoting a prefix to an anchor."""
     from app.net.discovery import DiscoveryService, Peer, adopt_hello
@@ -1308,6 +1389,7 @@ def main() -> int:
         phase_offer_poll(proto, workspace)
         phase_repeated_offer(proto, workspace)
         phase_same_name(proto, workspace)
+        phase_manifest_fields(proto, workspace)
         phase_chunk_reply_lost(proto, workspace)
         phase_discovery(proto, workspace)
         phase_reverse_pin(proto, workspace)

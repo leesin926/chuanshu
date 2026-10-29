@@ -456,6 +456,79 @@ def check_sender_limit() -> None:
             fail(f"{name} does not catch TooManyFilesForOffer - the refusal reaches the person as a raw traceback")
 
 
+def check_manifest_fields() -> None:
+    """§4's manifest block is a claim about the wire: which keys go out, and what each one is for.
+
+    Round fourteen (#180) read the block against both senders' bodies. The block had four top keys;
+    `offerJson()` in cs-protocol.uts and the dict in `send.py::offer()` had shipped six for ages
+    (`compatible_versions` from §7, `from`), and six per-file fields (`type`). A reader copying the
+    block would send a manifest neither end accepts, and a reader checking a real capture against the
+    block would call three live keys "extra" and delete them. So the block was completed, and the three
+    numbers nobody acts on got a sentence saying so. This guard pins all of that: the block's key sets
+    equal both senders' key sets, the sentence about `total_size` stays, and neither receiver reads it.
+    """
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    if "## 4." not in spec:
+        fail("spec.md no longer has a §4 to read the manifest out of")
+    section = spec.split("## 4.", 1)[1].split("\n## ", 1)[0]
+    if "```json" not in section:
+        fail("§4's manifest block is gone - the contract no longer says what a POST /v1/offer body holds")
+    manifest = json.loads(section.split("```json", 1)[1].split("```", 1)[0])
+    top = set(manifest)
+    files = manifest.get("files") or [{}]
+    entry = set(files[0])
+
+    def literal_keys(text: str, anchor: str, quote: str) -> set:
+        """Keys of the object literal that `anchor` opens: lines up to the closing brace on its own line,
+        so a nested literal written inline (`"from": {…, …}`) does not cut the read short."""
+        tail = text.split(anchor, 1)[1]
+        end = re.search(r"^\s*\}", tail, re.M)
+        body = tail[: end.start()] if end else tail
+        return set(re.findall(fr"^\s*{quote}([a-z_][a-z0-9_]*){quote}\s*:", body, re.M))
+
+    client = (HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk" / "cs-protocol.uts").read_text(encoding="utf-8")
+    phone_top = literal_keys(client.split("export function offerJson", 1)[1], "const body: UTSJSONObject = {", "")
+    phone_entry = literal_keys(client.split("function manifestOf", 1)[1], "const item: UTSJSONObject = {", "")
+    if phone_top != top:
+        fail(f"the phone's offerJson() puts {sorted(phone_top)} on the wire while §4's block holds {sorted(top)} - "
+             "a key that ships must be in the block, and a key in the block must ship")
+    if phone_entry != entry:
+        fail(f"the phone's manifestOf() sends {sorted(phone_entry)} per file while §4's entry holds {sorted(entry)}")
+    send = (HERE.parent / "app" / "net" / "send.py").read_text(encoding="utf-8")
+    pc_top = literal_keys(send, "manifest = {", '"')
+    pc_entry = literal_keys(send, "def manifest(self) -> dict:\n        return {", '"')
+    if pc_top != top:
+        fail(f"app/net/send.py's offer() puts {sorted(pc_top)} on the wire while §4's block holds {sorted(top)}")
+    if pc_entry != entry:
+        fail(f"app/net/send.py's FileEntry.manifest() sends {sorted(pc_entry)} per file while §4's entry holds {sorted(entry)}")
+
+    # The three numbers the block now admits are only a promise if the sentence about them stays put and
+    # the receivers keep not consulting the total.
+    if re.search(r"`total_size`[^。\n]*接收方不拿它判任何事", section) is None:
+        fail("§4 no longer says the receiver judges nothing by total_size - the field is back to being "
+             "undeclared authority, which is how a sender gets a whole batch refused over a number nobody should read")
+    kernel = (HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk" / "cs-receive.uts").read_text(encoding="utf-8")
+    if "total_size" in kernel:
+        fail("cs-receive.uts mentions total_size - the shared receiving kernel decides nothing from that number; "
+             "§4 sizes every entry by its own `size`")
+    # The PC's receiver may print it, which is what it has always done; what it may not do is act on it.
+    recv = (HERE.parent / "app" / "net" / "receive.py").read_text(encoding="utf-8")
+    read = [one.strip() for one in recv.splitlines() if "total_size" in one and not one.strip().startswith("log.")]
+    if read:
+        fail(f"app/net/receive.py uses total_size outside a log line ({read[0][:70]}) - the total is the "
+             "sender's sum, and a receiver that acts on it is trusting a number it never verified")
+
+    selftest = (HERE.parent / "scripts" / "protocol_selftest.py").read_text(encoding="utf-8")
+    if "def phase_manifest_fields(" not in selftest or \
+            re.search(r"^\s+phase_manifest_fields\(proto, workspace\)$", selftest, re.M) is None:
+        fail("scripts/protocol_selftest.py has no manifest-fields phase in its run - the block's key sets are "
+             "unmeasured again, and a sender can drift off §4 quietly")
+    harness = (HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk" / "web" / "index.uts").read_text(encoding="utf-8")
+    if harness.count("'§4 total_size") < 3:
+        fail("the receiving kernel has fewer than three §4 total_size legs - the phone end needs to throw a "
+             "lying total at itself, not only trust the sentence")
+
+
 def main() -> int:
     stamp_path = CONTRACT / "SOURCE.json"
     for name in ("protocol.json", "spec.md", "SOURCE.json"):
@@ -517,6 +590,7 @@ def main() -> int:
     check_spki_head()
     check_freeze_gate()
     check_sender_limit()
+    check_manifest_fields()
 
     print(f"OK  protocol v{body['protocol_version']} from {stamp['source_repo']}@{stamp['source_commit'][:8]}")
     print(f"OK  {len(body['error_codes'])} error codes, {len(body['endpoints'])} endpoints, chunk {chunk // 1024} KiB")
@@ -535,6 +609,7 @@ def main() -> int:
     print("OK  the three ends hand-spell the same 12-byte Ed25519 SPKI header")
     print("OK  §9's gate names a script that exists, reads as runnable on both PC platforms, and has legs on both ends")
     print("OK  §5's sender-side limit has a body in every sender: PC plan()/offer(), the phone's client, both screens")
+    print("OK  §4's manifest block is the wire: both senders' keys, and no receiver acts on total_size")
     return 0
 
 

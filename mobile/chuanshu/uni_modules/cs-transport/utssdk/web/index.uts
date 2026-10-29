@@ -1720,6 +1720,41 @@ export function receiveSelfReport(): string {
 	check('§9 冻结链：平名那条也在同一单的目录里，两条落点不是一个字符串',
 		dirSecond.indexOf('乙.txt') >= 0 && dirSecond.indexOf(dirId) >= 0 && dirFirst != dirSecond, dirFirst + ' | ' + dirSecond)
 
+	// 5g. 第十四轮巡检（#180）：§4 那一块摊开就是三端真发的字节，其中 `total_size` 说好了「接收方不拿它判任何事」。
+	// 那不能只写在纸上：拿一个谎报的总数投一单——条目自己说 7 字节，总数说 987654321——如果这一端偷偷信了那个数，
+	// 要么整单被拒，要么预先开档开出九个多亿。两头都量：登记照旧，落盘的字节按条目自己的 size。
+	const totalBox = newInbox()
+	const totalPair = askPairOn(totalBox, SIM_PEER_ID, currentPairCode(totalBox, nowSeconds()), passphraseOf(totalBox, nowSeconds()), simKey)
+	const totalPairObj = jsonOf(totalPair)
+	const totalToken = totalPairObj == null ? '' : totalPairObj!.getString('token', '')
+	const fakeText = '就七个字节。\n'
+	const fakeBody = utf8(fakeText)
+	const fakeSha = hexOf(sha256Bytes(fakeBody))
+	const fakeId = hexOf(randomBytes(8))
+	const fakeFileId = hexOf(randomBytes(8))
+	const fakeRel = '丙.txt'
+	const bogusOffer = askOn(totalBox, SIM_PEER_ID, 'POST', '/v1/offer',
+		'{"offer_id":"' + fakeId + '","protocol_version":' + PROTOCOL_VERSION.toString()
+			+ ',"compatible_versions":[' + PROTOCOL_VERSION.toString() + ']'
+			+ ',"from":{"peer_id":"' + SIM_PEER_ID + '","name":"' + SIM_NAME + '"}'
+			+ ',"total_size":987654321,"files":[{"id":"' + fakeFileId + '","relpath":"' + fakeRel
+			+ '","size":' + fakeBody.length.toString() + ',"sha256":"' + fakeSha
+			+ '","mtime":0,"type":"text/plain"}]}',
+		totalToken, new ArrayBuffer(0), '')
+	check('§4 total_size：总数谎报九个多亿，这一单照样登记、照样等人决定', bogusOffer.pending, codeOfReply(bogusOffer))
+	resolveOffer(totalBox, fakeId, true, recvPrepare, recvDrop)
+	const openedBytes = recvStore.get(fakeId + '/' + fakeRel)
+	check('§4 total_size：接收方开档按条目自己的 size，没有拿那个谎报的总数当尺寸',
+		openedBytes != null && openedBytes!.length == fakeBody.length,
+		openedBytes == null ? '没有这份开档' : openedBytes!.length.toString())
+	const fakePut = askOn(totalBox, SIM_PEER_ID, 'PUT', '/v1/offer/' + fakeId + '/chunk/' + fakeFileId + '/0', '', totalToken, fakeBody.buffer as ArrayBuffer, fakeSha)
+	const fakeDone = askOn(totalBox, SIM_PEER_ID, 'POST', '/v1/offer/' + fakeId + '/finalize', '{}', totalToken, new ArrayBuffer(0), '')
+	const fakeDoneObj = jsonOf(fakeDone)
+	const fakeList = fakeDoneObj == null ? null : fakeDoneObj!.getArray<UTSJSONObject>('verified')
+	const fakeVerified = fakeList != null && fakeList!.length == 1 && fakeList![0].getBoolean('ok', false)
+	check('§4 total_size：那一块照常收下、整单照常过摘要（总数没挡路，也没被拿去判）',
+		fakePut.status == 200 && fakeVerified, fakePut.status.toString() + ' | ' + codeOfReply(fakeDone))
+
 	// 6. chunks: store, reject a lying digest, reject the wrong length, and be idempotent.
 	const bigId = files[1].id
 	const bigSize = files[1].size
