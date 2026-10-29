@@ -1783,6 +1783,8 @@ def phase_finalize_replay(proto: protocol_spec.Protocol, workspace: Path) -> Non
     receiver = load_or_create(workspace / "replay-receiver")
     root = workspace / "replay-received"
     arrivals: list[list[dict]] = []
+    late: list[list[dict]] = []
+    restarted: ReceiveService | None = None
     service = ReceiveService(receiver, "PC-Replay", lambda manifest, who, caller: True,
                              host="127.0.0.1", port=0, root=root,
                              on_received=lambda who, landed: arrivals.append(list(landed)))
@@ -1902,8 +1904,57 @@ def phase_finalize_replay(proto: protocol_spec.Protocol, workspace: Path) -> Non
         # re-posted verify has no answer to give.
         conn.abort()
         expect_error("收回这单之后重投，才轮到「没这单」", "OFFER_UNKNOWN", conn.finalize)
+
+        # Round nineteen (#185): the announce-once gate is only worth anything if it outlives the
+        # process, because the ledger it guards does. One file verified and announced, the receiver
+        # restarts over the same root and finishes the other half - the first file's news stays told.
+        third = dial("PC-Replay-Third")
+        third.offer(files)
+        whole = sum(third._chunk_count(f) for f in files)
+        for item in files:
+            if not item.relpath.endswith("好的一份.txt"):
+                continue
+            for index in range(third._chunk_count(item)):
+                third._put_chunk(item, index, whole, None, 3)
+        partial = third.finalize()
+        check("一单里先齐的那一份报了一次，欠着的那一份把台账留在磁盘上",
+              verdict(partial) == [good_rel] and len(partial["verified"]) == 2
+              and (root / third.offer_id / STATE_FILE).is_file(), verdict(partial))
+        ledger = json.loads((root / third.offer_id / STATE_FILE).read_text(encoding="utf-8"))
+        # The landing paths the receiver hands out are resolved ones (§5 does the containment check on
+        # that form), so the prefix this leg compares against has to be resolved too.
+        here = str((root / third.offer_id).resolve())
+        announced_here = [str(e["path"]) for batch in arrivals for e in batch
+                          if str(e["path"]).startswith(here)]
+        check("已经报过的那一笔写在续传台账里，而不是只写在这一场内存里",
+              ledger.get("announced") == announced_here and len(announced_here) == 1,
+              [ledger.get("announced"), announced_here])
+
+        port = service.port
+        service.stop()
+        restarted = ReceiveService(receiver, "PC-Replay", lambda manifest, who, caller: True,
+                                   host="127.0.0.1", port=port, root=root,
+                                   on_received=lambda who, landed: late.append(list(landed)))
+        restarted.start()
+        adopted = restarted.adopt_interrupted_offers()
+        check("重开以后这一单被认领，而不是当成没这单", adopted == 1, adopted)
+        resumed = PeerConnection(sender, "PC-Replay-Resumed", "127.0.0.1", port, receiver.served_fingerprint)
+        resumed.offer_id = third.offer_id
+        resumed.hello()
+        resumed.pair(restarted.current_pair_code())
+        resumed.push_missing(files, resumed.state(), None, 3)
+        done = resumed.finalize()
+        check("接收方重启之后，第一份字节不再报第二遍",
+              len(verdict(done)) == 2 and len(late) == 1
+              and tail(str(late[0][0]["path"])) == "两块.bin",
+              [late, verdict(done)])
+        check("重启前后摊开一共两行，各自一份字节",
+              len({*announced_here, *[str(e["path"]) for batch in late for e in batch]}) == 2,
+              [announced_here, late])
     finally:
         service.stop()
+        if restarted is not None:
+            restarted.stop()
 
 
 def main() -> int:

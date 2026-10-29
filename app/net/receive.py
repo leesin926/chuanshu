@@ -136,6 +136,10 @@ class OfferState:
     touched: float = field(default_factory=time.time)
     #: Set once every file verified: there is nothing left to resume, so the state file goes.
     complete: bool = False
+    #: Landing paths whose arrival this machine has already told the user about. §4 says one set of
+    #: bytes is announced once, and a resumed offer re-verifies the files that landed before the
+    #: restart too - so this rides in the ledger, which is the one thing here that outlives the process.
+    announced: list[str] = field(default_factory=list)
 
     def chunk_count(self, file: dict) -> int:
         size = int(file["size"])
@@ -167,6 +171,9 @@ class OfferState:
             # Written so a crash between finalize and the ledger going away cannot hand the next
             # run an unfinished offer - unfinished is what the reclaim is allowed to delete.
             "complete": self.complete,
+            # §4's announce-once has to outlive this process, and the ledger is the only thing here
+            # that does: a resumed offer re-verifies what already landed, and their news stays told.
+            "announced": self.announced,
             "received": {
                 fid: {str(index): digest for index, digest in chunks.items()}
                 for fid, chunks in self.received.items()
@@ -202,6 +209,9 @@ class OfferState:
             received=received,
             who=str(body.get("who", "")),
             complete=bool(body.get("complete", False)),
+            # A ledger written before this list existed has no honest answer, same as the clocks below:
+            # nothing was announced yet as far as this run can tell, and the next persist() has one.
+            announced=[str(p) for p in body.get("announced", [])],
             created=stamped or time.time(),
             touched=last or stamped or time.time(),
         )
@@ -342,11 +352,6 @@ class ReceiveService:
         # a batch they declined could be accepted by an accident of the second dialog.
         self._answered: dict[str, str] = {}
         self._asking: set[str] = set()
-        # §4 lets a sender resend the request whose reply it could not read, and `finalize` is one of
-        # those requests. A file this machine has already announced is announced once: the second
-        # verdict for the same bytes is the same news, and telling it twice puts two rows in the
-        # arrival list for one file. Mirrors `hasArrival` in cs-receive.uts.
-        self._reported: set[str] = set()
         self._tokens: dict[str, str] = {}
         #: When each peer last said anything with a token, and when this machine last leaned on
         #: the session it dialled out. Both feed the idle reclaim; neither is ever sent anywhere.
@@ -816,12 +821,18 @@ class ReceiveService:
                 landed.append({"relpath": str(file["relpath"]), "size": int(file["size"]), "path": str(target)})
             else:
                 log.warning("finalize rejected %s: %s", file["relpath"], "missing chunks" if missing else "digest mismatch")
+        finished = all(item["ok"] for item in results)
         if landed:
-            fresh = [e for e in landed if str(e["path"]) not in self._reported]
-            self._reported.update(str(e["path"]) for e in fresh)
-            if fresh and self.on_received is not None:
-                self.on_received(state.who, fresh)
-        if all(item["ok"] for item in results):
+            fresh = [e for e in landed if str(e["path"]) not in state.announced]
+            if fresh:
+                state.announced.extend(str(e["path"]) for e in fresh)
+                # Write the news down before telling it, but only while this offer still owes a file:
+                # a finished one's ledger goes away below, so the list lives on in this object instead.
+                if not finished:
+                    state.persist()
+                if self.on_received is not None:
+                    self.on_received(state.who, fresh)
+        if finished:
             # Nothing left to resume, and a state file is exactly what an interrupted offer looks
             # like after a restart: leaving it here would re-adopt a finished transfer as one. Say
             # it is finished first, then take the ledger away - a crash between the two still tells

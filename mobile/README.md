@@ -833,6 +833,32 @@ py -X utf8 scripts/check_protocol.py
       （`.probe/r18_phase_negatives.py` → `.probe/r18_phase_negatives.txt`）把 PC 那道闸真拆掉再跑那一相，四条分别红在
       「重投的那一问不再把同一个文件报第二遍」（两处）、`补好之后这一单全过…只出现一次`、「另一单的同名文件是新的一行」，还原再跑 `RESULT ALL PASS`。
 
+32. **#185：合同 §4 那句「同一份字节只报一次」——PC 的闸写在进程里，而它守的那两笔账写在磁盘上**
+    （动的是合同、PC 接收侧（`app/net/receive.py`）、PC 门禁那一相的五条腿、一道守卫；**两个宿主（`app-android`、`app-harmony`）、共用接收内核
+    `cs-receive.uts`、共用发送方与这一端浏览器替身一个字节没改**，所以两道编译门与浏览器自检**本轮没跑**；完整账目在
+    `../docs/feature-matrix.md` §6 第 36 条）
+    - **第十八轮补的那三行按落点记在 `ReceiveService` 的一个集合里**，进程一停就空。它守的东西不跟着停：续传台账 `.chuanshu.state.json`
+      与 §6 那份接收记录都在磁盘上。于是合同那句「只报一次」在一场之内成立、跨一次重启不成立。改前探针（`.probe/r19_before_probe.py` →
+      `.probe/r19_before_probe.txt`，档位 `门禁`）量到的就是这一趟：一单两个文件，第一个先齐、`finalize#1` 报过一次，把接收方停掉再用
+      同一个根目录重开（`adopt_interrupted_offers()` 认领下这一单），补齐第二个再 `finalize`——第一个文件**被报第二遍**，同一个落点在
+      收到的文件里两行，而它磁盘上的字节一个没动。补好以后同一支探针是 `[['好的一份.txt'], ['相册/两块.bin']]`、重复落点
+      `[]`、`出现 1 次`（`.probe/r19_after_probe.txt` 同一行）。
+    - **修法是把名单挪进这一单自己的台账**：`OfferState.announced` 随 `.chuanshu.state.json` 一起写、一起认领，`handle_finalize` 按它筛
+      （先落笔再播报；只有还欠着文件的这一单才落笔，全成那一单的台账随即作废，名单留在内存对象上给同进程的重投用）。
+    - **手机那一半是结构给的，本轮没有量**：`hasArrival` 问的是持久化的收件台账（`cs-receive.uts:1042-1052`），而那份台账开机读回
+      （`adoptArrivals`，浏览器自检里「开机读回收到清单」「重启后卡片仍列这两个文件」两条量过它自己那一半）。**两端的播报时机也不同**：
+      手机只在整单齐了才落笔（`cs-receive.uts:1133-1139` 的 `recordArrivals` 在 `whole` 里面），所以 PC 那句"第一个先齐并报过"在手机上
+      是"第一个要等整单才报"——同一趟探针因此跑不出 PC 那一行的形状，这不是违约（合同没规定何时播报），但也**没在手机上验过**。
+      **这一端欠的设备腿**：杀掉正在接收的手机（`adb shell am force-stop` / `hdc shell aa force-stop`），让对面把剩下那一单续完，
+      再看「收到的文件」——每一个落点只许一行，且那一行的时间还是第一次落盘的那个。这一条要在安卓与鸿蒙各跑一次才算数。
+    - **守卫还是那 20 行，判据换了三处**（`check_finalize_replay()`，`mobile/scripts/check_protocol.py:896`）：纸上多钉两句
+      （「活得比这一场久」「先落笔再播报」）；PC 接收侧从"必须有那个集合"改成"必须有 `OfferState.announced`，且 `persist()`/`load()`
+      各带它一行，`handle_finalize` 按它筛"，并反过来**禁止** `self._reported` 回到服务里；门禁那一相必须含 `adopt_interrupted_offers()`
+      与读回台账那两处字面量。**15 处守卫负向每一处单独红**（`.probe/r19_guard_negatives.py` → `.probe/r19_guard_negatives.txt`），
+      还原后 `rc=0` 全绿；**另有 3 处门禁负向**（`.probe/r19_phase_negatives.py` → `.probe/r19_phase_negatives.txt`）：台账不写这份名单
+      → 红在「已经报过的那一笔写在续传台账里」加「接收方重启之后，第一份字节不再报第二遍」；认领时不读回 → 只红在后一条；闸不照名单筛
+      → 红在第十八轮那三条（同进程那一趟本来就被它们看着）。三处红完，还原再跑 `RESULT ALL PASS`。
+
 M2a 的最小切口是"手机发、PC 收"：扫（或粘贴）PC 的二维码拿到地址与完整指纹，用户只核对同屏的
 一次性配对码——PC 侧接收端已经跑绿，手机只要把
 `/v1/pair`、`/v1/offer`、`PUT chunk`、`/v1/finalize` 四条打出去就能有结论，发现层可以先不做。

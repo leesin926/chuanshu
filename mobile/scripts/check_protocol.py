@@ -905,8 +905,15 @@ def check_finalize_replay() -> None:
     the offer in its table after verifying (it deletes the resume ledger, not the order), so the second
     pass re-answers, and the PC announced every landed file a second time - a second row in 收到的文件 and
     a second notification for bytes that had already been reported. The phone's shared kernel had that
-    gate since #35 (`hasArrival`); the PC got one keyed by destination path. This guard pins the two
-    sentences, the second pass on both senders, and both receivers' announce-once.
+    gate since #35 (`hasArrival`); the PC got one keyed by destination path.
+
+    Round nineteen (#185) asked where that gate *lives*. The record it protects is on disk (the resume
+    ledger, and the PC's arrivals.json), so a gate in process memory restarts empty: stop the receiver
+    mid-offer, re-adopt the same order, finish it, and the file already announced before the restart is
+    announced again. The phone is restart-safe by construction - `hasArrival` reads the persisted inbox -
+    so the PC's list moved into `OfferState.announced`, which rides in `.chuanshu.state.json`. This guard
+    pins the three sentences, the second pass on both senders, both receivers' announce-once, and the
+    fact that the PC's half of that is written down rather than remembered.
     """
     spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
     section = spec.split("## 4.", 1)[1].split("\n## ", 1)[0] if "## 4." in spec else ""
@@ -918,6 +925,8 @@ def check_finalize_replay() -> None:
         ('发送方看到连接被关要重连重发一次', "the sentence this round was about"),
         ('一秒后重问一次，只一次', "the phone's second pass without its bound is a retry loop"),
         ('不再复用这一条连接', "the receiver half of the trap is written as a connection rule, not a header"),
+        ('活得比这一场久', "the gate is worthless if the record it guards is on disk and it is not"),
+        ('先落笔再播报', "announcing before writing it down is the crash window the list exists to close"),
     ):
         if re.sub(r"\s+", "", needle) not in flat:
             fail(f"§4 no longer says {needle!r} - {why}")
@@ -940,11 +949,27 @@ def check_finalize_replay() -> None:
 
     recv = (HERE.parent / "app" / "net" / "receive.py").read_text(encoding="utf-8")
     finalize_body = recv.split("def handle_finalize", 1)[1].split("\n    def ", 1)[0]
-    if "self._reported: set[str] = set()" not in recv:
-        fail("app/net/receive.py no longer keeps a set of what it has announced - a re-posted finalize reports "
-             "the same landing twice")
-    if 'fresh = [e for e in landed if str(e["path"]) not in self._reported]' not in finalize_body:
-        fail("handle_finalize() no longer filters the announcement by destination - §4 says 同一份字节只报一次")
+    persist_body = recv.split("def persist", 1)[1].split("\n    def ", 1)[0]
+    load_body = recv.split("def load", 1)[1].split("\n    def ", 1)[0]
+    for literal, where, name, why in (
+        ('announced: list[str] = field(default_factory=list)', recv, "OfferState",
+         "the list of landings already announced is no longer part of the offer's own state"),
+        ('"announced": self.announced,', persist_body, "persist()",
+         "the resume ledger no longer carries what this offer has announced - §4 says the gate outlives the process"),
+        ('announced=[str(p) for p in body.get("announced", [])],', load_body, "load()",
+         "a re-adopted offer no longer reads its announcements back, so the restart re-reports them"),
+        ('fresh = [e for e in landed if str(e["path"]) not in state.announced]', finalize_body,
+         "handle_finalize()", "the announcement is no longer filtered by destination - §4 says 同一份字节只报一次"),
+        ('state.announced.extend(str(e["path"]) for e in fresh)', finalize_body, "handle_finalize()",
+         "the announcement is no longer written down, only said"),
+        ("if not finished:", finalize_body, "handle_finalize()",
+         "a finished offer would persist a ledger it is about to delete - the list has nowhere to live after that"),
+    ):
+        if literal not in where:
+            fail(f"app/net/receive.py {name} no longer contains {literal!r} - {why}")
+    if "self._reported" in recv:
+        fail("app/net/receive.py announces from a set kept in the service again - that set empties when the "
+             "process does, and the ledger it guards does not")
     if "self.on_received(state.who, landed)" in finalize_body:
         fail("handle_finalize() announces the whole landed list again - the second pass re-announces every "
              "file this offer already reported")
@@ -972,6 +997,19 @@ def check_finalize_replay() -> None:
             re.search(r"^\s+phase_finalize_replay\(proto, workspace\)$", selftest, re.M) is None:
         fail("scripts/protocol_selftest.py has no finalize-replay phase in its run - the PC's second pass, "
              "the byte-identical re-post and the announce-once are unmeasured again")
+    replay = selftest.split("def phase_finalize_replay", 1)[1].split("\ndef ", 1)[0]
+    for literal, why in (
+        ("restarted.adopt_interrupted_offers()",
+         "there is no restart in this phase any more - §4's 活得比这一场久 is a claim about the second process"),
+        ('ledger.get("announced")',
+         "the phase no longer reads the announce list back out of the ledger on disk, which is the only place "
+         "it can be seen surviving"),
+        ('str((root / third.offer_id).resolve())',
+         "the prefix the announced list is compared against went back to tempfile's short form, and the "
+         "resolved landing paths never start with it"),
+    ):
+        if literal not in replay:
+            fail(f"phase_finalize_replay() no longer contains {literal} - {why}")
 
 
 def main() -> int:
