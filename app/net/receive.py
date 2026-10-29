@@ -42,8 +42,6 @@ log = logging.getLogger(__name__)
 STATE_FILE = ".chuanshu.state.json"
 _WINDOWS_RESERVED = re.compile(r"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$", re.I)
 _REPLAY_WINDOW_S = 300
-_CODE_LOCK_S = 60
-_CODE_MAX_FAILS = 5
 #: How much of an unread request body a reply is allowed to swallow before it is written.
 _MAX_DRAIN = 65536
 
@@ -523,7 +521,7 @@ class ReceiveService:
     def _prune(self) -> None:
         now = time.time()
         self._seen_nonces = {n: t for n, t in self._seen_nonces.items() if now - t < _REPLAY_WINDOW_S}
-        self._code_failures = {k: [t for t in v if now - t < _CODE_LOCK_S] for k, v in self._code_failures.items()}
+        self._code_failures = {k: [t for t in v if now - t < self.proto.pair_code_lock_s] for k, v in self._code_failures.items()}
 
     def _pinned_key(self, fingerprint: str) -> ed25519.Ed25519PublicKey | None:
         entry = self.identity.trusted_entry(fingerprint)
@@ -603,7 +601,7 @@ class ReceiveService:
 
             if not known:
                 failures = self._code_failures.setdefault(client_ip, [])
-                if len(failures) >= _CODE_MAX_FAILS:
+                if len(failures) >= self.proto.pair_code_max_fails:
                     raise protocol_spec.ProtocolError("PEER_BUSY", {"reason": "too many failed codes"})
                 if code != self.current_pair_code():
                     failures.append(time.time())

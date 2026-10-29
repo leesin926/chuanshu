@@ -45,6 +45,8 @@ class Protocol:
     pair_code_digits: int
     pair_code_static: bool
     passphrase_chars: int
+    pair_code_max_fails: int
+    pair_code_lock_s: int
     hello_features: tuple[str, ...]
     limits: dict[str, int]
     error_codes: dict[str, dict[str, Any]]
@@ -115,6 +117,11 @@ def load() -> Protocol:
         # that predate it (spec §7).
         pair_code_static=bool(transport.get("pair_code_static", False)),
         passphrase_chars=int(transport.get("passphrase_chars", 8)),
+        # spec §3's throttle. Read from the contract like every other number here, with no fallback
+        # value: a copy of this file that predates the keys must fail loudly at startup rather than
+        # quietly pair-protect itself with a different 5 and 60 than the phone on the other end.
+        pair_code_max_fails=int(transport["pair_code_max_fails"]),
+        pair_code_lock_s=int(transport["pair_code_lock_s"]),
         # spec §7: hello's capability list. Nobody branches on it in v1 - compatibility is the
         # version intersection alone - but every end has to say the same three words.
         hello_features=tuple(str(one) for one in transport.get(

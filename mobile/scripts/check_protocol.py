@@ -61,6 +61,10 @@ def check_uts_mirror(body: dict) -> None:
         # receiver keeps it too (an unanswered offer is dropped on it), so a phone that guessed would
         # either give up on a peer that is still waiting or keep a card alive past the sender's deadline.
         "OFFER_WAIT_S": body["transport"]["offer_wait_timeout_s"],
+        # §3's throttle. Until round twenty-three these two lived only inside cs-receive.uts, where no
+        # mirror check looked - the phone agreed with the PC by accident, not by measurement.
+        "PAIR_CODE_MAX_FAILS": body["transport"]["pair_code_max_fails"],
+        "PAIR_CODE_LOCK_S": body["transport"]["pair_code_lock_s"],
         # The discovery windows are the same story: a phone that expired a candidate on a different
         # clock, or broadcast on a different port, is a phone the PC cannot be found by.
         "DISCOVERY_PORT": body["ports"]["discovery_udp"],
@@ -1116,6 +1120,107 @@ def check_finalize_replay() -> None:
             fail(f"phase_finalize_replay() no longer contains {literal} - {why}")
 
 
+def check_pair_throttle(body: dict) -> None:
+    """§3's throttle is a sliding window with a per-source bucket, and both halves used to exist only in code.
+
+    Round twenty-three (#189) read 「同一来源 5 次失败锁 60s」 - a sentence two implementations satisfy
+    differently at second 59. The PC prunes then counts (``app/net/receive.py``), the shared kernel prunes
+    then counts (``cs-receive.uts``), and in both the release belongs to the *oldest* of the five failures
+    while a refused attempt records nothing. None of that was on paper, neither number was in
+    ``protocol.json``, and the phone's copy sat in a private ``const`` the mirror check never read. So this
+    guard holds four things at once: the prose says the shape, the contract owns the two numbers, every body
+    reads them from there rather than typing them, and the shape has legs on both tiers.
+    """
+    transport = body["transport"]
+    for name in ("pair_code_max_fails", "pair_code_lock_s"):
+        if name not in transport:
+            fail(f"protocol.json lost transport.{name} - spec §3's throttle has no home to be read from")
+    fails, lock = int(transport["pair_code_max_fails"]), int(transport["pair_code_lock_s"])
+    if not 3 <= fails <= 10:
+        fail(f"pair_code_max_fails {fails}: few enough guesses and the code is no use, many enough and 10^6 is thin")
+    if not 10 <= lock <= 600:
+        fail(f"pair_code_lock_s {lock}: shorter than a person can retype a code, longer than a LAN attacker cares about")
+
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    section = spec.split("## 3.", 1)[1].split("\n## ", 1)[0] if "## 3." in spec else ""
+    flat = re.sub(r"\s+", "", section)
+    for needle, why in (
+        (f"同一来源攒到 {fails} 次失败就被拒", "the count is the contract's number, spelled in the sentence that obliges it"),
+        (f"{lock} 秒", "the window's length belongs on the paper too - each end typing its own is how they fork"),
+        ("那五次里最早那一次", "which moment the 60 s runs from is the whole finding; without it a fixed window reads the same"),
+        ("自己不往窗口里添新记录", "a refused guess must not extend the lock, and that is not something a reader can assume"),
+        ("按地址分桶", "「来源」 has to be defined or the next host per-connection-ises it and the lock never fills"),
+        ("哪一端都不落盘", "the list's lifetime is a promise to the person who got locked out and restarted the peer"),
+    ):
+        if re.sub(r"\s+", "", needle) not in flat:
+            fail(f"§3 no longer says {needle!r} - {why}")
+
+    root = HERE.parent
+    receive = (root / "app" / "net" / "receive.py").read_text(encoding="utf-8")
+    if re.search(r"_CODE_(LOCK_S|MAX_FAILS)\s*=\s*\d+", receive):
+        fail("app/net/receive.py types the throttle's two numbers again - they are protocol.json's, and a "
+             "second copy of a promise is the fork this guard exists to catch")
+    for literal in ("self.proto.pair_code_lock_s", "self.proto.pair_code_max_fails"):
+        if literal not in receive:
+            fail(f"app/net/receive.py no longer reads {literal} from the contract")
+    handler = receive.split("def handle_pair", 1)[1].split("\n    def ", 1)[0] if "def handle_pair" in receive else ""
+    if handler == "":
+        fail("app/net/receive.py has no handle_pair() to inspect - the throttle's shape cannot be measured")
+    if handler.find("self._prune()") < 0 or handler.find("pair_code_max_fails") < handler.find("self._prune()"):
+        fail("app/net/receive.py does not prune before it counts - counting stale failures locks a peer out "
+             "for longer than §3 promises, which is the fixed-window reading this round wrote down against")
+
+    spec_py = (root / "app" / "net" / "spec.py").read_text(encoding="utf-8")
+    if 'int(transport["pair_code_max_fails"])' not in spec_py or 'int(transport["pair_code_lock_s"])' not in spec_py:
+        fail("app/net/spec.py loads the throttle with a fallback value or not at all - a contract copy that "
+             "predates these keys must fail loudly, not pair-protect itself with different numbers")
+
+    kernel = (HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk" / "cs-receive.uts").read_text(encoding="utf-8")
+    if re.search(r"const CODE_(LOCK_S|MAX_FAILS):", kernel):
+        fail("cs-receive.uts keeps a private copy of the throttle's numbers again - cs-protocol.uts is the one "
+             "the mirror check reads, and a const nobody compares is a number nobody verifies")
+    for name in ("PAIR_CODE_MAX_FAILS", "PAIR_CODE_LOCK_S"):
+        if re.search(rf"\b{name}\b", kernel) is None:
+            fail(f"cs-receive.uts no longer uses {name} - the phone's §3 throttle stopped reading the contract's number")
+    pair_body = kernel.split("function pairReply(", 1)[1] if "function pairReply(" in kernel else kernel
+    at_prune, at_count = pair_body.find("prune(inbox, now)"), pair_body.find(">= PAIR_CODE_MAX_FAILS")
+    if at_prune < 0 or at_count < 0 or at_count < at_prune:
+        fail("cs-receive.uts does not prune before it counts - §3's 最早那一次 is decided by that order")
+
+    for host, literal in (("app-android/CsServe.kt", 'sk.inetAddress?.hostAddress ?: "?"'),
+                          ("app-harmony/index.uts", "c.ip == '' ? '?' : c.ip")):
+        if literal not in (root / "mobile" / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk" / host).read_text(encoding="utf-8"):
+            fail(f"{host} no longer folds an unreadable address into one '?' bucket - §3 counts failures per *source*, "
+                 f"and a per-connection bucket hands a guesser a clean allowance on every retry")
+
+    selftest = (root / "scripts" / "protocol_selftest.py").read_text(encoding="utf-8")
+    if "def phase_pair_throttle(" not in selftest or \
+            re.search(r"^\s+phase_pair_throttle\(proto, workspace\)$", selftest, re.M) is None:
+        fail("scripts/protocol_selftest.py has no throttle phase in its run - the sliding window, the shared "
+             "bucket and the non-persistence are unmeasured again")
+    phase = selftest.split("def phase_pair_throttle", 1)[1].split("\ndef ", 1)[0]
+    for literal, why in (
+        ("proto.pair_code_max_fails", "the phase hardcodes its own count instead of the contract's - it would "
+                                      "keep passing if the number moved"),
+        ("proto.pair_code_lock_s + 1", "the release leg is one second past the window; without it the phase "
+                                       "cannot tell a sliding window from a fixed one"),
+        ("too many failed codes", "the refusal is identified by its reason, not by the status code PEER_BUSY "
+                                  "shares with 一次只连一台"),
+        ("into=again", "there is no second process in the phase any more - 不落盘 is a claim about a restart"),
+    ):
+        if literal not in phase:
+            fail(f"phase_pair_throttle() no longer contains {literal} - {why}")
+
+    harness = (HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk" / "web" / "index.uts").read_text(encoding="utf-8")
+    if "function askPairAt(" not in harness:
+        fail("the H5 receiver self-check lost its clock-injecting pair helper - the kernel's `now` parameter is "
+             "the only way to measure a 60-second window inside a page")
+    shape_legs = len(re.findall(r"check\(\s*'§3 (攒够 5 次以后连猜对也拒|被锁住期间的尝试不往清单里添记录|门在第 61 秒开|密码猜错和配对码猜错记在同一桶里|「来源」按地址分桶)", harness))
+    if shape_legs < 5:
+        fail(f"the H5 receiver self-check holds {shape_legs} of the five throttle-shape legs - each one is a "
+             "clause of §3's sentence, and the phone's kernel is the body they measure")
+
+
 def main() -> int:
     stamp_path = CONTRACT / "SOURCE.json"
     for name in ("protocol.json", "spec.md", "SOURCE.json"):
@@ -1166,6 +1271,7 @@ def main() -> int:
     if not 30 <= ttl <= 600:
         fail(f"pair_code_ttl_s {ttl}: a code that outlives the glance at the screen is no code at all")
 
+    check_pair_throttle(body)
     check_uts_mirror(body)
     check_limits_in_prose(body)
     check_error_table(body)
@@ -1189,6 +1295,8 @@ def main() -> int:
     print(f"OK  pair code: {digits} digits, {ttl}s each"
           + (", fixed until rotated by hand" if body["transport"]["pair_code_static"] else "")
           + f", {body['transport']['passphrase_chars']}-char passphrase")
+    print(f"OK  §3's throttle is one sliding window in four places: {body['transport']['pair_code_max_fails']} "
+          f"failures per source, {body['transport']['pair_code_lock_s']}s each, in memory only")
     print("OK  vendored copies match their stamps")
     print("OK  cs-protocol.uts mirrors the contract")
     print("OK  §5 names every limit a receiver refuses a transfer on")

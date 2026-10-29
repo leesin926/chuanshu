@@ -10,11 +10,13 @@ Run:  python3 scripts/protocol_selftest.py   (Linux - the three mDNS legs skip w
 
 from __future__ import annotations
 
+import base64
 import gettext
 import hashlib
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -2086,6 +2088,156 @@ def phase_finalize_replay(proto: protocol_spec.Protocol, workspace: Path) -> Non
             restarted.stop()
 
 
+def phase_pair_throttle(proto: protocol_spec.Protocol, workspace: Path) -> None:
+    """§3's throttle: which five failures, sixty seconds measured from which moment, and what a 来源 is.
+
+    Round twenty-three (#189) read 「同一来源 5 次失败锁 60s」 - a sentence that fits a sliding window and a
+    fixed one equally well, which is the problem, because the two answer differently at second 59. Both
+    ends build the sliding one: the door opens `pair_code_lock_s` after the *oldest* of the five failures,
+    and an attempt refused while the door is shut records nothing, so hammering cannot push the lock out.
+    Neither number was in the contract, no gate held either shape, and the list lives in memory on all four
+    ends. These legs go through ``handle_pair`` directly instead of a socket because the sentence keys on
+    the *source address* and a localhost socket only ever has one of those.
+    """
+    receiver = load_or_create(workspace / "throttle-receiver")
+    service = ReceiveService(receiver, "PC-Throttle", lambda manifest, who, caller: True,
+                             host="127.0.0.1", port=0, root=workspace / "throttle-received")
+    service.start()
+    code, secret = service.current_pair_code(), service.passphrase()
+    wrong_code = ("1" if code[0] != "1" else "2") + code[1:]
+
+    def attempt(ip: str, ident, code_ok: bool = False, secret_ok=None) -> dict:
+        """A well-formed, correctly signed pair body whose *answer* is what this leg is about.
+
+        The signature always verifies: a refusal that came from the throttle has to be distinguishable
+        from one that came from a body the receiver could not read at all.
+        """
+        nonce = secrets.token_hex(16)
+        leaf = ident.declared_tls_fingerprint
+        message = protocol_spec.pair_message(ident.peer_id, nonce, leaf)
+        body = {
+            "peer_id": ident.peer_id,
+            "name": "Stranger-" + ip,
+            "protocol_version": proto.version,
+            "compatible_versions": list(proto.compatible_versions),
+            "nonce": nonce,
+            "public_key": base64.b64encode(ident.raw_public_key()).decode(),
+            "signature": base64.b64encode(ident.key.sign(message)).decode(),
+            "code": code if code_ok else wrong_code,
+        }
+        if secret_ok is not None:
+            body["secret"] = secret if secret_ok else "!" * proto.passphrase_chars
+        if leaf:
+            body["tls_fingerprint"] = leaf
+        return body
+
+    def refused(ip: str, ident, into=None, **keys) -> tuple[str, dict]:
+        """The answer ``handle_pair`` gives, or ``("PAIRED", reply)`` when it gives a token."""
+        try:
+            return ("PAIRED", (into or service).handle_pair(attempt(ip, ident, **keys), ip))
+        except protocol_spec.ProtocolError as error:
+            return (error.code, error.detail or {})
+
+    def release() -> None:
+        # §3's other rule - one peer at a time - is checked elsewhere; here it would only shadow the
+        # throttle, because the busy answer comes first. The slot is handed back after each success.
+        service._tokens.clear()
+        service._seen.clear()
+        service._held_by = ""
+
+    guesser, mixed, slid, other, single, rebooted = (
+        load_or_create(workspace / f"throttle-{n}")
+        for n in ("guesser", "mixed", "slid", "other", "single", "rebooted"))
+    try:
+        # Four guesses are four wrong codes, not a lock: the count has not been reached yet, so every
+        # one of them has to answer with the mistake the sender can actually do something about.
+        first_four = [refused("10.0.0.11", guesser)[0] for _ in range(proto.pair_code_max_fails - 1)]
+        check("§3 攒够之前的每一次猜错都答 BAD_PAIR_CODE",
+              first_four == ["BAD_PAIR_CODE"] * (proto.pair_code_max_fails - 1), first_four)
+        check("§3 名额是合同里那个数：差一次的时候门还开着",
+              len(service._code_failures["10.0.0.11"]) == proto.pair_code_max_fails - 1,
+              service._code_failures["10.0.0.11"])
+
+        # The fifth wrong guess is still answered on its merits: the door shuts once five records are in
+        # the bucket, and this is the attempt that puts the fifth there.
+        code_5 = refused("10.0.0.11", guesser)[0]
+        filled = len(service._code_failures["10.0.0.11"])
+        check("§3 第五次猜错照样答 BAD_PAIR_CODE：门是这一趟之后才关上的",
+              code_5 == "BAD_PAIR_CODE" and filled == proto.pair_code_max_fails, f"{code_5} {filled}")
+
+        # The sixth is the one that would have got in - right code, right passphrase - and it is
+        # refused anyway. That is the only way to tell a throttle from a wrong guess by its answer.
+        code_, detail = refused("10.0.0.11", guesser, code_ok=True, secret_ok=True)
+        check("§3 攒够 5 次以后连猜对也拒，说的是「too many failed codes」",
+              code_ == "PEER_BUSY" and detail.get("reason") == "too many failed codes", f"{code_} {detail}")
+
+        # Three more, all of them correct, all of them refused. If any of those recorded itself the
+        # window would slide forward on a guess that learned nothing - the lock would never open.
+        for _ in range(3):
+            refused("10.0.0.11", guesser, code_ok=True, secret_ok=True)
+        check("§3 被锁住期间的尝试不往清单里添记录：砸得再多也不会把这道锁推远",
+              len(service._code_failures["10.0.0.11"]) == proto.pair_code_max_fails,
+              service._code_failures["10.0.0.11"])
+
+        # A wrong passphrase is the same mistake as a wrong code (spec §3 says so out loud), and this
+        # leg shows they share a bucket: three wrong codes and two wrong passphrases, and the door is
+        # already shut for the attempt that gets both right.
+        release()
+        for bad in ((False, None), (True, False), (False, None), (True, False), (False, None)):
+            refused("10.0.0.12", mixed, code_ok=bad[0], secret_ok=bad[1])
+        code_, detail = refused("10.0.0.12", mixed, code_ok=True, secret_ok=True)
+        check("§3 密码猜错和配对码猜错记在同一桶里",
+              code_ == "PEER_BUSY" and detail.get("reason") == "too many failed codes",
+              f"{code_} {detail} {len(service._code_failures.get('10.0.0.12', []))}")
+
+        # The window slides per failure, so the release belongs to the oldest one. Rewinding only
+        # that record opens the door - and the bucket that filled a moment ago stays shut.
+        for _ in range(proto.pair_code_max_fails):
+            refused("10.0.0.13", slid)
+        service._code_failures["10.0.0.13"][0] -= proto.pair_code_lock_s + 1
+        opened = refused("10.0.0.13", slid, code_ok=True, secret_ok=True)
+        check("§3 60 秒从最早那一次失败起算：那一条一满，门就开了",
+              opened[0] == "PAIRED" and isinstance(opened[1].get("token"), str), opened)
+        release()
+        code_, detail = refused("10.0.0.11", guesser, code_ok=True, secret_ok=True)
+        check("§3 同一时刻另一路还锁着：这道锁量的是各来源自己那五次",
+              code_ == "PEER_BUSY" and detail.get("reason") == "too many failed codes", f"{code_} {detail}")
+
+        # And 「来源」 means what it says: a bucket nobody filled is still answering on its own mistakes
+        # while the first one is locked. Both phones fold an unreadable address into one shared '?'
+        # bucket for the same reason (app-android/CsServe.kt, app-harmony/index.uts) - a per-connection
+        # number would hand a guesser a clean allowance on every retry, and a global one would let
+        # anybody lock out the whole LAN.
+        release()
+        code_16 = refused("10.0.0.16", single)[0]
+        opened14 = refused("10.0.0.14", other, code_ok=True, secret_ok=True)
+        check("§3 「来源」按地址分桶：那一路锁着，这一路只错了一次、答的仍是配对码不对，而且照样进",
+              code_16 == "BAD_PAIR_CODE" and len(service._code_failures["10.0.0.16"]) == 1
+              and opened14[0] == "PAIRED" and isinstance(opened14[1].get("token"), str),
+              f"{code_16} {opened14[0]} {sorted(service._code_failures)}")
+        release()
+
+        # Nothing about this list is written to disk. A restart is a fresh allowance on every end -
+        # which is a real property of a LAN receiver, not an oversight to be fixed by a stranger.
+        for _ in range(proto.pair_code_max_fails):
+            refused("10.0.0.15", rebooted)
+        again = ReceiveService(receiver, "PC-Throttle-Restarted", lambda manifest, who, caller: True,
+                               host="127.0.0.1", port=0, root=workspace / "throttle-received")
+        again.start()
+        try:
+            answered = refused("10.0.0.15", rebooted, into=again, code_ok=True, secret_ok=True)
+            old_records = len(service._code_failures.get("10.0.0.15", []))
+            fresh_records = sum(len(v) for v in again._code_failures.values())
+            check("§3 这份失败清单哪一端都不落盘：重启接收方以后那道锁是空的",
+                  answered[0] == "PAIRED" and isinstance(answered[1].get("token"), str)
+                  and old_records == proto.pair_code_max_fails and fresh_records == 0,
+                  f"旧进程里那一路记了 {old_records} 条，新进程一条都没有：{answered[0]}")
+        finally:
+            again.stop()
+    finally:
+        service.stop()
+
+
 def main() -> int:
     proto = protocol_spec.load()
     REPORT.write_text("", encoding="utf-8")
@@ -2112,6 +2264,7 @@ def main() -> int:
         phase_discovery(proto, workspace)
         phase_reverse_pin(proto, workspace)
         phase_shared_identity(proto, workspace)
+        phase_pair_throttle(proto, workspace)
     phase_catalogue(proto)
     check("chunks per file match the contract", proto.chunk_size == 4194304, proto.chunk_size)
     # The four shapes §7 can arrive in; the wire legs above are what prove both ends consult them.

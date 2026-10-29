@@ -24,6 +24,13 @@ export const PAIR_CODE_TTL_S: number = 120
  *  PAIR_CODE_TTL_S is only what a build that ignores this flag would rotate on. */
 export const PAIR_CODE_STATIC: boolean = true
 export const PASSPHRASE_CHARS: number = 8
+/** spec §3's throttle: PAIR_CODE_MAX_FAILS failures from one source, each alive for
+ *  PAIR_CODE_LOCK_S seconds on its own. The window slides per failure, so the block lifts that long
+ *  after the OLDEST of them, not after the attempt that found the door shut - a refused guess adds
+ *  no record. `transport.pair_code_max_fails` / `pair_code_lock_s` in the contract; the PC receiver
+ *  reads the same two out of protocol.json instead of typing them. */
+export const PAIR_CODE_MAX_FAILS: number = 5
+export const PAIR_CODE_LOCK_S: number = 60
 /** How long a stalled peer may keep the one session slot, and how long an accepted offer may go
  *  without a chunk, in seconds. Both are floors (spec §3, §4): this device may reclaim later than
  *  they say, never sooner. A phone has the same problem a PC has - a sender that pairs and then

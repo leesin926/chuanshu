@@ -26,6 +26,8 @@ import {
 	PAIR_CODE_TTL_S,
 	PAIR_CODE_STATIC,
 	PASSPHRASE_CHARS,
+	PAIR_CODE_MAX_FAILS,
+	PAIR_CODE_LOCK_S,
 	SESSION_IDLE_S,
 	OFFER_IDLE_S,
 	OFFER_WAIT_S,
@@ -42,10 +44,11 @@ import {
 } from './cs-protocol.uts'
 
 /** Constants from the PC receiver: the anti-replay window, and the lockout that stops a peer
- *  brute-forcing a six-digit code (10^6 guesses is not a theoretical risk on a LAN). */
+ *  brute-forcing a six-digit code (10^6 guesses is not a theoretical risk on a LAN).
+ *  The lockout's two numbers are the contract's (§3, `transport.pair_code_max_fails` /
+ *  `pair_code_lock_s`), so they come from cs-protocol.uts with every other mirrored value; only the
+ *  replay window, which the contract leaves to each end, stays typed here. */
 const REPLAY_WINDOW_S: number = 300
-const CODE_LOCK_S: number = 60
-const CODE_MAX_FAILS: number = 5
 
 export type HexFn = (buf: ArrayBuffer) => string
 /** base64 of the raw 32-byte Ed25519 key -> hex SHA-256 of its SPKI DER, '' when the key is
@@ -695,7 +698,7 @@ function prune(inbox: Inbox, now: number): void {
 		const keptTimes: number[] = []
 		const times = inbox.fails[i].times
 		for (let k = 0; k < times.length; k++) {
-			if (now - times[k] < CODE_LOCK_S) {
+			if (now - times[k] < PAIR_CODE_LOCK_S) {
 				keptTimes.push(times[k])
 			}
 		}
@@ -857,7 +860,7 @@ function pairReply(
 	let resumed = true
 	if (pinned == null) {
 		resumed = false
-		if (failCount(inbox, client) >= CODE_MAX_FAILS) {
+		if (failCount(inbox, client) >= PAIR_CODE_MAX_FAILS) {
 			return failWith('PEER_BUSY', { reason: 'too many failed codes' } as UTSJSONObject)
 		}
 		if (code != currentPairCode(inbox, now)) {

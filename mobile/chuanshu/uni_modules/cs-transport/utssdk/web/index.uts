@@ -17,6 +17,8 @@ import {
 	randomHex,
 	newPassphrase,
 	PASSPHRASE_CHARS,
+	PAIR_CODE_MAX_FAILS,
+	PAIR_CODE_LOCK_S,
 	SESSION_IDLE_S,
 	OFFER_IDLE_S,
 	OFFER_WAIT_S,
@@ -1286,6 +1288,36 @@ function askPairOn(box: Inbox, client: string, useCode: string, useSecret: strin
 	return askOn(box, client, 'POST', '/v1/pair', pairJson(SIM_PEER_ID, SIM_NAME, nonce, withKey, signature, useCode, useSecret, ''), '', new ArrayBuffer(0), '')
 }
 
+/** The same pair request, handed to the receiver at a clock reading of the caller's choosing.
+ *  §3's throttle is a sliding window, and a window cannot be measured from inside a page by waiting
+ *  sixty seconds - so the sixty seconds go on the ruler instead of on the wall. `askOn` takes the
+ *  wall clock; the kernel's own `now` parameter is what makes this leg possible at all. */
+function askPairAt(box: Inbox, client: string, useCode: string, useSecret: string, withKey: string, at: number): WireReply {
+	const nonce = randomHex(16)
+	const signature = b64(sha256Bytes(utf8(pairMessage(SIM_PEER_ID, nonce, ''))))
+	const req = new Req()
+	req.method = 'POST'
+	req.path = '/v1/pair'
+	req.json = pairJson(SIM_PEER_ID, SIM_NAME, nonce, withKey, signature, useCode, useSecret, '')
+	req.token = ''
+	req.body = new ArrayBuffer(0)
+	req.sha = ''
+	req.client = client
+	return handleReceive(box, receiverSelf(), at, req, recvHex, recvKeyFp, recvVerify,
+		recvPrepare, recvWrite, recvDigestFile, recvDrop)
+}
+
+/** How many failures this source has left in the receiver's window. Read out of the same list the
+ *  kernel counts, because the claim being measured is about that list's shape, not about a reply. */
+function failsOf(box: Inbox, client: string): number {
+	for (let i = 0; i < box.fails.length; i++) {
+		if (box.fails[i].client == client) {
+			return box.fails[i].times.length
+		}
+	}
+	return 0
+}
+
 function jsonOf(reply: WireReply): UTSJSONObject | null {
 	return parseJson(reply.body)
 }
@@ -2460,6 +2492,56 @@ export function receiveSelfReport(): string {
 		rpFirst.status.toString() + '→' + rpAgain.status.toString() + ' | ' + rpAgain.body)
 	check('§4 重投那一趟不再把同一个文件报第二遍：收到的清单只有一行',
 		arrivalsAll(rpBox).length == 1, arrivalsAll(rpBox).join('、'))
+
+	// 19. 第二十三轮巡检（#189）：§3 那句「同一来源 5 次失败锁 60s」两种读法都通——滑动窗口，或者"从被
+	// 锁住那一刻起再等 60 秒"。它们在第 59 秒给出同一个答案、在第 61 秒给出相反的答案，而三端做的是前者。
+	// 这一组把内核的 now 当尺子用，量那件纸面从没写下的事：拒的是次数不是码、被拒的尝试不给自己续期、
+	// 密码猜错和配对码猜错共用一个桶、"来源"按地址分桶、开门那一刻由最早那一次失败决定。
+	const tBox = newInbox()
+	const tAt = nowSeconds()
+	const tCode = currentPairCode(tBox, tAt)
+	const tSecret = passphraseOf(tBox, tAt)
+	const tWrong = tCode == '000000' ? '111111' : '000000'
+	const tKey = b64(randomBytes(32))
+	for (let i = 0; i < PAIR_CODE_MAX_FAILS; i++) {
+		askPairAt(tBox, '203.0.113.41', tWrong, tSecret, tKey, tAt + i)
+	}
+	const tLocked = askPairAt(tBox, '203.0.113.41', tCode, tSecret, tKey, tAt + PAIR_CODE_LOCK_S - 1)
+	check('§3 攒够 5 次以后连猜对也拒：说的是这道锁，不是码不对',
+		codeOfReply(tLocked) == 'PEER_BUSY' && detailOf(tLocked.body).indexOf('too many failed codes') >= 0,
+		codeOfReply(tLocked) + ' ' + detailOf(tLocked.body))
+	for (let i = 0; i < 3; i++) {
+		askPairAt(tBox, '203.0.113.41', tCode, tSecret, tKey, tAt + PAIR_CODE_LOCK_S - 1)
+	}
+	check('§3 被锁住期间的尝试不往清单里添记录：砸得再多也不会把这道锁推远',
+		failsOf(tBox, '203.0.113.41') == PAIR_CODE_MAX_FAILS, failsOf(tBox, '203.0.113.41').toString())
+	// 五次失败各隔一秒摊开，于是门该在第 61 秒开：最早那一条满 60 秒。要是这句读成"从被锁住那一次
+	// （第 5 秒）起算 60 秒"，第 61 秒还差 4 秒——同一次问答把两种读法分开。
+	const tOpen = askPairAt(tBox, '203.0.113.41', tCode, tSecret, tKey, tAt + PAIR_CODE_LOCK_S + 1)
+	const tOpenObj = jsonOf(tOpen)
+	check('§3 门在第 61 秒开：60 秒从最早那一次失败起算，不是从被锁住那一刻起算',
+		tOpenObj != null && tOpenObj!.getString('token', '') != '', tOpen.body)
+
+	const uBox = newInbox()
+	const uAt = nowSeconds()
+	const uCode = currentPairCode(uBox, uAt)
+	const uSecret = passphraseOf(uBox, uAt)
+	const uWrong = uCode == '000000' ? '111111' : '000000'
+	const uWrongSecret = '!' + uSecret.substring(0, PASSPHRASE_CHARS - 1)
+	askPairAt(uBox, '203.0.113.42', uWrong, uSecret, b64(randomBytes(32)), uAt)
+	askPairAt(uBox, '203.0.113.42', uCode, uWrongSecret, b64(randomBytes(32)), uAt)
+	askPairAt(uBox, '203.0.113.42', uWrong, uSecret, b64(randomBytes(32)), uAt)
+	askPairAt(uBox, '203.0.113.42', uCode, uWrongSecret, b64(randomBytes(32)), uAt)
+	askPairAt(uBox, '203.0.113.42', uWrong, uSecret, b64(randomBytes(32)), uAt)
+	const uFifth = askPairAt(uBox, '203.0.113.42', uCode, uSecret, b64(randomBytes(32)), uAt)
+	check('§3 密码猜错和配对码猜错记在同一桶里：三次码错加两次密码错，第六次猜全也拒',
+		codeOfReply(uFifth) == 'PEER_BUSY' && detailOf(uFifth.body).indexOf('too many failed codes') >= 0,
+		failsOf(uBox, '203.0.113.42').toString() + ' ' + detailOf(uFifth.body))
+	const uOther = askPairAt(uBox, '203.0.113.43', uCode, uSecret, b64(randomBytes(32)), uAt)
+	const uOtherObj = jsonOf(uOther)
+	check('§3 「来源」按地址分桶：这一路锁着，另一路照样进',
+		uOtherObj != null && uOtherObj!.getString('token', '') != '' && failsOf(uBox, '203.0.113.43') == 0,
+		uOther.body)
 
 	out.push(fail == 0 ? '接收自检 ' + pass.toString() + ' 项全部通过' : '接收自检失败 ' + fail.toString() + ' 项，通过 ' + pass.toString() + ' 项')
 	return out.join('\n')
