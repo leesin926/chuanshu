@@ -2856,6 +2856,22 @@ export function senderSelfReport(): string {
 	check('它没有把已经落齐的字节重写一遍：这一单只写过一次块', k.chunksSeen == 1, k.chunksSeen.toString())
 	check('此刻对方只被出示过一次 finalize：第二趟在那一秒之后', k.finalizeAsks == 1, k.finalizeAsks.toString())
 
+	// K. 第二十轮巡检（#186）欠的那条腿：§5 那句「发送方（PC 与手机）也按段拦」在手机这一半问的是**整条
+	// relpath**（`cs-client.uts:127-141` 逐条问 `pathReject`），而 `pathReject` 的按段行为早在第九轮那组 5d
+	// 里量过——**没量过的是这个调用点**：一条带点段的清单是不是真的在本地就停住、一个请求都不打到对面。
+	// 合同写的是「违规整单不发」（PC 那一半是「那一份不进清单，其余照发」），所以这里判的是整单停住。
+	const hidden = new ChunkSwallow()
+	const rhidden = new SenderRun()
+	runSender(hidden, 'sub/.git/config', rhidden, '')
+	check('relpath 中间那一段以点开头时，这一单在本地就停住', rhidden.done && !rhidden.ok, rhidden.summary)
+	check('说的是本地拦下，不是对面那句版本或路径不兼容', rhidden.summary.indexOf('本地就拦下') >= 0, rhidden.summary)
+	check('那一单一个清单都没打到对面', hidden.offerAsks == 0, hidden.offerAsks.toString())
+	const hiddenLeaf = new ChunkSwallow()
+	const rhiddenLeaf = new SenderRun()
+	runSender(hiddenLeaf, '.env', rhiddenLeaf, '')
+	check('叶子名自己以点开头的那一条同样在本地停住', rhiddenLeaf.done && !rhiddenLeaf.ok, rhiddenLeaf.summary)
+	check('它也没能把清单发出去', hiddenLeaf.offerAsks == 0, hiddenLeaf.offerAsks.toString())
+
 	out.push(fail == 0 ? '发送自检 ' + pass.toString() + ' 项全部通过' : '发送自检失败 ' + fail.toString() + ' 项，通过 ' + pass.toString() + ' 项')
 	return out.join('\n')
 }
