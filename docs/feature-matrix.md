@@ -1437,6 +1437,52 @@ Xcode，够不到任何一档编译门**——它改的原因只是共用的 sto
       还有一处是判据本身错了：`const entry: UTSJSONObject = {` 在整个文件里有两处（`state` 应答在 `:760` 也建条目），
       不加作用域就抓到 `['name','ok','received']`——**读源码字面量的守卫要先说清读的是哪个函数**。
 
+33. **#182：合同逐条巡检第十六轮——§4 那三条应答：纸上把清单那条画成只有一个 `accepted` 键、把「中止并清理」写成了这件事的全部，而还没人回答的那一问在 PC 上回的是「不认识的 id」**
+    （沿用 #140/#162/#163/#165/#167/#168/#171/#172/#174/#176/#177/#178/#179/#180/#181 的做法：本轮把 §4 里三条应答当三句**关于线上字节**的话读——
+    谁发这条应答、发的键集合是什么、合同那句「与 `GET state` 同一份 `files[]`」是不是字面上的同一份、这条 `DELETE` 覆盖哪几种时刻。动的是
+    合同那一份、PC 的接收内核与界面（一条信号）、PC 门禁十三条腿、这一端浏览器替身十条腿与一道守卫；**手机共用状态机与两个宿主一个字节没改**，
+    所以没上设备腿、没跑编译门。）
+    - **改前先量**（离线探针 `.probe/r16_reply_probe.py` → `.txt`）：[B] 还没人回答时重投清单，线上摊开是 `200 {'accepted','offer_id'}` 两个键，
+      纸上画的却是 `200 {"accepted": true}` 一个键，而且**同一条请求有两种答案那句话里只写了一种**；[D0] 这一单在接收方哪张表里——
+      `_asking=True _offers=False`，也就是说它还归"待决"那一格管；[D1] 发送方等满 `offer_wait_timeout_s` 自己按下取消 → 那条 `DELETE` 回的是
+      **`404 {"code": "OFFER_UNKNOWN"}`**，合同压根没写这条应答回什么；[D2] 撤完以后 `_asking` 还是 True、已决回答=None；[D3/D4] 于是**人在这期间点了接受，
+      那条 POST 回了 200、`登记成功了：True`**——接收方替一个已经不存在的发送方把这一单登记进来并开了文件；[D5] 清单被接受时发送方拿到的
+      `files[]` 是齐的（`received`/`missing` 都在，`received` 三端都发）；[A2] 重投清单与随后那次 `GET state` **逐字节相同**；[C1–C3] 撤一单已经登记的：
+      回 `dropped: true`、从表里消失、名下的文件没了，而那个空的 offer 目录留在原地（`残留=[]`，没人读它）。
+    - **两半都缺，缺一半修一半**：纸上缺的是三条应答的形状（`protocol/spec.md:173-230`，重搬进 `mobile/shared/protocol/`）——接受那条补成
+      一块真 json（顶键 `{offer_id, accepted, files}`、条目 `{id, received, missing}`），「同一份」按量到的写成**逐字节相同**并点名两个生产者
+      （`app/net/receive.py:148` 的 `payload()` 与 `cs-receive.uts::payloadOf`），待决那条补上「就只有这两个键，没有 `files[]`」，
+      `DELETE` 从零补成一段并列出**两种时刻**；`received` 与 `dropped` 都在场、哪一端都不判事，就把这句话写在纸上，跟 `mtime`/`type` 同一类，
+      不偷偷删掉已上线的字节（那是 §7 的决定）。代码缺的是 PC 那一半：`handle_abort`（`app/net/receive.py:833`）原来只认 `_offers`，现在
+      待决那一问也归它管（`:843-849` 记成 `withdrawn` 并通知界面），已登记那一支照旧逐文件 unlink（`:851-856`），`handle_offer` 对迟到的
+      「接受」回 `OFFER_UNKNOWN` 而不是开单（`:720`），界面接一条 `_offer_withdrawn` 把那张确认框关掉（`app/ui/transfer.py:499`、`:590`、
+      `:1445`、`:1736-1762`）。手机从 #59 起就是丢卡片那一支（`abortReply` 在 `cs-receive.uts:1143`），本轮一个字未改；那句待决的体在手机上
+      不归共用状态机、归**两个宿主自己写**——安卓 `app-android/index.uts:632`、鸿蒙 `store/session.uts:683`（鸿蒙的桥在页面层：ArkTS 那份插件
+      文件 import 不到同目录的 `.uts`，接收内核是 `serveBind` 上去的，所以这一格在鸿蒙上量的是页面层那一行）。
+    - **PC 十三条新腿**（`scripts/protocol_selftest.py:1212` `phase_offer_reply()`，注册在 `:1645`，`门禁`：
+      **178 条 PASS、`RESULT ALL PASS`**，比第十五轮多 13 条，单相 `.probe/r16_phase_report.txt`、全量 `.probe/r16_selftest_full.log`）：合同那块
+      json 解析出来必须等于这条应答；待决时重投只有两个键；撤一单还没人答的回的是 `offer_id`+`dropped`，并且**这一端手里那一问被告知停下**
+      （`withdrawn` 记上而不是「不认识」）；撤走之后重投拿 `OFFER_UNKNOWN` 而不是第二张确认框；**人在这期间点的「接受」拿的也是 `OFFER_UNKNOWN`**；
+      这一单既没登记进接收表、磁盘上也没替它开档；接受那条摊开就是纸上三个顶层键 + 条目三个数；「与 `GET state` 同一份」量成 123 vs 123 字节；
+      落齐之后回的还是同一形状、只是那三个数换成完成后的值；撤一单已经填完的回的仍是那两个键、名下文件也没了；撤完以后 `GET state` 与重投清单
+      都拿 `OFFER_UNKNOWN`。其中**已登记那一支故意建了一个不传 `on_withdrawn` 的服务**（`:1311`）——命令行没有卡片可关，那条路径也必须撤得下来。
+    - **这一端十条腿**（`mobile/chuanshu/uni_modules/cs-transport/utssdk/web/index.uts:2265` 起，`§4 待决/中止/接受/那句/落齐` 各若干），档位 `浏览器`：
+      **接收自检 123 → 133 项全部通过**、发送自检 32 项照旧全绿（`.probe/r16_web_after.txt`，屏上逐条读到，含那一句
+      「§4 那句『与 GET state 同一份 `files[]`』在这一端也是逐字节的同一份：发送端因此一条 GET 都不用补」）。红的那一条从头到尾是量法，不是端上有病。
+    - **守卫从 17 行加到 18 行**（`mobile/scripts/check_protocol.py:625` `check_offer_reply_shapes()`，`main()` 在 `:828` 调用）：钉的还是**形状**——
+      合同里提到 `accepted` 的 json 块必须只有一个、顶键与条目键集合等于两端内核各自那处字面量，且 PC 的两条应答必须**出自同一个函数**
+      （`handle_offer` 与 `handle_state` 都得是 `return state.payload()`，否则「同一份」又是两个实现）；`handle_abort` 两处都必须回那两个键、
+      必须认得 `_asking`、必须记成 `withdrawn`、`handle_offer` 必须还挡得住迟到的「接受」；界面必须还接着这条中止；两个宿主那一行各且只有一处
+      写 `accepted:false` 且**那一行不许摊开 `files[]`**；两端发送方不许改成拿 `received` 判事；那句「没人拿它判事」「逐字节相同」「不登记、不开档」
+      都必须在纸上；PC 门禁那一相必须存在且被调用（行形状）；这一端腿数有下限。**36 处负向每一处都单独红**（`.probe/r16_negatives.py` →
+      `.probe/r16_guard_negatives.txt`），还原后守卫 `rc=0` 全绿、看住的九个文件字节等于改动前。三处第一次跑不对：两处是**同一门课**——合同那句
+      散文会在任意宽度处换行，`needle not in section` 判的是原文，纸上的句子明明在、守卫却红；把 §4 折掉空白再比（`said()`）才算读句子而不是读字。
+      另一处是 PC 内核里 `restored.payload()` 那句也满足「走 payload()」的子串判据，负向拧红后守卫照样 OK——判据收成 `return state.payload()`
+      这一句才分得开。还有一处是发送方读键的那条正则抓不到 `body["received"]`（闭引号在方括号外面），改形状才拦住。
+    - **屏上那句话走了 i18n**：新增的「对方撤回了这次发送，确认框已关闭。」进七份目录时，`pybabel update` 从**上一轮那句**（「对方的这次发送
+      已经等不到回答…」）猜了一个 fuzzy——两句说的是两件事，旧的是这一端等满窗口，新的是对方在上线说了这单不要了；按字面改掉 fuzzy、
+      `scripts/i18n_sync.py` 镜像 zh_CN、`pybabel compile`，运行时 `gettext` 读回的是那句新话（`locale/en` 出的那句、zh_CN 原样），两句话在目录里并存且各归各。
+
 ### 需要用户点头才能做的四件事
 - 唤醒/解锁并使用那台个人鸿蒙真机（#45/#46 + 鸿蒙发现真机腿）。
 - 跑 `pack --iscustom`（Android 自定义基座，#36/#90 的钥匙，也是 #143 那条"退到后台还收得到"的钥匙）。

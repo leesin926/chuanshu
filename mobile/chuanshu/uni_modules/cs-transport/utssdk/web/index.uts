@@ -2241,6 +2241,88 @@ export function receiveSelfReport(): string {
 	deviceNameSave('', function (why: string): void {})
 	check('改完收回，hello 又回落到这端自己的称呼', helloName() == hardwareName())
 
+	// 16. spec §4's three replies, read as the bytes they are (#182). The paper used to show the accepted
+	// manifest as `200 {"accepted": true}` and the abort as having no body at all, while this kernel answers
+	// both with more than that - and the phone's own sender pushes straight from the manifest reply without
+	// ever asking `GET …/state` (`cs-client.uts:610`), so "同一份 `files[]`" is what saves a round trip here
+	// rather than a nicety. The half that was missing in code was the *when* of the abort: a pending offer
+	// already lives in this end's inbox, so its DELETE is a withdrawal, not an unknown id, and the card has
+	// to stop asking instead of allocating files for a peer that walked away.
+	const replyBox = newInbox()
+	const replyPair = askPairOn(replyBox, SIM_PEER_ID, currentPairCode(replyBox, nowSeconds()),
+		passphraseOf(replyBox, nowSeconds()), simKey)
+	const replyObj = jsonOf(replyPair)
+	const replyToken = replyObj == null ? '' : replyObj!.getString('token', '')
+	const replyOffer = (text: string): WireReply => {
+		return askOn(replyBox, SIM_PEER_ID, 'POST', '/v1/offer', text, replyToken, new ArrayBuffer(0), '')
+	}
+	const replyTell = (method: string, path: string): WireReply => {
+		return askOn(replyBox, SIM_PEER_ID, method, path, '', replyToken, new ArrayBuffer(0), '')
+	}
+	const waitId = hexOf(randomBytes(8))
+	const waitManifest = offerJson(waitId, simFilesFor(SCRATCH_TEXT, SCRATCH_BIG), SIM_PEER_ID, SIM_NAME)
+	const waitReply = replyOffer(waitManifest)
+	check('§4 待决那一问不给落点：还没人点头时这一端只说「还没人决定」，一个 files[] 都不摊开',
+		waitReply.pending && waitReply.body == ''
+		&& snapshot(replyBox, nowSeconds()).pendingOfferIds.length == 1,
+		'pending=' + waitReply.pending.toString() + ' 体=' + waitReply.body)
+	const waitGone = replyTell('DELETE', '/v1/offer/' + waitId)
+	const waitGoneObj = jsonOf(waitGone)
+	const waitGoneKeys: string[] = waitGoneObj == null ? [] : UTSJSONObject.keys(waitGoneObj!)
+	check('§4 中止覆盖还没人答的那一问：回的就是 offer_id+dropped 这两个键，卡片当场下台',
+		waitGone.status == 200 && sameKeys(waitGoneKeys, ['offer_id', 'dropped'])
+		&& waitGoneObj!.getBoolean('dropped', false) && waitGoneObj!.getString('offer_id', '') == waitId
+		&& snapshot(replyBox, nowSeconds()).pendingOfferIds.length == 0, waitGone.body)
+	const lateAccept = resolveOffer(replyBox, waitId, true, recvPrepare, recvDrop)
+	check('§4 撤走之后才点下的「接受」不登记这一单，也不替它开一个文件',
+		codeOfReply(lateAccept) == 'OFFER_UNKNOWN' && !recvStore.has(landOf(waitId, SCRATCH_TEXT))
+		&& !recvStore.has(landOf(waitId, SCRATCH_BIG)), lateAccept.body)
+	check('§4 撤走之后重投同一份清单，拿回的还是那句 OFFER_UNKNOWN',
+		codeOfReply(replyOffer(waitManifest)) == 'OFFER_UNKNOWN')
+
+	const sameFiles = simFilesFor(SCRATCH_TEXT, SCRATCH_BIG)
+	const sameId = hexOf(randomBytes(8))
+	replyOffer(offerJson(sameId, sameFiles, SIM_PEER_ID, SIM_NAME))
+	const sameAccepted = resolveOffer(replyBox, sameId, true, recvPrepare, recvDrop)
+	const sameObj = jsonOf(sameAccepted)
+	const sameTop: string[] = sameObj == null ? [] : UTSJSONObject.keys(sameObj!)
+	const sameList = sameObj == null ? null : sameObj!.getArray<UTSJSONObject>('files')
+	const sameEntry = sameList != null && sameList!.length == 2 ? sameList![0] : null
+	check('§4 接受那一条摊开就是纸上这块：顶层 offer_id+accepted+files，每条目 id/received/missing 三个数',
+		sameKeys(sameTop, ['offer_id', 'accepted', 'files']) && sameEntry != null
+		&& sameKeys(UTSJSONObject.keys(sameEntry!), ['id', 'received', 'missing'])
+		&& sameEntry!.getString('id', '') == sameFiles[0].id
+		&& sameEntry!.getNumber('received', -1) == 0 && numList(sameEntry!.getArray<number>('missing')).length > 0,
+		sameTop.join(',') + ' | ' + (sameEntry == null ? '不到两条' : UTSJSONObject.keys(sameEntry!).join(',')))
+	const sameState = replyTell('GET', '/v1/offer/' + sameId + '/state')
+	check('§4 那句「与 GET state 同一份 files[]」在这一端也是逐字节的同一份：发送端因此一条 GET 都不用补',
+		sameState.status == 200 && sameAccepted.body == sameState.body, sameState.body)
+	for (let k = 0; k < sameFiles.length; k++) {
+		const bytes = simFileOf(sameFiles[k].relpath)
+		for (let c = 0; c < chunkCount(bytes.length); c++) {
+			const part = sliceOf(bytes, c * CHUNK_SIZE, chunkSizeAt(bytes.length, c))
+			askOn(replyBox, SIM_PEER_ID, 'PUT', '/v1/offer/' + sameId + '/chunk/' + sameFiles[k].id + '/' + c.toString(),
+				'', replyToken, part.buffer as ArrayBuffer, hexOf(sha256Bytes(part)))
+		}
+	}
+	const filledObj = jsonOf(replyTell('GET', '/v1/offer/' + sameId + '/state'))
+	const filledList = filledObj == null ? null : filledObj!.getArray<UTSJSONObject>('files')
+	const filledEntry = filledList != null && filledList!.length == 2 ? filledList![0] : null
+	check('§4 落齐之后回的还是同一形状，只是那三个数换成完成后的值：missing 空、received 记满',
+		filledEntry != null && numList(filledEntry!.getArray<number>('missing')).length == 0
+		&& filledEntry!.getNumber('received', -1) == chunkCount(sameFiles[0].size),
+		filledObj == null ? 'state 读不懂' : filledObj!.getString('accepted', 'x'))
+	const filledGone = replyTell('DELETE', '/v1/offer/' + sameId)
+	const filledObj2 = jsonOf(filledGone)
+	const filledKeys: string[] = filledObj2 == null ? [] : UTSJSONObject.keys(filledObj2!)
+	check('§4 中止：填完的一单撤掉，回的仍是那两个键',
+		filledGone.status == 200 && sameKeys(filledKeys, ['offer_id', 'dropped']), filledGone.body)
+	check('§4 中止：撤掉之后 state 说没有这一单，续传台账里也不再留着它',
+		codeOfReply(replyTell('GET', '/v1/offer/' + sameId + '/state')) == 'OFFER_UNKNOWN'
+		&& stateAll(replyBox).length == 0, '')
+	check('§4 中止：撤掉之后重投同一份清单，拿的还是 OFFER_UNKNOWN 而不是重新问一遍',
+		codeOfReply(replyOffer(offerJson(sameId, sameFiles, SIM_PEER_ID, SIM_NAME))) == 'OFFER_UNKNOWN')
+
 	out.push(fail == 0 ? '接收自检 ' + pass.toString() + ' 项全部通过' : '接收自检失败 ' + fail.toString() + ' 项，通过 ' + pass.toString() + ' 项')
 	return out.join('\n')
 }

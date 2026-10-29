@@ -622,6 +622,146 @@ def check_finalize_reply() -> None:
              "phone side proves the indexes came from the finalize answer rather than a GET /state")
 
 
+def check_offer_reply_shapes() -> None:
+    """§4's three answers - the accepted manifest, the pending one, the abort - are claims about bytes.
+
+    Round sixteen (#182) read the section against all four bodies that write them. The paper showed
+    `200 {"accepted": true}` for a manifest somebody said yes to, while both receivers answered three
+    top keys and three entry keys - and, on the phone, the sender spends that body as its chunk plan
+    instead of asking `GET /state`, so a reader copying the block would have built a plan from a `files`
+    array that was not there. The abort reply was not written down at all, and the half that mattered
+    most was missing from the PC: 「中止并清理」 covered only an offer already being filled, so a sender
+    that timed out waiting left the receiver's dialog open, where a late 接受 would register and allocate
+    files for a peer that had gone. Every one of those is now on the paper and has to stay one shape here.
+    """
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    section = spec.split("## 4.", 1)[1].split("\n## ", 1)[0] if "## 4." in spec else ""
+    flat = re.sub(r"\s+", "", section)
+
+    def said(needle: str) -> bool:
+        """§4's prose wraps mid-sentence at whatever width it was typed at, so a check that wants a whole
+        clause reads the section with its line breaks folded out of the way."""
+        return re.sub(r"\s+", "", needle) in flat
+
+    blocks = [one for one in re.findall(r"```json\n(.*?)```", section, re.S) if '"accepted"' in one]
+    if len(blocks) != 1:
+        fail(f"§4 holds {len(blocks)} json blocks mentioning accepted - one reply needs one shape")
+    reply = json.loads(blocks[0])
+    top = set(reply)
+    if top != {"offer_id", "accepted", "files"}:
+        fail(f"§4's accepted-manifest reply is top-level {sorted(top)} - all four bodies answer "
+             "offer_id/accepted/files")
+    if not isinstance(reply.get("files"), list) or len(reply["files"]) != 1:
+        fail("§4's accepted-manifest reply no longer shows one entry per file")
+    entry = set(reply["files"][0])
+    if entry != {"id", "received", "missing"}:
+        fail(f"§4's reply entry holds {sorted(entry)} - both receivers build id/received/missing and the "
+             "phone's statePlans() reads id/received/missing")
+
+    # 「同一份」 is the load-bearing word: the offer answer and the state answer are produced by one
+    # function per end, so pinning the two literals separately would let them drift apart on a green gate.
+    if not said("和 `GET /v1/offer/{id}/state` 逐字节相同"):
+        fail("§4 no longer promises the accepted reply is byte-identical to GET state - that sentence is "
+             "what the phone's no-extra-round-trip depends on")
+    recv = (HERE.parent / "app" / "net" / "receive.py").read_text(encoding="utf-8")
+    pc_body = recv.split("def payload(self) -> dict:", 1)[1].split("        return {", 1)[1].split("\n        }\n", 1)[0]
+    # One indent level in is the reply's own keys; two is one entry's. Read by depth rather than by
+    # taking every key in the literal, because `{"id", "received", "missing"}` sits inside it.
+    pc_top = set(re.findall(r'^            "(\w+)":', pc_body, re.M))
+    pc_line = next((one for one in pc_body.splitlines() if one.startswith(" " * 16) and '{"' in one), "")
+    pc_entry = set(re.findall(r'"(\w+)":', pc_line))
+    if pc_top != top:
+        fail(f"app/net/receive.py's OfferState.payload() answers {sorted(pc_top)} while §4's block holds {sorted(top)}")
+    if pc_entry != entry:
+        fail(f"app/net/receive.py's OfferState.payload() answers {sorted(pc_entry)} per entry while §4's "
+             f"block holds {sorted(entry)}")
+    for fn in ("def handle_offer", "def handle_state"):
+        body = recv.split(fn, 1)[1].split("\n    def ", 1)[0]
+        if "return state.payload()" not in body:
+            fail(f"app/net/receive.py's {fn.replace('def ', '')}() no longer answers from "
+                 "OfferState.payload() - the two replies are two implementations again, and §4 says one")
+
+    utssdk = HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk"
+    kernel = (utssdk / "cs-receive.uts").read_text(encoding="utf-8")
+    if "return { offer_id: offer.offerId, accepted: true, files: list } as UTSJSONObject" not in kernel:
+        fail("cs-receive.uts's payloadOf() no longer answers {offer_id, accepted, files}")
+    if "{ id: file.id, received: file.chunks.size, missing: missing }" not in kernel:
+        fail("cs-receive.uts's payloadOf() no longer answers id/received/missing per entry")
+    # The browser's stand-in peer is the fourth body: it answers this end's own kernel's shapes, so a key
+    # written wrong there teaches the sender legs to expect a reply no real peer sends.
+    harness = (utssdk / "web" / "index.uts").read_text(encoding="utf-8")
+    if "return { offer_id: offer.offerId, accepted: true, files: list } as UTSJSONObject" not in harness:
+        fail("web/index.uts's demo peer no longer answers the same three top keys as the real receivers")
+
+    # The pending answer: two keys, and no landing to report because nobody has chosen one yet.
+    if not said('这条应答就只有这两个键，没有 `files[]`'):
+        fail("§4 no longer says the pending answer carries only offer_id and accepted - a third key here "
+             "would be a 落点 the receiver has not decided")
+    for label, path in (("app-android/index.uts", utssdk / "app-android" / "index.uts"),
+                        ("store/session.uts", HERE / "chuanshu" / "store" / "session.uts")):
+        emitter = [one for one in (path.read_text(encoding="utf-8").splitlines()) if '"accepted":false' in one]
+        if len(emitter) != 1:
+            fail(f"{label} answers a waiting offer with {len(emitter)} lines carrying accepted:false - "
+                 "the pending reply is one shape and it is this host's job to write it")
+        if "files" in emitter[0]:
+            fail(f"{label}'s pending reply carries a files[] before anyone has decided a landing (spec §4)")
+
+    # The abort reply: named on paper, sent by both receivers, read by nobody.
+    if not said('`200 {"offer_id": "…", "dropped": true}`'):
+        fail("§4 no longer states what DELETE /v1/offer/{id} answers - the sentence went away, but all "
+             "four bodies still send those two keys")
+    if recv.count('return {"offer_id": offer_id, "dropped": True}') != 2:
+        fail("app/net/receive.py's handle_abort() no longer answers {offer_id, dropped} in both branches - "
+             "the offer being filled and the question nobody has answered are two moments, and both are 中止")
+    if "{ offer_id: offerId, dropped: true }" not in kernel:
+        fail("cs-receive.uts's abortReply() no longer answers {offer_id, dropped}")
+    abort = recv.split("def handle_abort", 1)[1].split("\n    def ", 1)[0]
+    if "offer_id in self._asking" not in abort or '_remember(offer_id, "withdrawn")' not in abort:
+        fail("app/net/receive.py's handle_abort() does not know the question still in flight - §4's 还没有人回答的"
+             "那一半 is the sender's own timeout, and an id only present in _asking is that half")
+    offer_fn = recv.split("def handle_offer", 1)[1].split("\n    def ", 1)[0]
+    if '== "withdrawn"' not in offer_fn:
+        fail("app/net/receive.py's handle_offer() answers a withdrawn offer again instead of saying "
+             "OFFER_UNKNOWN - a late 接受 must not open files for a sender that already left")
+    ui = (HERE.parent / "app" / "ui" / "transfer.py").read_text(encoding="utf-8")
+    if "on_withdrawn=self._offer_withdrawn.emit" not in ui:
+        fail("app/ui/transfer.py no longer closes the dialog when the peer withdraws - the service can stop "
+             "the offer and leave the person staring at a yes/no about bytes nobody sends")
+    for needle in ("已经登记在填的一单", "还没有人回答的那一问", "不登记、不开档"):
+        if not said(needle):
+            fail(f"§4's 中止 no longer spells out {needle} - the two moments are the clause; without one "
+                 "of them a reader implements half of it, which is what this round found")
+
+    # Who reads what: `received` and `dropped` are on the wire and judged by nobody.
+    if not said('但没有任何一端拿它判事'):
+        fail("§4 no longer says `received` decides nothing - a number that is parsed but never judged has "
+             "to be marked as such or the next reader starts trusting it")
+    send = (HERE.parent / "app" / "net" / "send.py").read_text(encoding="utf-8")
+    if re.search(r'\[(?:"|\x27)(received|dropped)(?:"|\x27)\]|\.get\((?:"|\x27)(received|dropped)(?:"|\x27)', send):
+        fail("app/net/send.py reads received/dropped out of a reply - the PC sender judges only `accepted`, "
+             "then the missing table: those two numbers are on the wire and decided by nobody")
+    client = (utssdk / "cs-client.uts").read_text(encoding="utf-8")
+    if re.search(r"get(?:Boolean|Number|String)\('(received|dropped)'", client):
+        fail("cs-client.uts reads received/dropped out of a reply - the phone's sender pushes from `missing` "
+             "and gives up on a non-200, not on a number either end lets it decide")
+    if "pushChunks(offerId, statePlans(body)" not in client:
+        fail("cs-client.uts no longer feeds the accepted reply straight into statePlans() - §4's 「同一份 "
+             "files[]」 is the round trip this end does not pay for, and if it goes away the sentence lies")
+    protocol = (utssdk / "cs-protocol.uts").read_text(encoding="utf-8")
+    if "entry.getNumber('received', 0)" not in protocol:
+        fail("cs-protocol.uts no longer parses received into ChunkPlan - §4 lists it as 在场的字节 and says so")
+
+    selftest = (HERE.parent / "scripts" / "protocol_selftest.py").read_text(encoding="utf-8")
+    if "def phase_offer_reply(" not in selftest or \
+            re.search(r"^\s+phase_offer_reply\(proto, workspace\)$", selftest, re.M) is None:
+        fail("scripts/protocol_selftest.py has no offer-reply phase in its run - the three shapes and the "
+             "withdrawal of a question nobody answered are unmeasured again")
+    legs = len(re.findall(r"check\(\s*'§4 (待决|中止|接受|那句|落齐)", harness))
+    if legs < 8:
+        fail(f"the receiving kernel has {legs} §4 reply legs - the shared kernel needs to answer all three "
+             "shapes itself, not only trust this guard")
+
+
 def main() -> int:
     stamp_path = CONTRACT / "SOURCE.json"
     for name in ("protocol.json", "spec.md", "SOURCE.json"):
@@ -685,6 +825,7 @@ def main() -> int:
     check_sender_limit()
     check_manifest_fields()
     check_finalize_reply()
+    check_offer_reply_shapes()
 
     print(f"OK  protocol v{body['protocol_version']} from {stamp['source_repo']}@{stamp['source_commit'][:8]}")
     print(f"OK  {len(body['error_codes'])} error codes, {len(body['endpoints'])} endpoints, chunk {chunk // 1024} KiB")
@@ -705,6 +846,7 @@ def main() -> int:
     print("OK  §5's sender-side limit has a body in every sender: PC plan()/offer(), the phone's client, both screens")
     print("OK  §4's manifest block is the wire: both senders' keys, and no receiver acts on total_size")
     print("OK  §4's finalize reply is one shape on paper and in both receivers; `missing` is who both senders resend by")
+    print("OK  §4's three offer replies are one shape on paper and in all four bodies; the abort knows the question still open")
     return 0
 
 

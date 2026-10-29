@@ -494,6 +494,9 @@ class TransferPanel(QWidget):
     #: The server thread gave up waiting. The card is still on screen and the user has not
     #: answered, so it has to go - a 接收 button that can no longer be honoured is a lie.
     _offer_expired = Signal(str)  # token
+    #: The sender withdrew this id (§4's DELETE) while the card was still open. Same job as the
+    #: expiry above, one second sooner and with a truer sentence: the other end said so on purpose.
+    _offer_withdrawn = Signal(str)  # offer id
     _peers_changed = Signal()  # emitted from discovery threads
     #: The idle reclaim took a session back (spec §3). Emitted from the receiver's threads and
     #: from the panel's own tick, so the roster has to stop naming a device it cannot reach.
@@ -528,6 +531,10 @@ class TransferPanel(QWidget):
         self._receiver: ReceiveService | None = None
         self._discovery: DiscoveryService | None = None
         self._decisions: dict[str, dict] = {}
+        #: Which card each offer id is asking about. The kernel's withdrawal (§4's DELETE against a
+        #: question still open) arrives with only the id, and this is the one place that knows which
+        #: token was handed out for it.
+        self._offer_ids: dict[str, str] = {}
         #: The offer cards currently on screen, by the token that asked for them. Only the GUI
         #: thread reads or writes this, which is what makes an expiring offer able to find its own
         #: card - the decision holder it lives next to is popped by the server thread the moment it
@@ -580,6 +587,7 @@ class TransferPanel(QWidget):
         self._timer.timeout.connect(self._refresh_pairing)
         self._offer_arrived.connect(self._on_offer)
         self._offer_expired.connect(self._close_offer)
+        self._offer_withdrawn.connect(self._withdraw_offer)
         self._peers_changed.connect(self._refresh_peers)
         self._peer_lost.connect(self._on_peer_lost)
         self._progressed.connect(self._on_progress)
@@ -1434,6 +1442,7 @@ class TransferPanel(QWidget):
             on_received=self._received_arrived.emit,
             on_paired=self._peer_paired.emit,
             on_lost=self._peer_lost.emit,
+            on_withdrawn=self._offer_withdrawn.emit,
         )
 
     def start_listening(self) -> None:
@@ -1675,9 +1684,12 @@ class TransferPanel(QWidget):
     def _decide(self, manifest: dict, who: str, caller: str) -> bool | Path:
         """Called from a server thread; blocks until the user answers or the offer lapses."""
         token = secrets.token_hex(6)
-        holder = {"answer": False, "event": threading.Event()}
+        holder = {"answer": False, "event": threading.Event(), "withdrawn": False}
+        offer_id = str(manifest.get("offer_id") or "")
         with self._ask_lock:
             self._decisions[token] = holder
+            if offer_id:
+                self._offer_ids[offer_id] = token
         self._offer_arrived.emit(manifest, who or f"{caller[:12]}…", token)
         if not holder["event"].wait(self.proto.offer_wait_timeout_s + 5.0):
             log.warning("nobody answered offer %s", manifest.get("offer_id"))
@@ -1685,9 +1697,22 @@ class TransferPanel(QWidget):
             self._offer_expired.emit(token)
         with self._ask_lock:
             self._decisions.pop(token, None)
+            if offer_id and self._offer_ids.get(offer_id) == token:
+                self._offer_ids.pop(offer_id, None)
         return holder["answer"]
 
     def _on_offer(self, manifest: dict, who: str, token: str) -> None:
+        with self._ask_lock:
+            holder = self._decisions.get(token)
+            withdrawn = bool((holder or {}).get("withdrawn"))
+        if withdrawn:
+            # The sender withdrew this id (§4's DELETE) in the moment before the card got up. Asking
+            # now would promise a transfer nobody is left to fill - and the kernel answers
+            # OFFER_UNKNOWN whatever is tapped, so the honest move is to stop asking out loud.
+            log.info("offer %s withdrawn before its card opened", token)
+            self.status_label.setText(_("对方撤回了这次发送，确认框已关闭。"))
+            self._resolve(token, False)
+            return
         dialog = _OfferDialog(self, manifest, who)
         dialog.move(self._center_of(dialog))
         self._offer_cards[token] = dialog
@@ -1708,16 +1733,33 @@ class TransferPanel(QWidget):
         size = dialog.sizeHint()
         return QPoint(frame.center().x() - size.width() // 2, frame.center().y() - size.height() // 2)
 
-    def _close_offer(self, token: str) -> None:
+    def _close_offer(self, token: str, withdrawn: bool = False) -> None:
         """Throw away a card whose server thread has already stopped waiting for an answer."""
         dialog = self._offer_cards.get(token)
         if dialog is None:
             return
         log.info("offer card for %s closed unanswered", token)
-        self.status_label.setText(_("对方的这次发送已经等不到回答，确认框已关闭。"))
+        self.status_label.setText(
+            _("对方撤回了这次发送，确认框已关闭。") if withdrawn
+            else _("对方的这次发送已经等不到回答，确认框已关闭。")
+        )
         # done() rather than close(): the card is in a nested modal loop, and this is the call that
         # both ends it and says which answer it ended with - 拒绝, the only one still true.
         dialog.done(QDialog.Rejected)
+
+    def _withdraw_offer(self, offer_id: str) -> None:
+        """The sender said, on the wire, that this id is dropped (§4's 「中止并清理」) while the card
+        is still open. Writing down the fact first is what lets a card that has not reached the
+        screen yet refuse to appear, and the server thread waiting on it answer 拒绝 rather than
+        allocate a folder for bytes nobody is left to send.
+        """
+        with self._ask_lock:
+            token = self._offer_ids.get(offer_id, "")
+            holder = self._decisions.get(token)
+            if holder is not None:
+                holder["withdrawn"] = True
+        if token:
+            self._close_offer(token, withdrawn=True)
 
     def _resolve(self, token: str, answer: bool | Path) -> None:
         with self._ask_lock:

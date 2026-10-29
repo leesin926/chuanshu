@@ -62,6 +62,10 @@ PairedHandler = Callable[[str, str, str, str], None]
 #: Fires when the idle reclaim of spec §3 takes a session back, so the roster can stop
 #: promising a connection that this machine no longer honours.
 LostHandler = Callable[[str], None]
+#: Fires when the sender withdraws an offer this machine is still asking about - §4's
+#: 「中止并清理」 for a transfer nobody has answered yet. The card has to know: a 接受 tap after
+#: this cannot start anything, because the end that would have written the bytes is gone.
+WithdrawnHandler = Callable[[str], None]
 
 
 def _digest(data: bytes) -> str:
@@ -318,6 +322,7 @@ class ReceiveService:
         on_received: ReceivedHandler | None = None,
         on_paired: PairedHandler | None = None,
         on_lost: LostHandler | None = None,
+        on_withdrawn: WithdrawnHandler | None = None,
     ) -> None:
         self.identity = identity
         self.device_name = device_name
@@ -325,6 +330,7 @@ class ReceiveService:
         self.on_received = on_received
         self.on_paired = on_paired
         self.on_lost = on_lost
+        self.on_withdrawn = on_withdrawn
         self.proto = protocol_spec.load()
         self.root = Path(root or receive_root())
         self._offers: dict[str, OfferState] = {}
@@ -686,7 +692,7 @@ class ReceiveService:
         with self._lock:
             asking = offer_id in self._asking
             outcome = self._answered.get(offer_id)
-        if asking:
+        if asking and outcome != "withdrawn":
             return {"offer_id": offer_id, "accepted": False}
         if outcome == "declined":
             raise protocol_spec.ProtocolError("DECLINED", {"offer_id": offer_id, "reason": "already declined"})
@@ -711,6 +717,13 @@ class ReceiveService:
         finally:
             with self._lock:
                 self._asking.discard(offer_id)
+        if self._answered.get(offer_id) == "withdrawn":
+            # §4's 「中止并清理」 reached this id while the question was still open, so whatever the
+            # person or the card answered afterwards is a decision about a transfer nobody is left to
+            # fill: an accepted offer would sit holding this end's one slot until the idle reclaim
+            # found it. The phone's `abortReply` drops the card outright; this is the same fact,
+            # stated to whoever asks again.
+            raise protocol_spec.ProtocolError("OFFER_UNKNOWN", {"offer_id": offer_id})
         if not answer:
             self._remember(offer_id, "declined")
             raise protocol_spec.ProtocolError("DECLINED")
@@ -820,7 +833,20 @@ class ReceiveService:
     def handle_abort(self, offer_id: str) -> dict:
         state = self._offers.pop(offer_id, None)
         if state is None:
-            raise protocol_spec.ProtocolError("OFFER_UNKNOWN", {"offer_id": offer_id})
+            # §4's 「中止并清理」 is not only about a transfer already being filled. The other half is
+            # the offer nobody has answered yet: the sender's own `offer_wait_timeout_s` expiring is a
+            # withdrawal (`app/net/send.py:_withdraw`, and the phone's `giveUp`), and this end keeps
+            # that one as a question in flight, not an entry in `_offers`. It used to answer
+            # OFFER_UNKNOWN and leave the person holding a dialog for bytes nobody is left to send
+            # (`.probe/r16_reply_probe.txt` D1/D4 - the phone's `abortReply` has always dropped it).
+            with self._lock:
+                asking = offer_id in self._asking
+            if not asking:
+                raise protocol_spec.ProtocolError("OFFER_UNKNOWN", {"offer_id": offer_id})
+            self._remember(offer_id, "withdrawn")
+            if self.on_withdrawn is not None:
+                self.on_withdrawn(offer_id)
+            return {"offer_id": offer_id, "dropped": True}
         # The sender walked away from this id. Same rule as the idle reclaim: it is ended here,
         # and a manifest that still arrives under it gets that answer rather than a new dialog.
         self._remember(offer_id, "ended")

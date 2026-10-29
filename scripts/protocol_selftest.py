@@ -1209,6 +1209,153 @@ def phase_finalize_reply(proto: protocol_spec.Protocol, workspace: Path) -> None
         service.stop()
 
 
+def phase_offer_reply(proto: protocol_spec.Protocol, workspace: Path) -> None:
+    """§4's three replies read as claims about the wire - and about the moment a `DELETE` lands.
+
+    Round-sixteen shape (§6 第 33 条): the paper showed the accepted manifest answer as
+    `200 {"accepted": true}` while all three receivers answer `{offer_id, accepted, files[]}` - the very
+    body `GET /v1/offer/{id}/state` gives back, same bytes, because one function makes both - and showed
+    no body at all for `DELETE`, which every receiver answers with `{offer_id, dropped}`. `files[].missing`
+    is what the phone's sender pushes from without a second request (`cs-client.uts:610`), so "同一份
+    `files[]`" is load-bearing, not a nicety; `received` and `dropped` travel on every reply and drive
+    nothing, which is written down rather than quietly deleted.
+
+    The half that was missing in code is the *when* of the abort: §4's 「中止并清理」 named only an offer
+    already being filled, and PC took that literally - an offer still waiting for its person was not in
+    `_offers`, so the `DELETE` a sender makes when its own window expires answered `OFFER_UNKNOWN` and
+    left the dialog on screen; a 接受 tapped afterwards registered the offer and opened files for a peer
+    that had already walked away (`.probe/r16_reply_probe.txt` D1/D4). The phones' `abortReply` has always
+    dropped the card, because a pending offer lives in their inbox. The legs below drive both halves.
+    """
+    spec = (ROOT / "protocol" / "spec.md").read_text(encoding="utf-8")
+    section = spec.split("## 4. 传输")[1].split("## 5.")[0]
+    block = next(json.loads(body) for body in re.findall(r"```json\n(.*?)```", section, re.S)
+                 if '"accepted"' in body)
+    contract_top = set(block.keys())
+    contract_entry = set(block["files"][0].keys())
+
+    base = workspace / "reply-corpus3"
+    base.mkdir(parents=True, exist_ok=True)
+    (base / "两块.bin").write_bytes(blob(16, proto.chunk_size + 7))
+    files = plan([base / "两块.bin"], base=base)
+
+    sender = load_or_create(workspace / "reply-sender3")
+    receiver = load_or_create(workspace / "reply-receiver3")
+
+    # --- the answer nobody has given yet -----------------------------------------------
+    deciding = threading.Event()
+    release = threading.Event()
+    withdrawn: list[str] = []
+
+    def ask_then_accept(manifest: dict, who: str, caller) -> bool:
+        deciding.set()
+        release.wait(60)
+        return True
+
+    pending_root = workspace / "reply-pending3"
+    service = ReceiveService(receiver, "PC-Reply3", ask_then_accept, host="127.0.0.1", port=0,
+                             root=pending_root, on_withdrawn=withdrawn.append)
+    service.start()
+    try:
+        conn = PeerConnection(sender, "PC-Reply3", "127.0.0.1", service.port, receiver.served_fingerprint)
+        conn.hello()
+        conn.pair(service.current_pair_code())
+        holder: dict = {}
+
+        def offer_in_background() -> None:
+            try:
+                holder["reply"] = conn.offer(files)
+            except Exception as exc:  # noqa: BLE001 - the answer this leg is about
+                holder["error"] = f"{type(exc).__name__}: {exc}"
+
+        thread = threading.Thread(target=offer_in_background, daemon=True)
+        thread.start()
+        deciding.wait(10)
+        time.sleep(0.3)
+        offer_id = conn.offer_id
+
+        # One peer holds one session token, so the second connection is paired only now - after the
+        # blocked POST is authenticated and in flight, and on its own socket.
+        other = PeerConnection(sender, "PC-Reply3", "127.0.0.1", service.port, receiver.served_fingerprint)
+        other.hello()
+        other.pair("")
+
+        status, body = other._request("POST", "/v1/offer", json_body=conn._manifest)
+        check("§4 待决应答：还没人回答时重投清单，回的体就只有 offer_id 与 accepted 两个键",
+              status == 200 and set(body) == {"offer_id", "accepted"} and body["accepted"] is False,
+              f"{status} {sorted(body)}")
+
+        status, dropped = other._request("DELETE", f"/v1/offer/{offer_id}")
+        check("§4 中止：撤一单还没人回答的，回的是 offer_id 加 dropped（发送方只在没回 200 时才读它）",
+              status == 200 and set(dropped) == {"offer_id", "dropped"} and dropped["dropped"] is True,
+              f"{status} {json.dumps(dropped, ensure_ascii=False)}")
+        check("§4 中止：这一端手里那一问被告知停下了，这个 offer_id 记成「已撤回」而不是「不认识」",
+              withdrawn == [offer_id] and service._answered.get(offer_id) == "withdrawn",
+              f"{withdrawn} {service._answered.get(offer_id)}")
+        status, again = other._request("POST", "/v1/offer", json_body=conn._manifest)
+        check("§4 中止：撤回之后同一份清单再投，拿的是 OFFER_UNKNOWN 而不是第二张确认框",
+              status == 404 and again.get("code") == "OFFER_UNKNOWN"
+              and again.get("detail") == {"offer_id": offer_id},
+              f"{status} {json.dumps(again, ensure_ascii=False)}")
+        release.set()
+        thread.join(20)
+        check("§4 中止：人在这期间点了「接受」，那一问拿到的答案也是 OFFER_UNKNOWN（不是 declined）",
+              holder.get("error", "").endswith("OFFER_UNKNOWN"), holder)
+        check("这一单既没有登记进接收表，磁盘上也没替它开档",
+              offer_id not in service._offers and not (pending_root / offer_id).is_dir(),
+              f"in table={offer_id in service._offers} dir={(pending_root / offer_id).is_dir()}")
+    finally:
+        service.stop()
+
+    # --- an offer that was answered, filled, then walked away from ----------------------
+    # No on_withdrawn here on purpose: a receiver with no card to close (the command line) must still
+    # answer these replies correctly - the callback is the screen's business, not the contract's.
+    root = workspace / "reply-received3"
+    service2 = ReceiveService(receiver, "PC-Reply3", lambda m, who, caller: True,
+                              host="127.0.0.1", port=0, root=root)
+    service2.start()
+    try:
+        conn = PeerConnection(sender, "PC-Reply3b", "127.0.0.1", service2.port, receiver.served_fingerprint)
+        conn.hello()
+        conn.pair(service2.current_pair_code())
+        payload = conn.offer(files)["state"]
+        check("§4 清单被接受那条 200 摊开就是纸上这块：顶层三个键、每个条目三个数",
+              set(payload) == contract_top and set(payload["files"][0]) == contract_entry,
+              f"{sorted(payload)} | entries={sorted(payload['files'][0])}")
+        offer_id = conn.offer_id
+        manifest_body = json.dumps(conn._manifest, ensure_ascii=False).encode("utf-8")
+        _, reposted, repost_raw = conn._once("POST", "/v1/offer", manifest_body,
+                                             {"Content-Type": "application/json"})
+        _, state, state_raw = conn._once("GET", f"/v1/offer/{offer_id}/state", b"", {})
+        check("§4 那句「与 GET state 同一份 files[]」是逐字节的同一份：重投已接受的清单与那次 GET 回同样的体",
+              repost_raw == state_raw and set(state) == contract_top and state["files"][0]["received"] == 0
+              and state["files"][0]["missing"] == [0, 1],
+              f"{len(repost_raw)} vs {len(state_raw)} 字节 | {state['files']}")
+
+        conn.push_missing(files, state, None, 3)
+        conn.finalize()
+        filled = conn._once("GET", f"/v1/offer/{offer_id}/state", b"", {})[1]
+        check("落齐之后回的还是同一形状：三个数都换成完成后的值，missing 空、received 记满",
+              set(filled) == contract_top and set(filled["files"][0]) == contract_entry
+              and filled["files"][0]["missing"] == [] and filled["files"][0]["received"] == 2,
+              filled["files"][0])
+
+        status, dropped = conn._request("DELETE", f"/v1/offer/{offer_id}")
+        check("§4 中止：撤一单已经填完的，回的仍是这两个键",
+              status == 200 and set(dropped) == {"offer_id", "dropped"}, f"{status} {sorted(dropped)}")
+        check("它从表里消失，名下的文件也没了",
+              offer_id not in service2._offers and not (root / offer_id / "两块.bin").exists(),
+              str(root / offer_id))
+        expect_error("§4 中止：撤掉之后 GET state 拿到 OFFER_UNKNOWN，而不是空表",
+                     "OFFER_UNKNOWN", conn.state)
+        _, again, _ = conn._once("POST", "/v1/offer", manifest_body, {"Content-Type": "application/json"})
+        check("§4 中止：撤掉之后同一份清单再投，拿的也是 OFFER_UNKNOWN（不是重新问一遍）",
+              again.get("code") == "OFFER_UNKNOWN" and again.get("detail") == {"offer_id": offer_id},
+              json.dumps(again, ensure_ascii=False))
+    finally:
+        service2.stop()
+
+
 def phase_discovery(proto: protocol_spec.Protocol, workspace: Path) -> None:
     """Two symmetric peers finding each other, then promoting a prefix to an anchor."""
     from app.net.discovery import DiscoveryService, Peer, adopt_hello
@@ -1495,6 +1642,7 @@ def main() -> int:
         phase_same_name(proto, workspace)
         phase_manifest_fields(proto, workspace)
         phase_finalize_reply(proto, workspace)
+        phase_offer_reply(proto, workspace)
         phase_chunk_reply_lost(proto, workspace)
         phase_discovery(proto, workspace)
         phase_reverse_pin(proto, workspace)

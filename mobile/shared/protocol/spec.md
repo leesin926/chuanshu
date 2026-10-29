@@ -173,22 +173,59 @@ manifest（这份摊开就是三端今天真发上线的字节，一个不多一
 键也不该在合同里缺席。这些字节属 v1 已上线的形状，拿掉任何一个是 §7 的兼容决定——本轮只把块补齐、
 把三个数的用途说清，不删。）
 
-响应：`200 {"accepted": true}` 或 `403 {"code": "DECLINED"}`；`accepted: true` 的那一份同时带回
-每个条目已经落地的分块（与 `GET /v1/offer/{id}/state` 同一份 `files[]`）。落点不在这条应答里说：
-每个文件最终写在哪儿，由本节末尾那份 `finalize` 回复逐条目报回（`path`，只在 `ok: true` 时非空），
-手机的发送端界面上那句「落到」读的是它。
+清单这条请求的答案只有两种：`403 {"code": "DECLINED"}`（对方不接），或者 200 那一份**和
+`GET /v1/offer/{id}/state` 逐字节相同**的体，一个键都不多：
+
+```json
+{"offer_id": "9f1c…", "accepted": true,
+ "files": [{"id": "a2b0…", "received": 0, "missing": [0, 1]}]}
+```
+
+`files[]` 每条三个数：`received` = 这一条目手里已经落地的分块数，`missing` = 还缺的块号；
+**「同一份」是字面上的同一份**——两条应答由同一函数产出来（PC `app/net/receive.py:145` 的
+`payload()`、手机 `cs-receive.uts::payloadOf`），刚接受时回全缺、落齐之后回 `missing: []`，
+形状不变（2026-10-29 第十六轮在 PC 上量到重投清单与随后那次 GET 的体长与字节全同，
+`.probe/r16_after_probe.txt` A1–A3、A4）。
+发送方读哪些键：PC 只判 `accepted`（`app/net/send.py:460`），缺块表另发一次 GET 去取
+（`:521`）；手机把这份体直接交给 `statePlans`（`cs-client.uts:610`），一条 GET 都不补——对它来说
+「同一份 `files[]`」是省掉一个来回的那件事。续传两端都只用 `files[].id` 与 `missing`；`received`
+三端都发，手机也把它解析进 `ChunkPlan.received`（`cs-protocol.uts:513`），但没有任何一端拿它判事——
+它和 `mtime`/`type` 同一类：在场的字节，不是工作中的字段。落点不在这条应答里说：每个文件最终写在
+哪儿，由本节末尾那份 `finalize` 回复逐条目报回（`path`，只在 `ok: true` 时非空），手机的发送端界面
+上那句「落到」读的是它。
 
 （2026-10-27 第四轮巡检：这一行原本写的是 `{"accepted": true, "root": "相册/"}`，而 `root` 这个键三端
 谁都不发、发送端谁都不读——PC 的应答是 `app/net/receive.py:145` 那份 `payload()`，手机是
 `cs-receive.uts::payloadOf`，两边都没有它。合同里不留没有实现体的字段。）
 
 **待决应答**：接收方不必把这条连接挂着等答案，可以立刻回
-`200 {"offer_id": "…", "accepted": false}`——"清单登记好了，还没人决定"。发送方见到
+`200 {"offer_id": "…", "accepted": false}`——"清单登记好了，还没人决定"。这条应答就只有这两个键，
+没有 `files[]`：还没有人点头，也就没有落点可报。发送方见到
 `accepted: false` 就按同一个 `offer_id` 原样重发这份 manifest 轮询，直到答案出现或等满
 `offer_wait_timeout_s`，超时按 `DECLINED` 处理。重发不等于第二次传输：同一个 `offer_id`
 只弹一次窗口；用户已经拒绝或这一单已经失败的回答按 `offer_id` 记在本场会话里，再问一遍就拿
 同一份回答，不会因此又去打扰用户。能挂住连接的一方（PC、Android）照旧在这条连接上给出答案，
 两种写法对发送端是同一条路径。
+
+**中止**：`DELETE /v1/offer/{id}` 回 `200 {"offer_id": "…", "dropped": true}`——三端发的都是这两个键，
+而 `dropped` 哪一端都不读：发送方只在没拿到 200 的时候报一句（`cs-client.uts:562-567`、
+`app/net/send.py:477-480`），它要的是"这单我不要了"这个动作本身。这条 DELETE 覆盖两种时刻，
+接收方都得认：
+
+- **已经登记在填的一单**：`offer_id` 从表里消失，它名下的文件与那份续传台账一起删掉（各端删自己
+  按 §5 摆好的那些文件；PC 逐文件 unlink，空的 offer 目录留在原地——不在合同里，也没人读它）。
+- **还没有人回答的那一问**：这也是一次中止，不是"不认识的 id"。发送方自己等满
+  `offer_wait_timeout_s` 就是它按下取消（PC `send.py:_withdraw`、手机 `giveUp`），而这一端手里那一问
+  是一条还在等人回答的问题，不在 `_offers` 里。接收方必须让那一问停下（PC 的确认框自己关闭、
+  手机 `abortReply` 直接丢掉卡片），把这个 `offer_id` 记成"已撤回"，并且**不登记、不开档**：之后
+  迟到的"接受"再回答这一问，拿到的是 `404 OFFER_UNKNOWN`，而不是一个替已经不存在的发送方开好
+  文件的目录。（2026-10-29 第十六轮：纸上前一种写成了"中止并清理"的全部，后一种 PC 原来是回
+  `OFFER_UNKNOWN` 并把对话框留在屏上——`_offers` 里没有这个 id，就没人想到这一问也归它管
+  （`.probe/r16_reply_probe.txt` D1/D4；手机从 #59 起就是丢卡片那一支）。三端现在都做两种，
+  合同补的是后一种。）
+
+两种之后，同一个 `offer_id` 的清单再投一次都是 `404 OFFER_UNKNOWN`：这一单在本场会话里已经有了回答，
+而那个回答是"没有这一单"。
 
 分块：`chunk_size` 固定 4 MiB，`index = offset // chunk_size`，末块可短。请求头
 `X-Sha256` 为本块摘要，`X-File-Size` 为文件总长。接收方按 `index*chunk_size` 定位写偏移，
