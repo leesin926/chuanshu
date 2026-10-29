@@ -2610,6 +2610,31 @@ export function receiveSelfReport(): string {
 		liveCodeA.length == PAIR_CODE_DIGITS && liveCodeA != liveCodeB && isFullFingerprint(liveToken),
 		liveCodeA + '/' + liveCodeB + '/' + liveToken.length.toString())
 
+	// 21. 第二十五轮巡检（#191）：§3 那半句原本写的是「且只在局域网内可达时开放」，读起来像一道按地址段的
+	// 门，而三端一处都没有——内核的 `client` 只是一个字符串，谁也没看过它落在哪个网段。这一组只有这一档能跑：
+	// 真机的套接字报不出「不是局域网的那个地址」，而这里可以直接喂。第一趟是全新的配对（码与密码都照查），
+	// 后三趟走的是已经钉过那一路，量的不是重放，是同一个对端换个来源地址进来答案不变。
+	const scopeBox = newInbox(harnessRand)
+	const scopeAt = nowSeconds()
+	const scopeCode = currentPairCode(scopeBox, scopeAt)
+	const scopeSecret = passphraseOf(scopeBox, scopeAt)
+	const scopeKey = b64(randomBytes(32))
+	const scopeOutsider = askPairAt(scopeBox, '203.0.113.50', scopeCode, scopeSecret, scopeKey, scopeAt)
+	const scopeOutsiderObj = jsonOf(scopeOutsider)
+	check('§3 来源不是一个网段判据：TEST-NET 那个地址带着全对的码与密码拿到 token',
+		scopeOutsiderObj != null && scopeOutsiderObj!.getString('token', '') != '', scopeOutsider.body)
+	const scopeLoop = askPairAt(scopeBox, '127.0.0.1', scopeCode, scopeSecret, scopeKey, scopeAt)
+	const scopeLoopObj = jsonOf(scopeLoop)
+	const scopeForwarded = askPairAt(scopeBox, '10.0.2.2', scopeCode, scopeSecret, scopeKey, scopeAt)
+	const scopeForwardedObj = jsonOf(scopeForwarded)
+	const scopeBlind = askPairAt(scopeBox, '?', scopeCode, scopeSecret, scopeKey, scopeAt)
+	const scopeBlindObj = jsonOf(scopeBlind)
+	check('§3 环回、端口转发与读不到地址那一格的答案与网段内完全一样：#149/#154 那两条腿靠的就是这一句',
+		scopeLoopObj != null && scopeLoopObj!.getString('token', '') != ''
+		&& scopeForwardedObj != null && scopeForwardedObj!.getString('token', '') != ''
+		&& scopeBlindObj != null && scopeBlindObj!.getString('token', '') != '',
+		scopeLoop.body + '|' + scopeForwarded.body + '|' + scopeBlind.body)
+
 	out.push(fail == 0 ? '接收自检 ' + pass.toString() + ' 项全部通过' : '接收自检失败 ' + fail.toString() + ' 项，通过 ' + pass.toString() + ' 项')
 	return out.join('\n')
 }

@@ -2384,6 +2384,92 @@ def phase_random_source(proto: protocol_spec.Protocol, workspace: Path) -> None:
         service.stop()
 
 
+def phase_pair_scope(proto: protocol_spec.Protocol, workspace: Path) -> None:
+    """§3 pairs whoever knocks: the socket listens on every interface and the source's range is not a door.
+
+    Round twenty-five (#191) read 「这份失败清单哪一端都不落盘，且只在局域网内可达时开放」. The second half
+    read as a security boundary and no end implemented one: the three listeners bind the wildcard and the
+    pair handlers keep the source address only as a bucket key for the throttle. This phase measures the two
+    halves that are still machine-checkable here - which address the default-constructed receiver actually
+    bound, and whether a source that is certainly *not* a LAN peer still gets a token. The second leg is the
+    one that turns red the day someone writes the sentence the paper just deleted: ``handle_pair`` takes the
+    address as a plain string, so a TEST-NET peer, a loopback dial-in and ``10.0.2.2`` (what the emulator's
+    forwarded port reports, #149/#154) are three sources a filter would refuse.
+    """
+    receiver = load_or_create(workspace / "scope-receiver")
+    stranger = load_or_create(workspace / "scope-stranger")
+    service = ReceiveService(receiver, "PC-Pair-Scope", lambda manifest, who, caller: True,
+                             port=0, root=workspace / "scope-received")
+    service.start()
+    code, secret = service.current_pair_code(), service.passphrase()
+
+    def pair(ip: str, who=None, code_ok: bool = True) -> tuple[str, str]:
+        """("PAIRED", token) when the receiver answers with one, else the error code it raised."""
+        who = who or stranger
+        nonce = secrets.token_hex(16)
+        leaf = who.declared_tls_fingerprint
+        message = protocol_spec.pair_message(who.peer_id, nonce, leaf)
+        body = {
+            "peer_id": who.peer_id,
+            "name": "Scope-Peer",
+            "protocol_version": proto.version,
+            "compatible_versions": list(proto.compatible_versions),
+            "nonce": nonce,
+            "public_key": base64.b64encode(who.raw_public_key()).decode(),
+            "signature": base64.b64encode(who.key.sign(message)).decode(),
+            "code": code if code_ok else ("1" if code[0] != "1" else "2") + code[1:],
+            "secret": secret,
+        }
+        if leaf:
+            body["tls_fingerprint"] = leaf
+        try:
+            return ("PAIRED", service.handle_pair(body, ip).get("token", ""))
+        except protocol_spec.ProtocolError as error:
+            return (error.code, str(error.detail or {}))
+
+    # Nothing named a host in the constructor - the way the GUI and the CLI both start it - so whatever the
+    # socket reports back is the interface this machine actually listens on.
+    bound = service._http.server_address[0]
+    check("§3 三端的接收服务都绑在本机所有接口上：默认参数起的那台落在 0.0.0.0",
+          bound == "0.0.0.0", bound)
+
+    # One peer at a time is §3's other rule and it would shadow every leg below, so the slot is handed back
+    # between the three sources - this phase is about which address may knock, not how many may sit.
+    def release() -> None:
+        service._tokens.clear()
+        service._seen.clear()
+        service._held_by = ""
+
+    # Each source gets its own identity: a peer the receiver has already pinned would answer from the
+    # signature alone (``handle_pair``'s known-key branch), and that would prove nothing about the code
+    # round trip these legs are about.
+    outsider, loopback_peer, forwarded_peer, guesser = (
+        load_or_create(workspace / f"scope-{n}")
+        for n in ("outsider", "loopback", "forwarded", "guesser"))
+    outside = pair("203.0.113.7", outsider)
+    release()
+    looped = pair("127.0.0.1", loopback_peer)
+    release()
+    forwarded = pair("10.0.2.2", forwarded_peer)
+    check("§3 「来源」不是一道网段的门：TEST-NET 那个地址第一次配对就拿到 32 字节的 token",
+          outside[0] == "PAIRED" and re.fullmatch(r"[0-9a-f]{64}", outside[1]) is not None, outside)
+    check("§3 环回与端口转发那两路也照样配对：#149/#154 那几条腿走的正是这两种来源",
+          looped[0] == "PAIRED" and forwarded[0] == "PAIRED"
+          and re.fullmatch(r"[0-9a-f]{64}", looped[1]) is not None
+          and re.fullmatch(r"[0-9a-f]{64}", forwarded[1]) is not None,
+          f"{looped[0]} {forwarded[0]}")
+
+    # A wrong code from an out-of-range source still gets the answer a wrong code gets: an address the paper
+    # once called unreachable is not a different *kind* of request, and its mistake is booked into the bucket
+    # that address owns - which is all 「来源」 has ever meant in §3.
+    release()
+    guess = pair("203.0.113.8", guesser, code_ok=False)
+    check("§3 网段外的来源第一次配对猜错码，答的是「配对码不对」并记进它自己那一桶：地址是桶键不是门",
+          guess[0] == "BAD_PAIR_CODE" and len(service._code_failures.get("203.0.113.8", [])) == 1,
+          f"{guess[0]} {sorted(service._code_failures)}")
+    service.stop()
+
+
 def main() -> int:
     proto = protocol_spec.load()
     REPORT.write_text("", encoding="utf-8")
@@ -2412,6 +2498,7 @@ def main() -> int:
         phase_shared_identity(proto, workspace)
         phase_pair_throttle(proto, workspace)
         phase_random_source(proto, workspace)
+        phase_pair_scope(proto, workspace)
     phase_catalogue(proto)
     check("chunks per file match the contract", proto.chunk_size == 4194304, proto.chunk_size)
     # The four shapes §7 can arrive in; the wire legs above are what prove both ends consult them.

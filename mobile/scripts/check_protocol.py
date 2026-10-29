@@ -1371,6 +1371,110 @@ def check_random_source(body: dict) -> None:
              f"§3's new sentence, and the scripted source is the only way to see which hand minted a secret")
 
 
+def check_pair_scope(body: dict) -> None:
+    """§3 says the throttle does not filter sources by address range - and names where the LAN edge is.
+
+    Round twenty-five (#191) read 「这份失败清单哪一端都不落盘，且只在局域网内可达时开放」. The second half
+    of that sentence is a security boundary, and it was not a description of anything: no end looked at the
+    range a source address falls in, because all three listeners bind every interface (PC `host=""`, Android
+    `InetSocketAddress(port)`, Harmony `0.0.0.0`). The one place in this repo that ever wrote a LAN edge is
+    the installer's netsh rule - `profile=any remoteip=LocalSubnet` - and a machine that answered the
+    first-listen firewall prompt instead has a rule whose remote IP is *any* on the Public profile, which is
+    what this machine measures today. So the paper now states that rule, forbids an address-scope test in a
+    pair path, and this guard holds four things: the prose, `transport.note`, the three bind sites plus the
+    installer's two flags, and the absence of any range test inside the two pair handlers.
+    """
+    note = body["transport"].get("note", "")
+    for needle, why in (
+        ("does NOT filter the source by address range", "the sentence that used to claim the opposite"),
+        ("remoteip=LocalSubnet", "the paper now points at the one place a LAN edge is actually written"),
+        ("a remote IP of *any* on the Public profile", "the firewall-prompt case: this is why the boundary "
+                                                       "is not a property of the protocol"),
+    ):
+        if needle not in note:
+            fail(f"protocol.json's transport.note no longer says {needle!r} - {why}")
+
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    section = spec.split("## 3.", 1)[1].split("\n## ", 1)[0] if "## 3." in spec else ""
+    # The audit footnotes quote the sentences they delete, so the ban below reads the section without them -
+    # a paragraph that starts with a round date is a record of what used to be written, not a rule.
+    prose = "\n".join(p for p in section.split("\n\n") if not p.lstrip().startswith("（20"))
+    flat = re.sub(r"\s+", "", section)
+    if "只在局域网内可达时开放" in re.sub(r"\s+", "", prose):
+        fail("§3 says the receiver is only reachable inside a LAN again - three ends bind every interface and "
+             "nothing in the code keeps a public source out, so that half-sentence is a boundary nobody holds")
+    for needle, why in (
+        ("不按地址段筛来源", "the rule round twenty-five wrote in its place, and the one a future host may break"),
+        ("都绑在本机所有接口上", "why no end *can* hold the old sentence: the bind is the wildcard on all three"),
+        ("远程IP是\"任何\"", "the prompt-allowed rule is on the paper too, so nobody reads LocalSubnet as a promise"),
+        ("改的是那条防火墙规则，不是这份合同", "where to tighten reachability - the alternative is a range test in §3"),
+    ):
+        if re.sub(r"\s+", "", needle) not in flat:
+            fail(f"§3 no longer says {needle!r} - {why}")
+
+    root = HERE.parent
+    sdk = HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk"
+    recv_py = (root / "app" / "net" / "receive.py").read_text(encoding="utf-8")
+    kernel = (sdk / "cs-receive.uts").read_text(encoding="utf-8")
+    serve_kt = (sdk / "app-android" / "CsServe.kt").read_text(encoding="utf-8")
+    harmony = (sdk / "app-harmony" / "index.uts").read_text(encoding="utf-8")
+    for text, name, literal in (
+        (recv_py, "app/net/receive.py", 'host: str = ""'),
+        (serve_kt, "app-android/CsServe.kt", "srv.bind(InetSocketAddress(port.toInt()))"),
+        (harmony, "app-harmony/index.uts", "port: TRANSPORT_PORT, address: '0.0.0.0'"),
+    ):
+        if literal not in text:
+            fail(f"{name} no longer contains {literal!r} - §3 now names the wildcard bind as the reason no end "
+                 f"filters by address, so a bind that moved to one interface makes that sentence false")
+
+    scope_test = r"is_private|is_link_local|ip_address\(|subnet_of|in_network|RFC1918|192\.168\.|LocalSubnet|NetworkUtils"
+    handler = recv_py.split("def handle_pair", 1)[1].split("\n    def ", 1)[0]
+    handler_code = "\n".join(l for l in handler.splitlines() if not l.strip().startswith("#"))
+    if re.search(scope_test, handler_code):
+        fail("the PC's handle_pair tests which range its source address falls in - §3 forbids that: loopback, "
+             "port-forwarded (adb forward, 10.0.2.2) and multi-homed peers all pair through this one body")
+    pair_fn = kernel.split("function pairReply(", 1)[1].split("\n}", 1)[0]
+    pair_code = "\n".join(l for l in pair_fn.splitlines()
+                          if not l.strip().startswith(("//", "*", "/*")))
+    if re.search(scope_test, pair_code):
+        fail("the shared kernel's pairReply tests the source's address range - one sentence would then split "
+             "the phone ends from the PC, and the emulator legs (#149/#154) dial through exactly such a test")
+
+    iss = (root / "installer" / "setup.iss").read_text(encoding="utf-8")
+    mint_rule = iss.split("function AllowInbound", 1)[1].split("\nend;", 1)[0] if "function AllowInbound" in iss else ""
+    for flag, why in (("profile=any", "the installer rule is only a LAN edge because LocalSubnet bounds it - "
+                                      "and profile=any is what keeps a hotspot network usable"),
+                      ("remoteip=LocalSubnet", "the paper points here as the one place the boundary is written; "
+                                               "if it goes, no layer of this product restricts the range")):
+        if flag not in mint_rule:
+            fail(f"installer/setup.iss's AllowInbound no longer writes {flag!r} - {why}")
+    if iss.count("AllowInbound(ExpandConstant") < 2:
+        fail("AllowInbound is not called for both exes - the CLI listens too, and a rule pinned to "
+             "ChuanShu.exe only does nothing for ChuanShu-cli.exe (that pairing was measured, not guessed)")
+
+    selftest = (root / "scripts" / "protocol_selftest.py").read_text(encoding="utf-8")
+    if "def phase_pair_scope(" not in selftest or \
+            re.search(r"^\s+phase_pair_scope\(proto, workspace\)$", selftest, re.M) is None:
+        fail("scripts/protocol_selftest.py has no pair-scope phase in its run - which addresses a receiver "
+             "answers is the half of §3 that only the tier that pairs can measure")
+    phase = selftest.split("def phase_pair_scope", 1)[1].split("\ndef ", 1)[0]
+    for literal, why in (
+        ("server_address[0]", "the leg has to read back the address the socket really bound, not the string "
+                              "the constructor was handed"),
+        ("203.0.113", "a TEST-NET source is the only address on this machine that is certainly not a LAN peer, "
+                      "and it is what would turn red if someone re-added the filter"),
+        ("10.0.2.2", "the emulator's way of reaching this host - the setup §3 says must keep pairing"),
+    ):
+        if literal not in phase:
+            fail(f"phase_pair_scope() no longer contains {literal!r} - {why}")
+
+    harness = (sdk / "web" / "index.uts").read_text(encoding="utf-8")
+    legs = len(re.findall(r"check\(\s*'§3 (来源不是一个网段判据|环回、端口转发与读不到地址)", harness))
+    if legs < 2:
+        fail(f"the H5 receiver self-check holds {legs} of the two pair-scope legs - the kernel takes the source "
+             f"as a plain string, so these are the only legs that can feed it an address no LAN socket reports")
+
+
 def main() -> int:
     stamp_path = CONTRACT / "SOURCE.json"
     for name in ("protocol.json", "spec.md", "SOURCE.json"):
@@ -1423,6 +1527,7 @@ def main() -> int:
 
     check_pair_throttle(body)
     check_random_source(body)
+    check_pair_scope(body)
     check_uts_mirror(body)
     check_limits_in_prose(body)
     check_error_table(body)
@@ -1450,6 +1555,8 @@ def main() -> int:
           f"failures per source, {body['transport']['pair_code_lock_s']}s each, in memory only")
     print("OK  §3's three secrets are minted by the host's generator on all five ends; the kernel asks, the "
           "hosts answer, and a byte that does not divide the alphabet is thrown away instead of bent")
+    print("OK  §3 pairs whoever knocks: three ends bind the wildcard, no pair path tests the source's range, "
+          "and the LAN edge is the installer's remoteip=LocalSubnet rule rather than a line of this contract")
     print("OK  vendored copies match their stamps")
     print("OK  cs-protocol.uts mirrors the contract")
     print("OK  §5 names every limit a receiver refuses a transfer on")
