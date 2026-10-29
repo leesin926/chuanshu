@@ -70,6 +70,20 @@ class PeerIdentityMismatch(RuntimeError):
     """
 
 
+class TooManyFilesForOffer(ValueError):
+    """A selection bigger than §5's `max_files_per_offer`, refused here before it is even hashed.
+
+    Spec §5 gives a receiver only `UNSUPPORTED_PROTOCOL` for such a manifest - v1's table has no
+    "too big" slot - so a sender that ships one shows its user a version complaint about the peer
+    while the thing at fault is this machine's own batch. The phone's client stops at the same
+    number before any request leaves; this is the PC half of that rule.
+    """
+
+    def __init__(self, limit: int) -> None:
+        super().__init__(f"more than {limit} files in one offer")
+        self.limit = limit
+
+
 class Throttle:
     """A bytes-per-second budget shared by everything one connection writes.
 
@@ -157,7 +171,8 @@ def plan(paths: Iterable[Path], base: Path | None = None) -> list[OutgoingFile]:
     relpath is derived here rather than taken from any display string, so the
     receiver reproduces the directory layout the user actually picked.
     """
-    items: list[OutgoingFile] = []
+    limit = protocol_spec.load().limits["max_files_per_offer"]
+    selected: list[tuple[Path, Path]] = []
     for path in paths:
         if not path.exists():
             raise FileNotFoundError(str(path))
@@ -165,22 +180,28 @@ def plan(paths: Iterable[Path], base: Path | None = None) -> list[OutgoingFile]:
         for entry in entries:
             if not entry.is_file() or entry.name.startswith("."):
                 continue
-            relative = entry.relative_to(base) if base else Path(entry.name)
-            digest = hashlib.sha256()
-            with open(entry, "rb") as handle:
-                for block in iter(partial(handle.read, 1 << 20), b""):
-                    digest.update(block)
-            stat = entry.stat()
-            items.append(
-                OutgoingFile(
-                    path=entry,
-                    relpath=relative.as_posix(),
-                    id=secrets.token_hex(8),
-                    size=stat.st_size,
-                    sha256=digest.hexdigest(),
-                    mtime=int(stat.st_mtime),
-                )
+            selected.append((entry, entry.relative_to(base) if base else Path(entry.name)))
+    # Counted before anything is read, so a batch that could only ever come back as a version
+    # complaint costs one directory walk rather than a full hashing run.
+    if len(selected) > limit:
+        raise TooManyFilesForOffer(limit)
+    items: list[OutgoingFile] = []
+    for entry, relative in selected:
+        digest = hashlib.sha256()
+        with open(entry, "rb") as handle:
+            for block in iter(partial(handle.read, 1 << 20), b""):
+                digest.update(block)
+        stat = entry.stat()
+        items.append(
+            OutgoingFile(
+                path=entry,
+                relpath=relative.as_posix(),
+                id=secrets.token_hex(8),
+                size=stat.st_size,
+                sha256=digest.hexdigest(),
+                mtime=int(stat.st_mtime),
             )
+        )
     return items
 
 
@@ -393,6 +414,11 @@ class PeerConnection:
         the next POST of the same manifest, which the receiver already treats as one delivery rather than
         a second one.
         """
+        # `plan()` already counts, but the contract's rule is about what leaves this machine, so the
+        # choke point itself carries the number: no constructed manifest outranks it either.
+        limit = self.proto.limits["max_files_per_offer"]
+        if len(files) > limit:
+            raise TooManyFilesForOffer(limit)
         manifest = {
             "offer_id": secrets.token_hex(8),
             "protocol_version": self.proto.version,

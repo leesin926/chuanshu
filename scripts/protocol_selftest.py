@@ -33,7 +33,7 @@ from app.net import errors  # noqa: E402
 from app.net import spec as protocol_spec  # noqa: E402
 from app.net.identity import fingerprint_of_public_key, load_or_create  # noqa: E402
 from app.net.receive import STATE_FILE, ReceiveService, sanitize_relpath  # noqa: E402
-from app.net.send import PACE_MS_LADDER, PairNeeded, PeerConnection, PeerIdentityMismatch, plan  # noqa: E402
+from app.net.send import PACE_MS_LADDER, PairNeeded, PeerConnection, PeerIdentityMismatch, TooManyFilesForOffer, plan  # noqa: E402
 
 REPORT = Path(os.environ.get("CHUANSHU_REPORT", str(ROOT / ".probe" / "protocol_report.txt")))
 REPORT.parent.mkdir(parents=True, exist_ok=True)
@@ -331,6 +331,56 @@ def phase_in_process(proto: protocol_spec.Protocol, workspace: Path) -> None:
         status, payload = conn._request("POST", "/v1/offer", json_body=within)
         check("the same manifest one file short is taken", status == 200 and payload.get("accepted") is True, f"{status} {payload}")
         conn._request("DELETE", "/v1/offer/withinsize")
+
+        # §5's sender half of the same number. A receiver can only answer a manifest over the limit
+        # with `UNSUPPORTED_PROTOCOL` - v1's table has no "too big" slot - so a sender that ships one
+        # tells its user the *peer* runs another version while the thing at fault is this machine's
+        # own batch. The contract writes that the phone's client stops locally at the same number;
+        # these two legs hold the PC senders (plan() for GUI/CLI, offer() for any other route) to it.
+        batch = workspace / "sender-oversize"
+        batch.mkdir(parents=True, exist_ok=True)
+        for i in range(proto.limits["max_files_per_offer"] + 1):
+            (batch / f"s{i}.bin").write_bytes(b"")
+        ask_before = len(accepted)
+        try:
+            plan([batch], base=batch)
+            stopped = None
+        except Exception as error:  # noqa: BLE001 - the leg below names the one that is right
+            stopped = error
+        check(
+            "a selection over max_files_per_offer is stopped by plan() before the first byte leaves",
+            type(stopped).__name__ == "TooManyFilesForOffer"
+            and getattr(stopped, "limit", None) == proto.limits["max_files_per_offer"],
+            repr(stopped),
+        )
+        check("a stopped batch put no offer question to anybody", len(accepted) == ask_before, accepted[ask_before:])
+        one_more = sorted(batch.glob("*.bin"))
+        seen = []
+        real_request = conn._request
+
+        def counting_request(method, path, **kwargs):
+            seen.append((method, path))
+            return real_request(method, path, **kwargs)
+
+        conn._request = counting_request
+        try:
+            conn.offer(one_more)
+            choke = "offer() put a manifest over its own limit on the wire"
+        except TooManyFilesForOffer as error:
+            choke = "ok" if error.limit == proto.limits["max_files_per_offer"] else f"wrong number in the refusal: {error.limit}"
+        except protocol_spec.ProtocolError as error:
+            choke = f"the peer answered instead of the local gate: {error.code}"
+        finally:
+            conn._request = real_request
+        check("offer() carries the same number on the choke point itself", choke == "ok", f"{choke} | wire calls: {seen}")
+        try:
+            planned = plan(one_more[: proto.limits["max_files_per_offer"]])
+            exact_ok = len(planned) == proto.limits["max_files_per_offer"]
+            exact_detail = str(len(planned))
+        except Exception as error:  # noqa: BLE001
+            exact_ok = False
+            exact_detail = repr(error)
+        check("the same batch one file short plans fine", exact_ok, exact_detail)
 
         declined = ReceiveService(receiver, "Declining-Phone", lambda m, who, caller: False, host="127.0.0.1", port=0, root=workspace / "declined-received")
         declined.start()

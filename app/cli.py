@@ -40,7 +40,7 @@ from app.net import spec as protocol_spec
 from app.net.discovery import DiscoveryService, Peer, verify_peer
 from app.net.identity import load_or_create
 from app.net.receive import ReceiveService
-from app.net.send import PairNeeded, PeerConnection, PeerIdentityMismatch, plan
+from app.net.send import PairNeeded, PeerConnection, PeerIdentityMismatch, TooManyFilesForOffer, plan
 from app.paths import identity_dir, receive_root, user_data_dir
 
 log = logging.getLogger(__name__)
@@ -469,6 +469,9 @@ def cmd_send(args: argparse.Namespace, out: Terminal) -> int:
     out.say(f"对端：{peer.name or peer.prefix}（{peer.host}:{peer.port}）")
     try:
         files = plan(args.files, args.base)
+    except TooManyFilesForOffer as error:
+        out.say(f"一次最多 {error.limit} 个文件，这一份摊开不止这么多，本机没有发出去。")
+        return 1
     except FileNotFoundError as error:
         out.say(f"没有这个文件：{error}")
         return 1

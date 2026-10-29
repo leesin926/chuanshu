@@ -425,6 +425,37 @@ def check_freeze_gate() -> None:
         fail("the shared receiving kernel has no §9 冻结链 legs - §9's 多文件含目录 cell is a PC-only measurement again")
 
 
+def check_sender_limit() -> None:
+    """§5 spends `max_files_per_offer` on the sender too, and a sentence about "both ends" needs a body each.
+
+    Round nine (#174) measured that a manifest over the limit can only come back as
+    `UNSUPPORTED_PROTOCOL` - v1's table has no "too big" cell - so the sender's own batch was being
+    reported to its user as the *peer's* version problem. The contract's answer was "发送方…在本地按同一个数
+    拦下"; the phone obeyed it and the PC shipped every such batch until round twelve put a count in
+    `plan()` and in `offer()` itself. This guard is the shape-check that keeps the sentence from
+    outliving its implementations again: prose says the senders stop, all three sender bodies must show it.
+    """
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    section = spec.split("## 5.", 1)[1].split("\n## ", 1)[0] if "## 5." in spec else ""
+    # The obligation is on senders as a class ("发送方（PC 与手机）都在本地"), which is exactly what the
+    # first version of this predicate let through: the old sentence 「手机的发送方在本地就按同一个数拦下」
+    # also contains 发送方…本地, so only the class form - naming both ends and saying 都 - counts.
+    if "## 5." not in spec or re.search(r"发送方（[^）]*）都在本地", section) is None:
+        fail("§5 no longer says the senders stop an over-limit batch locally - if the sentence went away, "
+             "the two bodies below should go away with it; if only the sentence did, the contract lost a rule")
+    root = HERE.parent
+    send = (root / "app" / "net" / "send.py").read_text(encoding="utf-8")
+    if send.count("raise TooManyFilesForOffer(limit)") < 2:
+        fail("app/net/send.py counts max_files_per_offer in fewer than two places - both the walk in plan() "
+             "and the choke point offer() must stop, or a constructed manifest is back on the wire")
+    client = (HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk" / "cs-client.uts").read_text(encoding="utf-8")
+    if re.search(r"opts\.paths\.length > MAX_FILES_PER_OFFER", client) is None:
+        fail("cs-client.uts no longer counts max_files_per_offer locally - the phone's sender stopped obeying §5")
+    for name in ("app/cli.py", "app/ui/transfer.py"):
+        if not re.search(r"except TooManyFilesForOffer as \w+", (root / name).read_text(encoding="utf-8")):
+            fail(f"{name} does not catch TooManyFilesForOffer - the refusal reaches the person as a raw traceback")
+
+
 def main() -> int:
     stamp_path = CONTRACT / "SOURCE.json"
     for name in ("protocol.json", "spec.md", "SOURCE.json"):
@@ -485,6 +516,7 @@ def main() -> int:
     check_peer_id_shape()
     check_spki_head()
     check_freeze_gate()
+    check_sender_limit()
 
     print(f"OK  protocol v{body['protocol_version']} from {stamp['source_repo']}@{stamp['source_commit'][:8]}")
     print(f"OK  {len(body['error_codes'])} error codes, {len(body['endpoints'])} endpoints, chunk {chunk // 1024} KiB")
@@ -502,6 +534,7 @@ def main() -> int:
     print("OK  peer_id is 16 random bytes of hex where all four places mint it")
     print("OK  the three ends hand-spell the same 12-byte Ed25519 SPKI header")
     print("OK  §9's gate names a script that exists, reads as runnable on both PC platforms, and has legs on both ends")
+    print("OK  §5's sender-side limit has a body in every sender: PC plan()/offer(), the phone's client, both screens")
     return 0
 
 

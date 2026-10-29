@@ -71,7 +71,7 @@ from app.net import spec as protocol_spec
 from app.net.discovery import DiscoveryService, Peer, local_ipv4, verify_peer
 from app.net.identity import load_or_create
 from app.net.receive import ReceiveService
-from app.net.send import PairNeeded, PeerConnection, PeerIdentityMismatch, Throttle, plan
+from app.net.send import PairNeeded, PeerConnection, PeerIdentityMismatch, Throttle, TooManyFilesForOffer, plan
 from app.paths import identity_dir, receive_root, user_data_dir
 from app.ui import theme
 
@@ -2524,6 +2524,10 @@ class TransferPanel(QWidget):
             self._finished.emit(False, _("配对应答里的指纹和 hello 不一致，已中止"))
         except protocol_spec.ProtocolError as error:
             self._finished.emit(False, _("对方说：{text}").format(text=proto_errors.describe(error.code)))
+        except TooManyFilesForOffer as error:
+            # §5's number, spent here: this batch never went on the wire, so the sentence names
+            # the selection rather than whatever a peer's version-only refusal would have said.
+            self._finished.emit(False, _("一次最多 {n} 个文件。").format(n=error.limit))
         except FileNotFoundError as error:
             self._finished.emit(False, _("有文件已经不在了：{path}").format(path=error.filename or error))
         except ConnectionError as error:
