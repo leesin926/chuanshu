@@ -765,6 +765,46 @@ def check_offer_reply_shapes() -> None:
         if "files" in emitter[0]:
             fail(f"{label}'s pending reply carries a files[] before anyone has decided a landing (spec §4)")
 
+    # Who holds the connection while the card is up is the other half of this paragraph, and the paper
+    # had it wrong for one end until round twenty-one (#187): it named Android among the ends that
+    # answer on the connection that asked, while that host has answered the pending shape on the spot
+    # since #83 and Harmony since #59. The sentence now says what each end does, so pin it end by end.
+    if not said("挂不挂这条连接是各端自己的事"):
+        fail("§4's 待决应答 no longer says holding the connection is each end's own choice - that is the "
+             "half a receiver implements, and one clause naming the wrong end sent a phone to park a socket")
+    # The stale wording lives on in the dated note underneath, which is where a round's own finding is
+    # allowed to quote it back; the claim being pinned is the paragraph the next implementor reads.
+    waiting_para = next((one for one in section.split("\n\n") if "待决应答" in one), "")
+    if "能挂住连接的一方（PC、Android）" in re.sub(r"\s+", "", waiting_para):
+        fail("§4 names Android again as an end that answers on the connection that asked - it has not "
+             "done so since #83, and the answer to that sentence is the immediate pending reply pinned above")
+    gui = (HERE.parent / "app" / "ui" / "transfer.py").read_text(encoding="utf-8")
+    if 'holder["event"].wait(' not in gui:
+        fail("app/ui/transfer.py's _decide no longer blocks the server thread on the user's answer - the PC "
+             "is the end §4 says holds the connection, and its GUI is one of the two bodies that does")
+    cli = (HERE.parent / "app" / "cli.py").read_text(encoding="utf-8")
+    if "socket stays open" not in cli:
+        fail("app/cli.py's decide no longer says the peer's socket stays open while it prompts - the CLI is "
+             "the second PC body, and blocking there is what makes its long-poll honest")
+    immediate = "ids[ids.length - 1] + '\",\"accepted\":false}'"
+    for label, path, emitter_name in (("app-android/index.uts", utssdk / "app-android" / "index.uts", "replyJson"),
+                                      ("store/session.uts", HERE / "chuanshu" / "store" / "session.uts", "serveReply")):
+        states = path.read_text(encoding="utf-8")
+        if immediate not in states:
+            fail(f"{label} no longer answers a waiting offer from inside the request handler - §4's phone half "
+                 "is the immediate pending reply, and the sender's re-post is what carries the decision")
+        decide = states.split("function receiveDecide(", 1)[1].split("\n}\n", 1)[0]
+        if emitter_name + "(" in decide:
+            fail(f"{label}'s receiveDecide() writes to the wire again - the user's tap cannot reach the "
+                 "connection that asked, which is why this end answers pending immediately")
+
+    # The kernel's own header teaches a new host what to do with `pending`. It used to say the host owns
+    # the reply callback and that nothing differs on the wire - the same stale claim as §4's sentence,
+    # written where the next phone host would read it.
+    if "On the wire nothing differs" in kernel:
+        fail("cs-receive.uts still tells a host that parking the callback changes nothing on the wire - "
+             "for both phones it changes the first answer, which is §4's pending shape")
+
     # The abort reply: named on paper, sent by both receivers, read by nobody.
     if not said('`200 {"offer_id": "…", "dropped": true}`'):
         fail("§4 no longer states what DELETE /v1/offer/{id} answers - the sentence went away, but all "
@@ -815,6 +855,11 @@ def check_offer_reply_shapes() -> None:
             re.search(r"^\s+phase_offer_reply\(proto, workspace\)$", selftest, re.M) is None:
         fail("scripts/protocol_selftest.py has no offer-reply phase in its run - the three shapes and the "
              "withdrawal of a question nobody answered are unmeasured again")
+    if "def phase_pending_answer(" not in selftest or \
+            re.search(r"^\s+phase_pending_answer\(proto, workspace\)$", selftest, re.M) is None:
+        fail("scripts/protocol_selftest.py no longer runs the sender against a receiver that answers pending "
+             "on the spot - §4's 「两种写法对发送端是同一条路径」 is a claim about the sender, and the other "
+             "legs all drive it against a PC-style holder")
     legs = len(re.findall(r"check\(\s*'§4 (待决|中止|接受|那句|落齐)", harness))
     if legs < 8:
         fail(f"the receiving kernel has {legs} §4 reply legs - the shared kernel needs to answer all three "

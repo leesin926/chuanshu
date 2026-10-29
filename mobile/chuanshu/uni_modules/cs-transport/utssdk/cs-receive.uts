@@ -9,9 +9,11 @@
  *
  *  One thing the shared code cannot do is wait for a human inside a return statement. The PC blocks
  *  in its offer handler for as long as 60 s; a phone's UI cannot block a request thread and a
- *  browser certainly cannot block its own. So handleReceive registers the offer, answers
- *  `pending`, and the host - which owns the reply callback - resolves it later through
- *  resolveOffer(). On the wire nothing differs: the sender's POST /v1/offer simply takes longer. */
+ *  browser certainly cannot block its own. So handleReceive registers the offer and answers
+ *  `pending`, and what the host does with that is its own choice - both shapes are legal under §4.
+ *  Both phones answer `{"accepted": false}` on the spot, because their user's tap arrives through a
+ *  different bridge call than the request that registered the offer; the browser's stand-in peer
+ *  keeps the reply callback and resolves it later through resolveOffer(), which is what the PC does. */
 import {
 	PROTOCOL_VERSION,
 	COMPATIBLE_VERSIONS,
@@ -1194,7 +1196,8 @@ export function settleOffer(inbox: Inbox, offerId: string, status: number, body:
 /* ---------------------------------------------------------------------- the dispatcher */
 
 /** The whole server side, one call per request. Returns pending when the answer needs a human; the
- *  host keeps the reply callback and calls resolveOffer() when the user taps. */
+ *  host either answers §4's pending shape now and lets the sender's next POST pick the decision up
+ *  (both phones), or keeps the reply callback and calls resolveOffer() when the user taps (the PC). */
 export function handleReceive(
 	inbox: Inbox,
 	self: LocalPeer,

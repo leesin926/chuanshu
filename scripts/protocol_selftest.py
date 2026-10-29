@@ -1424,6 +1424,67 @@ def phase_offer_reply(proto: protocol_spec.Protocol, workspace: Path) -> None:
         service2.stop()
 
 
+def phase_pending_answer(proto: protocol_spec.Protocol, workspace: Path) -> None:
+    """§4's other writing, measured from the sender: a receiver that answers pending on the spot.
+
+    Every other leg drives the PC's sender against a PC-style receiver, which holds the POST open and puts
+    the decision in the first reply. Both phones answer `accepted: false` immediately - Android since #83,
+    Harmony since #59 - and the decision comes out of a later POST; round twenty-one (#187) found the
+    contract still naming Android among the ends that hold the connection. §4 says the two writings are one
+    path for the sender, so this leg runs the second one instead of taking the sentence on trust.
+    """
+    corpus = build_corpus(workspace / "pending-corpus")
+    sender = load_or_create(workspace / "pending-sender")
+    receiver = load_or_create(workspace / "pending-receiver")
+    root = workspace / "pending-received"
+    asked: list[str] = []
+    release = threading.Event()
+    settled: dict = {}
+
+    def ponder(manifest: dict, who: str, caller: str) -> bool:
+        asked.append(str(manifest["offer_id"]))
+        release.wait(30)
+        return True
+
+    service = ReceiveService(receiver, "Phone-Like", ponder, host="127.0.0.1", port=0, root=root)
+    real_offer = service.handle_offer
+    posts: list[int] = []
+
+    def phones_like(body: dict, caller: str) -> dict:
+        """The host half of a phone: the request is answered where it landed, the user's answer goes
+        into the inbox, and the next POST of the same manifest is what carries the decision."""
+        posts.append(1)
+        offer_id = str(body["offer_id"])
+        if len(posts) == 1:
+            threading.Thread(target=lambda: settled.update(
+                reply=real_offer(body, caller)), daemon=True).start()
+            return {"offer_id": offer_id, "accepted": False}
+        return settled.get("reply") or {"offer_id": offer_id, "accepted": False}
+
+    service.handle_offer = phones_like  # type: ignore[method-assign]
+    service.start()
+    threading.Timer(2.0, release.set).start()
+    try:
+        files = plan(corpus, base=workspace / "pending-corpus")
+        conn = PeerConnection(sender, "Phone-Like", "127.0.0.1", service.port, receiver.served_fingerprint)
+        conn.hello()
+        conn.pair(service.current_pair_code())
+        offered = conn.offer(files)
+        check("§4 待决应答：接收端当场回「还没人决定」，发送端按同一个 offer_id 重投而不是判死这一单",
+              len(posts) >= 2 and offered["state"].get("accepted") is True
+              and bool(offered["state"].get("files")), f"posts={len(posts)}")
+        check("这一单只问到用户一次（重投不是第二张确认框）", len(asked) == 1, asked)
+        result = conn.send(files)
+        big = next(f for f in files if f.relpath.endswith("IMG_大文件.bin"))
+        landing = root / conn.offer_id / big.relpath
+        check("两种写法对发送端是同一条路径：照旧把整单传完并逐字节校验",
+              all(v["ok"] for v in result["verified"]) and landing.is_file()
+              and hashlib.sha256(landing.read_bytes()).hexdigest() == big.sha256,
+              str(landing))
+    finally:
+        service.stop()
+
+
 def phase_chunk_reply(proto: protocol_spec.Protocol, workspace: Path) -> None:
     """§4's chunk replies read as claims about wire bytes - and about how many times a sender writes.
 
@@ -2044,6 +2105,7 @@ def main() -> int:
         phase_manifest_fields(proto, workspace)
         phase_finalize_reply(proto, workspace)
         phase_offer_reply(proto, workspace)
+        phase_pending_answer(proto, workspace)
         phase_chunk_reply(proto, workspace)
         phase_chunk_reply_lost(proto, workspace)
         phase_finalize_replay(proto, workspace)

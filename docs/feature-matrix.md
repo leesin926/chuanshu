@@ -65,6 +65,7 @@ Ed25519 叶、TLS 记录会乱序到达——这三条都是上机才知道的�
 | 收：同一个 `offer_id` 只问用户一次——已经答过的（拒绝／窗口到点／这一单已结束）按 id 复述那一答，不再弹第二次窗（#145，合同 §4） | `门禁`（`.probe/c145_ui.log`：`RESULT ALL PASS`，403 条。这一支的判据腿在 `protocol_selftest.py` 那一趟：`.probe/c145_proto2.log` `RESULT ALL PASS`，109 条，其中八条是 #145 新加的） | `门禁`（`.probe/c145_cli.log` 全过：CLI 的 `--yes`／超时不答都从同一个 `handle_offer` 出去，复用规则在 net 层，两个入口一起继承） | `门禁` | `门禁`（`.probe/c145_linux.log`：`linux_selftest.py` 27 条全过——改的是平台无关的那一份 `receive.py`，Linux 没有第二套回答） |
 | 收：那一本续传台账读不出来（丢了、或崩在重写中途只剩半个）时**一单也不认领**——`state` 回 `OFFER_UNKNOWN`，发送方同一份清单再投一次就是按全缺登记的一单，每块都真写得回去，`finalize` 才是结论（#165，合同 §4；这一轮改的是合同那三句话，PC 的代码本来就是这么做的） | `门禁`（`.probe/c165_selftest.txt`：新增 `phase_state_lost` 五条腿，头一条先量「一块刚落，落点已经等于清单声明的整个长度」——这就是「按已落盘字节 / chunk_size 重算缺块」量不出区别的那个形状；然后把状态文件撕掉一半，`adopt_interrupted_offers()` 回 0。全文件 122 条 PASS、`RESULT ALL PASS`。GUI 那句「落到」读的是 `finalize` 回复里的 `path`，本轮没有改到屏幕上） | `门禁`（同一个 `handle_offer` / `adopt_interrupted_offers`，CLI 没有第二套认领；本轮没有重跑 `cli_selftest.py` 的这一支——认领规则在 net 层，两个入口一起继承） | `门禁`（平台无关的那一份 `app/net/receive.py`，Linux 没有第二套判据；本轮没有重跑 `linux_selftest.py`） | `门禁`（同上） |
 | 收：幂等那一句也是这一单的心跳——重发同一块时，落块的时刻要跟着写回台账（#167，合同 §4 的 `touched`；手机那两端每次请求都重写台账，只有这一端在这一支直接 `return`，于是崩在这里会把刚盖的章退回上一次落块之前，发送方回头撞见 `OFFER_UNKNOWN`） | `门禁`（`phase_chunk_escape` 第六条腿：落一块 → 记下盘上的 `touched` → 等 1.1 s → 同一块原样再发（摘要相同，走幂等那一支）→ 再读盘上的 `touched`，它必须往前走。原文 `.probe/p167.log` 末段 `...: (1793214457.1939914, 1793214458.5026498)`。**反向验证过**：临时把那一行改成不落盘（`state.persist() if False else None`）再单跑这一条腿，红的是它——`FAIL ... : (1793215553.2003748, 1793215553.2003748)`，前后一个数（原文 `.probe/neg167_fail.txt`，跑法 `.probe/neg167.py`）；还原以后 `grep NEG167` 一个都不剩，整文件重跑 **128 条 PASS、`RESULT ALL PASS`**（`.probe/p167_final.log`） | `门禁`（同一份 `handle_chunk`，CLI 没有第二套心跳；`cli_selftest.py` 这一趟全过） | `门禁`（平台无关的那一份 `app/net/receive.py`） | `门禁`（同上，本轮没有重跑 `linux_selftest.py` 的这一支） |
+| 收：待决应答——本端**挂着**那条连接答，两个手机端**当场**回 `{"offer_id":…,"accepted":false}`；发送端把两种写法走成同一条路径（#187，合同 §4；这一轮改的是合同那一句话，PC 的代码本来就是这么做的） | `门禁`（新相 `phase_pending_answer` 三条腿，全文件 **217 条 PASS、`RESULT ALL PASS`**，比第二十轮多 3 条：把真的 `ReceiveService` 包成手机那样当场回 pending，真的 `PeerConnection` 按同一个 `offer_id` 再问（`posts=3`）、用户只被问到一次（`['ad70187ac62e19e2']`）、最后照旧把整单传完并逐字节校验。GUI 挂着这一半本轮一个字没动——`app/ui/transfer.py:1694` 那句 `holder["event"].wait(…)` 现在由守卫按字面钉住还在） | `门禁`（同一份 `handle_offer`；CLI 把同一条规则写在 `app/cli.py:300` 的 docstring 里——「Runs on the server thread while the peer's socket stays open」，它就是"PC 挂着"这半句的证词，守卫也按字面钉住这一行） | `门禁`（平台无关的那一份 `app/net/receive.py`/`send.py`，Linux 没有第二套应答；本轮没有重跑 `linux_selftest.py`） | `门禁`（同上） |
 | 落盘记录持久化（`arrivals.json`，重启后仍按磁盘真相说话） | `门禁` | `门禁` | `门禁` | `门禁` |
 | 固定对端管理 / 撤销（`unpair`） | `门禁` | `门禁` | — | `门禁` |
 | 单会话名额 + 第三方连接拒 | `门禁` | `门禁` | `门禁` | `门禁` |
@@ -1696,6 +1697,63 @@ Xcode，够不到任何一档编译门**——它改的原因只是共用的 sto
       这一端欠一条腿（浏览器或设备档各跑一次都行，记在 `mobile/README.md` 待办 33）。
     - **收了 #174 那条旧账**：第 26 条（§6）里「并补了一句 PC 发送方也不把点开头的文件报进清单（`app/net/send.py:166`）」就地改成
       "这一句当时只在叶子名上成立"，因为本轮把那半句量出来了——**它不在的时候，整单替一个名字陪葬**，而且换个形状那份东西照样上线。
+
+38. **#187：合同逐条巡检第二十一轮——§4 那句「能挂住连接的一方（PC、Android）照旧在这条连接上给出答案」：Android 从 #83 起就不挂了，纸面把一个端已经不做的动作写成"照旧做"**
+    （沿用 #140/#162/#163/#165/#167/#172/#174/#176/#177/#178/#180/#181/#182/#183/#184/#185/#186 的做法：把纸面上那一句当成一句关于线上
+    行为的断言来读——「照旧在这条连接上给出答案」的主语名单里有谁。这一句读不出"哪一半没做"，只能读出一件事：**名单里有一个端已经不
+    这么做了**。动的是合同那一份、PC 门禁新增的一相三条腿（214 → 217 条 PASS）、守卫里新增的八道判据（都长在既有的
+    `check_offer_reply_shapes()` 里，其中两处对安卓与鸿蒙各扫一遍，实到十次比对，所以 OK 行数还是 21）与共用接收内核 `cs-receive.uts` 的**两处注释**；**两个宿主的代码、共用发送方
+    `cs-client.uts`、这一端的浏览器替身一个字节没改**，所以没上设备腿、没跑编译门。）
+    - **改前先量**（读的是四个端的代码各自在做什么，档位是"纸面 vs 线上"这一类，本轮真正跑出来的是下面那两条）：挂着的这一半两处——
+      GUI 在服务器线程上等用户点（`app/ui/transfer.py:1694` `holder["event"].wait(offer_wait_timeout_s + 5)`），CLI 把同一条规则写在自己的
+      docstring 里（`app/cli.py:300` 「Runs on the server thread while the peer's socket stays open, so blocking here is…」）。不挂的这一半
+      也在两处——Android `app-android/index.uts:632` 当场 `return replyJson(200, '{"offer_id":…,"accepted":false}')`，上面三行注释说的就是
+      "this connection is not held open for the answer"，而用户那一点走的是另一个桥调用 `receiveDecide`（同文件 `:814` 的 doc：
+      「Nothing is written back on the connection that asked」）；鸿蒙同口径（`store/session.uts:683` 的 `serveReply(…, accepted:false)` 与
+      `:725` 的同一句 doc）。浏览器的替身 `web/index.uts:1145-1146` 像 PC 一样把应答回调留着，等 `resolveOffer()`。所以纸面那句话错在
+      **把 Android 列进了"照旧挂着答"那一堆**——这一句是 #145 那轮把"挂不挂"写成各端自己的事时留下的半句旧话，此后 #83/#59 两个端都改成了
+      当场应答，纸面没跟着改。
+    - **缺的是哪一半**：纸面（`protocol/spec.md:201-216`）与共用内核的注释（`cs-receive.uts` 头部 + 分发器 doc——它把 PC 那一句写成
+      "阻塞 60 s 是标准做法"、把手机那一句留给下一个宿主自己猜，还留着「On the wire nothing differs」这句话）。**合同改成**：「挂不挂这条
+      连接是各端自己的事，两半都在这里：PC 挂着，答案从那一次 `POST /v1/offer` 的应答里出去；两个手机端都不挂，当场回上面那两句，
+      用户点下来时那条连接已经还出去了，回答只能先落进这一端的收件箱，等发送方下一次再问才拿到。两种写法对发送端是同一条路径。」
+      并把改前那句、它错在哪个端、以及"下一个照它实现的手机端就会去挂那条连接——而这一端的答案来不到那条连接上"写成紧随其后的注脚
+      （`protocol/spec.md:211-216`），随后 `vendor_protocol.py` 重抄进 `mobile/shared/protocol/`、`check_protocol.py` 复绿。
+    - **端上没有改行为**：`cs-receive.uts` 本轮只有注释——头部那段现在说的是"两半都合法，两个手机端当场回、浏览器替身和 PC 一样留着回调"，
+      分发器 doc 里那句"the host either answers §4's pending shape now … or keeps the reply callback"把两条路都写全。PC 与两个手机的代码
+      保持本轮之前的样子。
+    - **PC 三条新腿**（`scripts/protocol_selftest.py:1427` 新相 `phase_pending_answer()`，接在 `phase_offer_reply()` 后面并在 `main()`
+      里登记 `:2108`，档位 `门禁`：**217 条 PASS、`RESULT ALL PASS`**，原文 `.probe/r21_gate.log`）。这一相存在的理由：合同那句「两种写法
+      对发送端是同一条路径」是一句关于**发送端**的断言，而此前每一条线上的腿都把发送端对着一个 PC 样子的持有者跑——那句话一直没被量过。
+      做法是把真的 `ReceiveService` 的 `handle_offer` 包一层，第一次 POST 立刻回 `{"offer_id":…,"accepted":false}`（真的登记仍然在后台线程
+      上跑完），第二次以后回那份真应答：[1]「接收端当场回『还没人决定』，发送端按同一个 offer_id 重投而不是判死这一单」（`posts=3`）；
+      [2]「这一单只问到用户一次（重投不是第二张确认框）」（`asked` 只有一个 id）；[3]「两种写法对发送端是同一条路径：照旧把整单传完并
+      逐字节校验」（落点 `…\相册\2026\IMG_大文件.bin` 过整文件摘要；这一趟的 `offer_id` 是 `ad70187ac62e19e2`）。**这一相里的坑**：第一处
+      负向把 `settled` 留空（`if False:`），三条腿一起 MISSING 而不是干净红——发送端等满 60 s 抛 `DECLINED`，红是真的红，但一次说了三件事；
+      第二处（决定回来却不带 `files[]`）才是干净的那一条：只红在「发送端按同一个 offer_id 重投而不是判死这一单」，后两条照常 `PASS`。
+    - **守卫多八道判据，OK 行数不变**（都加在 `mobile/scripts/check_protocol.py:684` 的 `check_offer_reply_shapes()` 里）：纸上钉
+      「挂不挂这条连接是各端自己的事」；**禁止**「能挂住连接的一方（PC、Android）」回到「待决应答」那一段里——判据只读
+      `section.split("\n\n")` 中含「待决应答」的那一段，因为本轮新写的注脚逐字引了那句旧话，而整段折叠空白的 `said()` 会把绿合同读成红
+      （这个作用域坑本轮真踩到：注脚刚写完，守卫就在改好的合同上报 `§4 names Android again…`，把它自己那句引用当成了复活的旧话）；
+      PC 两处（`app/ui/transfer.py` 里 `holder["event"].wait(` 这一行还在、`app/cli.py` 里 "socket stays open" 还在）；手机两处各自要求
+      那份当场应答的字面量还在（守卫里那个 `immediate` 串：`ids[ids.length - 1] + '","accepted":false}'`，安卓在 `replyJson` 那一句里、
+      鸿蒙在 `serveReply` 那一句里），且**每个宿主的 `receiveDecide` 函数体里不许出现 `replyJson(`/`serveReply(`**（用户那一点不往问它的
+      那条连接上写东西）；共用内核不许再说「On the wire nothing differs」；门禁侧要求 `phase_pending_answer` 的定义与 `main()` 里那一行
+      调用都在。**8 处守卫负向每一处单独红**（`.probe/red21.py` → `.probe/red21_guard.txt`，`legs=8 not-red=0`；改的是字节、比的是字节：
+      Windows 上 `read_text`/`write_text` 会把 LF 换成 CRLF，第一次跑完四个文件凭空变 `M`，改成 `read_bytes`/`write_bytes` 并要求
+      `restored`），还原后 `rc=0`、21 行 OK 全绿、四个被改的文件字节不差（`.probe/r21_guard.txt`）。**另有 3 处门禁负向**
+      （`.probe/red21_gate.py` → `.probe/red21_gate.txt`，每处只动 `phase_pending_answer` 里那个替身接收端）：#1「首答就带决定」
+      （`if False:`，三条腿一起 MISSING，见上面那个坑）；#2「决定回来却不带 `files[]`」干净红在第一条腿；**#3 NOT RED**——把台账改成
+      "每一块都已经在对面"三条腿还是绿，因为发送方不信任清单应答里的数字，它自己重读 `state`（`app/net/send.py:533`
+      `self.push_missing(files, self.state(), progress, retries)`）；记为一次测量，不是缺陷。还原后 `restored=True`、三条腿 `PASS`。
+    - **手机那一半的证词早于本轮**：当场回 `accepted:false` 这一支在安卓与鸿蒙都有过设备腿（#83、#59、#145 的两次重投只问一次——
+      §3.2/§3.3 与 §6 第 15 条）。本轮没有让手机升档，因为行为没变；**欠的是 `cs-receive.uts` 这一轮被改到了**（两处注释），它应当回到
+      `浏览器` 档：重跑一次接收内核的浏览器自检（vite 5173，记在 `mobile/README.md` 待办 34）。
+    - **包内的那一份还是旧话**：`dist/ChuanShu/_internal/protocol/spec.md:162` 里仍是改前那一句——它是上一批产物里抄走的那份合同文本，
+      本轮没有重新打包（打包要等正在跑的 ChuanShu.exe 关闭，见 `memory/dist-rebuild-needs-app-closed`）。这一句只在包内的文档文本里，
+      不影响包内代码的行为；下一次出包会带上新的合同。
+    - **收了上一轮自己写下的那句口径**：第 37 条末尾"手机那一半本轮没有升档去量"这一句的做法本轮沿用（同样的判据：行为没动就不上设备腿，
+      但被改到的文件要欠一条回到它原有档位的腿，写在 `mobile/README.md`）。
 
 ### 需要用户点头才能做的四件事
 - 唤醒/解锁并使用那台个人鸿蒙真机（#45/#46 + 鸿蒙发现真机腿）。

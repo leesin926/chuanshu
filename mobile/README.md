@@ -884,6 +884,24 @@ py -X utf8 scripts/check_protocol.py
       改回只判叶子名 → 红 4 条腿且那一相随后跑不完（`offer` 抛的就是线上那句 `PATH_REJECTED`）；只判 relpath → 只红"拍平那一条"；
       只判摊开的路径 → 红两条（平铺的叶子名那一条 + 整目录自己叫 `.私有` 那一条）。三处红完，还原再跑 `FAILS=0`。
 
+34. **#187：合同 §4 那句「能挂住连接的一方（PC、Android）照旧在这条连接上给出答案」——Android 从 #83 起就不挂了，纸面把一个端已经不做的动作写成"照旧做"**
+    （动的是合同、共用接收内核 `cs-receive.uts` 的**两处注释**、PC 门禁新增一相三条腿（214 → 217 条 PASS）、守卫新增八道判据（都长在
+    `check_offer_reply_shapes()` 里，OK 行还是 21）；**两个宿主的代码、共用发送方 `cs-client.uts` 与这一端的浏览器替身一个字节没改**，
+    所以两道编译门与设备腿**本轮没跑**；完整账目在 `../docs/feature-matrix.md` §6 第 38 条）
+    - **手机这一半的行为早就对了，本轮只是把它写进纸面**：安卓在 `uni_modules/cs-transport/utssdk/app-android/index.uts:632` 当场
+      `replyJson(200, '{"offer_id":…,"accepted":false}')`，上面三行注释说的就是"这条连接不为用户那一点挂着"；用户那一点走的是另一个桥调用
+      `receiveDecide`（同文件 `:814` 的 doc：「Nothing is written back on the connection that asked」）。鸿蒙同口径（`store/session.uts:683`
+      的 `serveReply(… accepted:false)` 与 `:725` 的同一句 doc）。这两支的设备腿在 #83、#59 就跑过，后面 #145 那两趟"同一份清单重投、
+      活手机上只问一次"又把"发送方下一次再问才拿到"量到了屏上。所以手机没有新账。
+    - **注释为什么算一处要改的**：`cs-receive.uts` 是下一个宿主照抄的那一份。它过去把 PC 那句"在自己的 offer 处理里等用户 60 s"当成主干，
+      只补了一句"两半都合法"，没写清**为什么两个手机端必须当场回**（那条连接在用户点下来之前就已经还出去了，答案来不到它上面）；
+      还留着「On the wire nothing differs」——这句现在由守卫禁止。改完的头部那段与分发器 doc 把两条路各自是谁（手机当场回、浏览器替身
+      像 PC 一样留着回调等 `resolveOffer()`）、为什么都写全了。
+    - **欠的那条腿**：本轮碰了 `cs-receive.uts`，按"改过就要回到它原来那一档"的规矩，它欠一次**接收内核的浏览器自检**——起 vite 5173
+      （HBuilderX CLI `launch web`），从「我的」页的实例上调 `inst.setupState.recvSelfCheck()`，读 `inst.setupState.s.lines` 末尾那句
+      「接收自检 N 项全部通过」（N 现在是 144，那个数停在待办 31 那一趟，取数路子与原文见 `.probe/r18_browser.txt`）。改的是注释、行为一字未动，
+      所以这条腿只是把档位还上，不是去找新账。
+
 M2a 的最小切口是"手机发、PC 收"：扫（或粘贴）PC 的二维码拿到地址与完整指纹，用户只核对同屏的
 一次性配对码——PC 侧接收端已经跑绿，手机只要把
 `/v1/pair`、`/v1/offer`、`PUT chunk`、`/v1/finalize` 四条打出去就能有结论，发现层可以先不做。
