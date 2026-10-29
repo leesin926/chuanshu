@@ -1105,6 +1105,110 @@ def phase_manifest_fields(proto: protocol_spec.Protocol, workspace: Path) -> Non
         service.stop()
 
 
+def phase_finalize_reply(proto: protocol_spec.Protocol, workspace: Path) -> None:
+    """§4's `finalize` reply read as a claim about the wire - and about where the sender's
+    "resend just that file's problem chunks" can possibly read which chunks those are.
+
+    Round-fifteen shape (§6 第 32 条): the paper showed `{"verified": [{"id", "ok"}]}` while both receivers
+    answer `{offer_id, verified[]}` with per-entry `missing` and `path`, and the same section already promised
+    `path` two pages up. `missing` is the field the retry clause depends on, so the legs below drive it: one
+    erased ledger → the reply names every chunk → the sender PUTs exactly those indexes and none for the files
+    that were already green. The other half is what that clause cannot do: a `size: 0` entry has no chunks to
+    name, so the retry writes zero bytes and the batch dies on FILE_DIGEST_MISMATCH for that file alone
+    (`.probe/r15_finalize_probe.txt`).
+    """
+    spec = (ROOT / "protocol" / "spec.md").read_text(encoding="utf-8")
+    section = spec.split("## 4. 传输")[1].split("## 5.")[0]
+    block = next(json.loads(body) for body in re.findall(r"```json\n(.*?)```", section, re.S)
+                 if "verified" in body)
+    contract_top = set(block.keys())
+    contract_entry = set(block["verified"][0].keys())
+
+    base = workspace / "reply-corpus"
+    (base / "相册").mkdir(parents=True, exist_ok=True)
+    (base / "空.txt").write_bytes(b"")
+    (base / "相册" / "两块.bin").write_bytes(b"A" * proto.chunk_size + b"B" * 7)
+    (base / "小.txt").write_bytes(b"z" * 5)
+    files = plan([base / "空.txt", base / "小.txt", base / "相册" / "两块.bin"], base=base)
+    empty = next(f for f in files if f.size == 0)
+    big = next(f for f in files if f.relpath.endswith("两块.bin"))
+    small = next(f for f in files if f.relpath == "小.txt")
+
+    sender = load_or_create(workspace / "reply-sender")
+    receiver = load_or_create(workspace / "reply-receiver")
+    root = workspace / "reply-received"
+    service = ReceiveService(receiver, "PC-Reply", lambda m, who, caller: True,
+                             host="127.0.0.1", port=0, root=root)
+    service.start()
+    try:
+        conn = PeerConnection(sender, "PC-Reply", "127.0.0.1", service.port, receiver.served_fingerprint)
+        conn.hello()
+        conn.pair(service.current_pair_code())
+
+        conn.offer(files)
+        conn.push_missing(files, conn.state(), None, 3)
+        green = conn.finalize()
+        check("§4 finalize：这条应答摊开就是纸上那份块——顶层两个键、每个条目四个键",
+              set(green.keys()) == contract_top
+              and all(set(v.keys()) == contract_entry for v in green["verified"]),
+              f"{sorted(green.keys())} | entries={sorted(green['verified'][0].keys())}")
+        by_id = {f.id: f for f in files}
+        check("§4 finalize 的 path：`ok: true` 报回的那条路径就是磁盘上那份，字节对得上清单",
+              all(v["path"] is not None and Path(str(v["path"])).is_file()
+                  and hashlib.sha256(Path(str(v["path"])).read_bytes()).hexdigest() == by_id[str(v["id"])].sha256
+                  for v in green["verified"]),
+              [str(v["path"]).rsplit("\\", 1)[-1] for v in green["verified"]])
+
+        # A hole the ledger does not know about: the disk contradicts it, so the answer becomes every chunk.
+        conn.offer(files)
+        conn.push_missing(files, conn.state(), None, 3)
+        (root / conn.offer_id / big.relpath).unlink()
+        pushed: list[str] = []
+        first: dict = {}
+        original = conn._put_chunk
+        raw_finalize = conn.finalize
+        conn._put_chunk = lambda f, i, t, p, r: (pushed.append(f"{f.relpath}#{i}"), original(f, i, t, p, r))[1]
+        conn.finalize = lambda: (first.update(raw_finalize()), first)[1] if not first else raw_finalize()
+        try:
+            repaired = conn.send(files, None)
+        finally:
+            conn._put_chunk = original
+            conn.finalize = raw_finalize
+        denied = next(v for v in first["verified"] if v["id"] == big.id)
+        check("§4 finalize 的 missing：被摘要推翻的那一份改口成全缺，落点写成空",
+              set(first.keys()) == contract_top and set(denied.keys()) == contract_entry
+              and denied["ok"] is False and denied["missing"] == [0, 1] and denied["path"] is None, denied)
+        check("§4 那句「只补传该文件的问题分块」：发送方 PUT 的正是答复点名的那几个块，别的文件一块都没动",
+              pushed == [f"{big.relpath}#0", f"{big.relpath}#1"], pushed)
+        check("补完第二次 finalize 就绿，那一文件逐字节回到原位",
+              all(bool(v["ok"]) for v in repaired["verified"])
+              and hashlib.sha256((root / conn.offer_id / big.relpath).read_bytes()).hexdigest() == big.sha256,
+              [v["ok"] for v in repaired["verified"]])
+
+        # The clause's other half: an entry with nothing to name.
+        conn.offer(files)
+        conn.push_missing(files, conn.state(), None, 3)
+        (root / conn.offer_id / empty.relpath).unlink()
+        again: list[str] = []
+        original = conn._put_chunk
+        conn._put_chunk = lambda f, i, t, p, r: (again.append(f"{f.relpath}#{i}"), original(f, i, t, p, r))[1]
+        try:
+            conn.send(files, None)
+            check("§4 零块的文件：finalize 判它不合规，答复给不出任何问题分块，这一手也就写不出一个字节",
+                  False, "send() returned green")
+        except protocol_spec.ProtocolError as error:
+            check("§4 零块的文件：finalize 判它不合规，答复给不出任何问题分块，这一手也就写不出一个字节",
+                  error.code == "FILE_DIGEST_MISMATCH" and error.detail == {"files": [empty.id]} and again == [],
+                  f"{error.code} {error.detail} | PUT: {again}")
+        finally:
+            conn._put_chunk = original
+        check("同一单里另外两份不受这一格牵连：块还在盘上，缺的那一份也没有被偷偷重开",
+              (root / conn.offer_id / big.relpath).is_file() and (root / conn.offer_id / small.relpath).is_file()
+              and not (root / conn.offer_id / empty.relpath).exists(), str(root / conn.offer_id))
+    finally:
+        service.stop()
+
+
 def phase_discovery(proto: protocol_spec.Protocol, workspace: Path) -> None:
     """Two symmetric peers finding each other, then promoting a prefix to an anchor."""
     from app.net.discovery import DiscoveryService, Peer, adopt_hello
@@ -1390,6 +1494,7 @@ def main() -> int:
         phase_repeated_offer(proto, workspace)
         phase_same_name(proto, workspace)
         phase_manifest_fields(proto, workspace)
+        phase_finalize_reply(proto, workspace)
         phase_chunk_reply_lost(proto, workspace)
         phase_discovery(proto, workspace)
         phase_reverse_pin(proto, workspace)

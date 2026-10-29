@@ -529,6 +529,99 @@ def check_manifest_fields() -> None:
              "lying total at itself, not only trust the sentence")
 
 
+def check_finalize_reply() -> None:
+    """§4's finalize block is a claim about the wire too - and this one is load-bearing in both directions.
+
+    Round fifteen (#181) found the paper holding `{id, ok}` while both receivers shipped four keys and the
+    same section, further up, already promised `path`. Worse, the retry clause - "a sender may re-push just
+    that file's problem chunks" - never said where the indexes come from, so anyone following it had to
+    resend the whole batch. `missing` is that source, so the block, the two receivers' entry literals, and
+    the two senders' read sites have to stay one sentence. This guard pins the shape in both directions and
+    keeps the `size: 0` cell (the one clause the contract declares unfixable) measured rather than hoped.
+    """
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    section = spec.split("## 4.", 1)[1].split("\n## ", 1)[0]
+    blocks = [one for one in re.findall(r"```json\n(.*?)```", section, re.S) if "verified" in one]
+    if len(blocks) != 1:
+        fail(f"§4 holds {len(blocks)} json blocks mentioning verified - one reply needs one shape, "
+             "two of them are two contracts")
+    block = json.loads(blocks[0])
+    if set(block) != {"offer_id", "verified"}:
+        fail(f"§4's finalize block is top-level {sorted(block)} - both receivers answer offer_id+verified "
+             "and a third key would be a field nobody sends")
+    if not isinstance(block.get("verified"), list) or len(block["verified"]) != 1:
+        fail("§4's finalize block no longer shows one entry per file")
+    entry = set(block["verified"][0])
+    if entry != {"id", "ok", "missing", "path"}:
+        fail(f"§4's finalize entry holds {sorted(entry)} - the receivers' entries and the senders' reads all "
+             "name id/ok/missing/path")
+
+    kernel = (HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk" / "cs-receive.uts").read_text(encoding="utf-8")
+    # Scoped to finalizeReply(): the arrivals record builds its own entries a few lines further down, and a
+    # guard that reads past the function would pin one reply's keys against another object's.
+    if "function finalizeReply(" not in kernel:
+        fail("cs-receive.uts no longer has finalizeReply() - the reply this section describes is being built "
+             "somewhere this guard cannot see")
+    body = kernel.split("function finalizeReply(", 1)[1].split("\n}\n", 1)[0]
+    if "const entry: UTSJSONObject = {" not in body:
+        fail("cs-receive.uts's finalizeReply() no longer builds its entry where this guard reads it - go look "
+             "at the new shape and point the read at it")
+    phone = set(re.findall(r"\b(\w+):", body.split("const entry: UTSJSONObject = {", 1)[1].split("}\n", 1)[0]))
+    if phone != entry:
+        fail(f"cs-receive.uts's finalizeReply() builds {sorted(phone)} per entry while §4's block holds "
+             f"{sorted(entry)}")
+    if "return okWith({ offer_id: offerId, verified: verified } as UTSJSONObject)" not in kernel:
+        fail("cs-receive.uts's finalize reply is no longer {offer_id, verified} - the block's top level is a "
+             "second contract's shape")
+
+    recv = (HERE.parent / "app" / "net" / "receive.py").read_text(encoding="utf-8")
+    if "results.append({" not in recv:
+        fail("app/net/receive.py no longer builds its finalize entries where this guard reads them - handle_finalize() "
+             "changed shape, point the read at the new one")
+    pc = set(re.findall(r'"(\w+)":', recv.split("results.append({", 1)[1].split("})\n", 1)[0]))
+    if pc != entry:
+        fail(f"app/net/receive.py's handle_finalize() appends {sorted(pc)} per entry while §4's block holds "
+             f"{sorted(entry)}")
+    if 'return {"offer_id": offer_id, "verified": results}' not in recv:
+        fail("app/net/receive.py's finalize reply is no longer {offer_id, verified}")
+
+    # The other half: a field nobody reads is a field free to drift.
+    client = (HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk" / "cs-client.uts").read_text(encoding="utf-8")
+    send = (HERE.parent / "app" / "net" / "send.py").read_text(encoding="utf-8")
+    if "broken[i].missing" not in client:
+        fail("the phone's sender no longer reads the reply's `missing` - §4's 只补传该文件的问题分块 would be "
+             "a clause with no source for the chunk indexes")
+    if 'list(bad["missing"])' not in send:
+        fail("app/net/send.py no longer reads the reply's `missing` - same clause, PC side")
+    for needle, who in (("app/net/send.py:522-539", "the PC sender"), ("cs-client.uts:480-539", "the phone sender")):
+        if needle not in section:
+            fail(f"§4's retry sentence no longer names {who} by file and range - the sentence that says "
+                 "where 问题分块 comes from has to say who implements it")
+
+    # The cell the clause cannot reach: zero chunks means an empty hole list, and the resend writes nothing.
+    if '"missing": [], "path": null' not in section:
+        fail("§4 no longer states the ok:false reply with an empty `missing` and a null `path` - the size: 0 "
+             "death is measured on three ends and belongs on the paper, not only in a probe log")
+    if "不由巡检签字" not in section:
+        fail("§4 no longer says the zero-byte repair would be a new three-end clause an audit round cannot "
+             "sign for - that is what keeps a measurement from quietly becoming an obligation")
+
+    selftest = (HERE.parent / "scripts" / "protocol_selftest.py").read_text(encoding="utf-8")
+    if "def phase_finalize_reply(" not in selftest or \
+            re.search(r"^\s+phase_finalize_reply\(proto, workspace\)$", selftest, re.M) is None:
+        fail("scripts/protocol_selftest.py has no finalize-reply phase in its run - the reply's shape and the "
+             "reply-driven resend are unmeasured again")
+    harness = (HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk" / "web" / "index.uts").read_text(encoding="utf-8")
+    recv_legs = len(re.findall(r"check\(\s*'(§4 finalize|§4 零字节|§4 那一格)", harness))
+    if recv_legs < 4:
+        fail(f"the receiving kernel has {recv_legs} §4 finalize/zero-byte legs - the shared kernel needs to "
+             "answer the shape itself and play out the size: 0 cell, not only trust the sentence")
+    send_legs = len(re.findall(r"check\(\s*'(那块被整文件摘要推翻后|补传写的就是|它没去问 state)", harness))
+    if send_legs < 3:
+        fail(f"the sender self-report has {send_legs} reply-driven-resend legs - without them nothing on the "
+             "phone side proves the indexes came from the finalize answer rather than a GET /state")
+
+
 def main() -> int:
     stamp_path = CONTRACT / "SOURCE.json"
     for name in ("protocol.json", "spec.md", "SOURCE.json"):
@@ -591,6 +684,7 @@ def main() -> int:
     check_freeze_gate()
     check_sender_limit()
     check_manifest_fields()
+    check_finalize_reply()
 
     print(f"OK  protocol v{body['protocol_version']} from {stamp['source_repo']}@{stamp['source_commit'][:8]}")
     print(f"OK  {len(body['error_codes'])} error codes, {len(body['endpoints'])} endpoints, chunk {chunk // 1024} KiB")
@@ -610,6 +704,7 @@ def main() -> int:
     print("OK  §9's gate names a script that exists, reads as runnable on both PC platforms, and has legs on both ends")
     print("OK  §5's sender-side limit has a body in every sender: PC plan()/offer(), the phone's client, both screens")
     print("OK  §4's manifest block is the wire: both senders' keys, and no receiver acts on total_size")
+    print("OK  §4's finalize reply is one shape on paper and in both receivers; `missing` is who both senders resend by")
     return 0
 
 

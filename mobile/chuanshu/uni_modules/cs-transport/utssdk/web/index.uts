@@ -13,6 +13,7 @@ import {
 	pairJson,
 	pairMessage,
 	parseJson,
+	numList,
 	randomHex,
 	newPassphrase,
 	PASSPHRASE_CHARS,
@@ -1265,6 +1266,21 @@ function jsonOf(reply: WireReply): UTSJSONObject | null {
 	return parseJson(reply.body)
 }
 
+/** The shape test §4's two reply blocks need: the names on the wire are exactly the names on the paper,
+ *  so a key that drifts in either direction is a finding rather than a typo. `[]`-vs-list order is not a
+ *  contract fact, so this compares sets, not strings. */
+function sameKeys(found: string[], names: string[]): boolean {
+	if (found.length != names.length) {
+		return false
+	}
+	for (let i = 0; i < names.length; i++) {
+		if (found.indexOf(names[i]) < 0) {
+			return false
+		}
+	}
+	return true
+}
+
 function firstVerifiedOk(reply: WireReply): boolean {
 	const obj = jsonOf(reply)
 	if (obj == null) {
@@ -1755,6 +1771,63 @@ export function receiveSelfReport(): string {
 	check('§4 total_size：那一块照常收下、整单照常过摘要（总数没挡路，也没被拿去判）',
 		fakePut.status == 200 && fakeVerified, fakePut.status.toString() + ' | ' + codeOfReply(fakeDone))
 
+	// 5h. 第十五轮巡检（#181）：§4 那句「任一项 ok: false 时发送方可只补传该文件的问题分块」只有一个读数来源——
+	// 这条应答里的 `missing`。纸上原来画的是 `{"verified": [{"id","ok"}]}`，等于合同让发送方补传它读不到的东西
+	//（同一节上面讲落点时却已经把 `path` 算进来了，两处对同一条应答各说各话）。这一组先把这一端回的形状钉住，
+	// 再量那句句子管不到的那一格：`size: 0` 的条目分块数就是 0，被摘要推翻时也只会回一个空的缺块表。
+	const zeroBox = newInbox()
+	const zeroPair = askPairOn(zeroBox, SIM_PEER_ID, currentPairCode(zeroBox, nowSeconds()), passphraseOf(zeroBox, nowSeconds()), simKey)
+	const zeroPairObj = jsonOf(zeroPair)
+	const zeroToken = zeroPairObj == null ? '' : zeroPairObj!.getString('token', '')
+	const zeroSha = hexOf(sha256Bytes(new Uint8Array(0)))
+	const zeroReply = (offerId: string, fileId: string, rel: string): WireReply => {
+		const body = '{"offer_id":"' + offerId + '","protocol_version":' + PROTOCOL_VERSION.toString()
+			+ ',"compatible_versions":[' + PROTOCOL_VERSION.toString() + ']'
+			+ ',"from":{"peer_id":"' + SIM_PEER_ID + '","name":"' + SIM_NAME + '"}'
+			+ ',"total_size":0,"files":[{"id":"' + fileId + '","relpath":"' + rel
+			+ '","size":0,"sha256":"' + zeroSha + '","mtime":0,"type":"text/plain"}]}'
+		const asked = askOn(zeroBox, SIM_PEER_ID, 'POST', '/v1/offer', body, zeroToken, new ArrayBuffer(0), '')
+		resolveOffer(zeroBox, offerId, true, recvPrepare, recvDrop)
+		return asked
+	}
+	const zeroId = hexOf(randomBytes(8))
+	const zeroFileId = hexOf(randomBytes(8))
+	const zeroRel = '零字节.txt'
+	const zeroAsked = zeroReply(zeroId, zeroFileId, zeroRel)
+	const zeroOpened = recvStore.get(landOf(zeroId, zeroRel))
+	check('§4 零字节的条目：一块都没有，也照样按 §4 的开档规则开出 0 字节',
+		zeroAsked.pending && zeroOpened != null && zeroOpened!.length == 0,
+		zeroOpened == null ? '没有这份开档' : zeroOpened!.length.toString())
+	const zeroDone = askOn(zeroBox, SIM_PEER_ID, 'POST', '/v1/offer/' + zeroId + '/finalize', '{}', zeroToken, new ArrayBuffer(0), '')
+	const zeroDoneObj = jsonOf(zeroDone)
+	const zeroTop: string[] = zeroDoneObj == null ? [] : UTSJSONObject.keys(zeroDoneObj!)
+	const zeroList = zeroDoneObj == null ? null : zeroDoneObj!.getArray<UTSJSONObject>('verified')
+	const zeroEntry = zeroList != null && zeroList!.length == 1 ? zeroList![0] : null
+	check('§4 finalize 的形状：这一端回的是顶层 offer_id+verified、条目 id/ok/missing/path 四个键',
+		sameKeys(zeroTop, ['offer_id', 'verified']) && zeroEntry != null
+		&& sameKeys(UTSJSONObject.keys(zeroEntry!), ['id', 'ok', 'missing', 'path']),
+		zeroTop.join(',') + ' | ' + (zeroEntry == null ? '没有那一条' : UTSJSONObject.keys(zeroEntry!).join(',')))
+	const zeroHoles = zeroEntry == null ? [-1] : numList(zeroEntry!.getArray<number>('missing'))
+	check('§4 零字节的条目：一块没传也过整文件摘要（0 字节的落点就是它的全部内容），落点照常报回',
+		zeroEntry != null && zeroEntry!.getBoolean('ok', false) && zeroHoles.length == 0
+		&& zeroEntry!.getString('path', '').indexOf(zeroRel) >= 0,
+		codeOfReply(zeroDone) + ' | ' + zeroHoles.join(','))
+	// 那份 0 字节的落点被人从盘上拿掉：台账无从作废（它本来就没记任何一块），答复也就点不出任何问题分块。
+	const goneZero = hexOf(randomBytes(8))
+	const goneZeroFile = hexOf(randomBytes(8))
+	const goneZeroRel = '零字节被删.txt'
+	zeroReply(goneZero, goneZeroFile, goneZeroRel)
+	recvDrop(landOf(goneZero, goneZeroRel))
+	const goneDone = askOn(zeroBox, SIM_PEER_ID, 'POST', '/v1/offer/' + goneZero + '/finalize', '{}', zeroToken, new ArrayBuffer(0), '')
+	const goneObj = jsonOf(goneDone)
+	const goneList = goneObj == null ? null : goneObj!.getArray<UTSJSONObject>('verified')
+	const goneEntry = goneList != null && goneList!.length == 1 ? goneList![0] : null
+	const goneHoles = goneEntry == null ? [-1] : numList(goneEntry!.getArray<number>('missing'))
+	check('§4 那一格量出来了：零字节的条目被摘要推翻时回 ok:false、缺块表是空的、落点是 null',
+		goneEntry != null && !goneEntry!.getBoolean('ok', true) && goneHoles.length == 0
+		&& goneDone.body.replace(/ /g, '').indexOf('"path":null') >= 0,
+		goneEntry == null ? '没有那一条' : (goneEntry!.getBoolean('ok', true).toString() + ' | ' + goneHoles.join(',') + ' | ' + goneDone.body))
+
 	// 6. chunks: store, reject a lying digest, reject the wrong length, and be idempotent.
 	const bigId = files[1].id
 	const bigSize = files[1].size
@@ -2200,6 +2273,13 @@ class ChunkSwallow {
 	 *  that predates the field, so §7 has to read the number it printed instead. spec §7's two directions
 	 *  are what the two legs below measure. */
 	helloVersions: number[] | null = null
+	/** After how many served chunk writes this peer's disk loses the whole file. Spec §4's retry clause
+	 *  is read from the `finalize` answer's `missing`, and the only way to make that list non-empty without
+	 *  a lost write is a ledger the whole-file read then denies. */
+	eraseAfter: number = 0
+	eraseRel: string = ''
+	/** The offer id inside the manifest this peer was shown - the prefix the landing sits under. */
+	offerId: string = ''
 	chunksSeen: number = 0
 	stateAsks: number = 0
 	/** How many request lines this peer was actually shown. A transport that refused the certificate never
@@ -2237,6 +2317,10 @@ function swallowCaller(probe: ChunkSwallow): Caller {
 		const isOffer = method == 'POST' && path == '/v1/offer'
 		if (isOffer) {
 			probe.offerAsks = probe.offerAsks + 1
+			const announced = parseJson(jsonBody)
+			if (announced != null) {
+				probe.offerId = announced!.getString('offer_id', '')
+			}
 		}
 		if (method == 'GET' && path.indexOf('/state') >= 0) {
 			probe.stateAsks = probe.stateAsks + 1
@@ -2252,6 +2336,11 @@ function swallowCaller(probe: ChunkSwallow): Caller {
 			return
 		}
 		const reply = askOn(probe.inbox, SIM_PEER_ID, method, path, jsonBody, token, unescapeChunk(body, escape), sha)
+		if (isChunk && probe.eraseAfter > 0 && probe.chunksSeen == probe.eraseAfter && probe.offerId != '' && probe.eraseRel != '') {
+			// Served, ledgered, and then the bytes walk away underneath it: the next whole-file read is
+			// the only thing that can say so, and what it says is spec §4's `missing`.
+			recvDrop(landOf(probe.offerId, probe.eraseRel))
+		}
 		if (!reply.pending) {
 			if (probe.helloVersions != null && method == 'GET' && path == '/v1/hello') {
 				// The peer answers with its own set replaced, which is the only way to reach §7 from
@@ -2471,6 +2560,19 @@ export function senderSelfReport(): string {
 	check('这一趟对方只被出示了一份清单', m.offerAsks == 1, m.offerAsks.toString())
 	check('那一份清单已经登记在这一单的账上', m.inbox.offers.length == 1, m.inbox.offers.length.toString())
 	check('读不到应答的这一趟一块都没推', m.chunksSeen == 0, m.chunksSeen.toString())
+
+	// H. 第十五轮巡检（#181）：§4 那句「只补传该文件的问题分块」的块号，这一端只可能从 finalize 答复的
+	// `missing` 里读。A–D 量的是「回复没来」，这条量的是「回复来了，且说这块不算」：两块都写完以后把落点
+	// 从盘上拿掉——台账还替它担保，于是整文件摘要读出的是空的，答复随之改口成全缺。这一端该只 PUT 那两个号，
+	// 而且不必再去问一次 state：问了才是拿续传的账顶替那条答复，合同的顺序是反过来写的。
+	const denied = new ChunkSwallow()
+	denied.eraseAfter = 2
+	denied.eraseRel = big
+	const rdenied = new SenderRun()
+	runSender(denied, big, rdenied, '')
+	check('那块被整文件摘要推翻后，这一端按答复点名的块补传，第二次 finalize 就绿', rdenied.done && rdenied.ok, rdenied.summary)
+	check('补传写的就是那两个块号（这单一共四次写块）', denied.chunksSeen == 4, denied.chunksSeen.toString())
+	check('它没去问 state：那几个块号是 finalize 那条答复给的', denied.stateAsks == 0, denied.stateAsks.toString())
 
 	out.push(fail == 0 ? '发送自检 ' + pass.toString() + ' 项全部通过' : '发送自检失败 ' + fail.toString() + ' 项，通过 ' + pass.toString() + ' 项')
 	return out.join('\n')
