@@ -637,6 +637,18 @@ function routeOffer(body: UTSJSONObject, cb: (status: number, body: string) => v
 	reply(200, offerPayload(offer), cb)
 }
 
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+	if (a.length != b.length) {
+		return false
+	}
+	for (let i = 0; i < a.length; i++) {
+		if (a[i] != b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
 function routeChunk(parts: string[], body: ArrayBuffer, sha: string, cb: (status: number, body: string) => void): void {
 	const offerId = parts[3]
 	const fileId = parts[5]
@@ -683,6 +695,13 @@ function routeChunk(parts: string[], body: ArrayBuffer, sha: string, cb: (status
 	if (stored == null) {
 		stored = new Map()
 		offer.chunks.set(fileId, stored)
+	}
+	const kept = stored!.get(index)
+	if (kept != null && sameBytes(kept!, data)) {
+		// §4 的幂等那一支：这一条请求整体与已经收下的那份一致，就省掉一次重写，答复多带一个键。
+		// 与 cs-receive.uts:1015-1018 同一句，只是这里的台账存的是字节而不是摘要。
+		reply(200, { index: index, stored: true, idempotent: true } as UTSJSONObject, cb)
+		return
 	}
 	stored!.set(index, data)
 	reply(200, { index: index, stored: true } as UTSJSONObject, cb)
@@ -944,10 +963,15 @@ const recvPrepare: PrepareFn = (relpath: string, size: number): string => {
 	return '/模拟接收目录/' + relpath
 }
 
+/** How many times the store actually got a write. §4's `idempotent` answer claims a rewrite was skipped,
+ *  and the only witness for "skipped" in this tier is a counter beside the one function that writes. */
+let recvWrites: number = 0
+
 const recvWrite: WriteFn = (relpath: string, offset: number, buf: ArrayBuffer): string => {
 	if (recvFault == 'WRITE_FAIL') {
 		return '写入失败（注入）'
 	}
+	recvWrites = recvWrites + 1
 	const src = new Uint8Array(buf)
 	// The Map is this target's file: an offer's allocation was made at the declared length, so a chunk
 	// that finds nothing there is the repair after a ledger the digest denied (#127), not a wrong
@@ -2323,6 +2347,94 @@ export function receiveSelfReport(): string {
 	check('§4 中止：撤掉之后重投同一份清单，拿的还是 OFFER_UNKNOWN 而不是重新问一遍',
 		codeOfReply(replyOffer(offerJson(sameId, sameFiles, SIM_PEER_ID, SIM_NAME))) == 'OFFER_UNKNOWN')
 
+	// 17. spec §4's chunk replies read as bytes (#183). The paper used to draw none of them: no body for the
+	// `200`, no detail for either `422`, and 「最多 3 次」 for what is three writes. The kernel has always
+	// answered all of it, so these legs read the exact key sets - the sentence and the bytes cannot drift.
+	const ckBox = newInbox()
+	const ckPair = jsonOf(askPairOn(ckBox, SIM_PEER_ID, currentPairCode(ckBox, nowSeconds()),
+		passphraseOf(ckBox, nowSeconds()), simKey))
+	const ckToken = ckPair == null ? '' : ckPair!.getString('token', '')
+	const ckId = hexOf(randomBytes(8))
+	const ckFiles = simFilesFor(SCRATCH_TEXT, SCRATCH_BIG)
+	askOn(ckBox, SIM_PEER_ID, 'POST', '/v1/offer', offerJson(ckId, ckFiles, SIM_PEER_ID, SIM_NAME),
+		ckToken, new ArrayBuffer(0), '')
+	resolveOffer(ckBox, ckId, true, recvPrepare, recvDrop)
+	const ckSize = ckFiles[1].size
+	const ckAll = simFileOf(SCRATCH_BIG)
+	const ckHead = sliceOf(ckAll, 0, chunkSizeAt(ckSize, 0))
+	const ckTail = sliceOf(ckAll, CHUNK_SIZE, chunkSizeAt(ckSize, 1))
+	const ckPut = (index: number, part: Uint8Array, sha: string): WireReply => {
+		return askOn(ckBox, SIM_PEER_ID, 'PUT', '/v1/offer/' + ckId + '/chunk/' + ckFiles[1].id + '/' + index.toString(),
+			'', ckToken, part.buffer as ArrayBuffer, sha)
+	}
+	const ckFirst = ckPut(0, ckHead, hexOf(sha256Bytes(ckHead)))
+	const ckFirstObj = jsonOf(ckFirst)
+	check('§4 一块写成的 200 摊开就是纸上这块：只有 index 与 stored 两个键',
+		ckFirst.status == 200 && ckFirstObj != null && sameKeys(UTSJSONObject.keys(ckFirstObj!), ['index', 'stored'])
+		&& ckFirstObj!.getNumber('index', -1) == 0 && ckFirstObj!.getBoolean('stored', false), ckFirst.body)
+	const ckBefore = recvWrites
+	const ckRepeat = ckPut(0, ckHead, hexOf(sha256Bytes(ckHead)))
+	const ckRepeatObj = jsonOf(ckRepeat)
+	check('§4 重复写入同一 index 且这一条请求整体一致：纸上多画的那一个键也在',
+		ckRepeat.status == 200 && ckRepeatObj != null
+		&& sameKeys(UTSJSONObject.keys(ckRepeatObj!), ['index', 'stored', 'idempotent'])
+		&& ckRepeatObj!.getBoolean('idempotent', false), ckRepeat.body)
+	check('§4 那一个键换来的是不重写：这一次落盘的口子压根没开', recvWrites == ckBefore,
+		ckBefore.toString() + '→' + recvWrites.toString())
+	const ckLied = ckPut(1, ckTail, hexOf(sha256Bytes(ckHead)))
+	const ckLiedDetail = ckLied.status == 422 ? (jsonOf(ckLied) == null ? null : jsonOf(ckLied)!.getJSON('detail')) : null
+	check('§4 摘要与体不符那副 detail 摊开就是纸上这块，而 expected 装的是发送方自己声明的那一份',
+		ckLied.status == 422 && codeOfReply(ckLied) == 'CHUNK_DIGEST_MISMATCH' && ckLiedDetail != null
+		&& sameKeys(UTSJSONObject.keys(ckLiedDetail!), ['index', 'expected'])
+		&& ckLiedDetail!.getString('expected', '') == hexOf(sha256Bytes(ckHead))
+		&& ckLiedDetail!.getString('expected', '') != hexOf(sha256Bytes(ckTail)), ckLied.body)
+	const ckShort = ckPut(1, sliceOf(ckTail, 0, ckTail.length - 1), hexOf(sha256Bytes(ckTail)))
+	const ckShortDetail = ckShort.status == 422 ? (jsonOf(ckShort) == null ? null : jsonOf(ckShort)!.getJSON('detail')) : null
+	check('§4 长度不对那副 detail 摊开就是纸上这块：reason/got/want 三个键，want 是这一条该有多长',
+		ckShort.status == 422 && ckShortDetail != null
+		&& sameKeys(UTSJSONObject.keys(ckShortDetail!), ['reason', 'got', 'want'])
+		&& ckShortDetail!.getString('reason', '') == 'length'
+		&& ckShortDetail!.getNumber('got', -1) == ckTail.length - 1
+		&& ckShortDetail!.getNumber('want', -1) == ckTail.length, ckShort.body)
+	const ckOut = ckPut(9, ckHead, hexOf(sha256Bytes(ckHead)))
+	const ckOutDetail = ckOut.status == 400 ? (jsonOf(ckOut) == null ? null : jsonOf(ckOut)!.getJSON('detail')) : null
+	check('§4 序号越界是 400 BAD_CHUNK_INDEX，detail 只有 index 与 count 两个键，count 是这个文件的块数',
+		ckOut.status == 400 && codeOfReply(ckOut) == 'BAD_CHUNK_INDEX' && ckOutDetail != null
+		&& sameKeys(UTSJSONObject.keys(ckOutDetail!), ['index', 'count'])
+		&& ckOutDetail!.getNumber('count', -1) == chunkCount(ckSize), ckOut.body)
+	// 「请求头 X-Sha256 为本块摘要」说的是发送方必发，而三端的接收方都只在它非空时校验：头缺了，块级
+	// 这一关就整格跳过（cs-receive.uts:1009 的 `sha != '' && sha != digest`）。下面这一腿把缺头的代价量出来：
+	// 七个 `Z` 照落，唯一还说它不对的是 finalize 的整文件摘要，而摘要一推翻台账，好块陪坏块一起重报。
+	// （这一腿按浏览器的清单长度放一整块 `Z`：PC 那一份实测用的七个字节，纸面引的是它。）
+	const ckZeros = new Uint8Array(chunkSizeAt(ckSize, 1))
+	for (let i = 0; i < ckZeros.length; i++) {
+		ckZeros[i] = 90
+	}
+	const ckNaked = ckPut(1, ckZeros, '')
+	const ckNakedObj = jsonOf(ckNaked)
+	const ckLand = recvStore.get(landOf(ckId, SCRATCH_BIG))
+	check('§4 不带 X-Sha256 的 PUT 照收，回的还是那两个键',
+		ckNaked.status == 200 && ckNakedObj != null && sameKeys(UTSJSONObject.keys(ckNakedObj!), ['index', 'stored']),
+		ckNaked.body)
+	check('§4 块级校验被跳过时那一片 `Z` 真的落进偏移：落点上第 4 MiB 往后就是它们',
+		ckLand != null && ckLand!.length == ckSize && ckLand![CHUNK_SIZE] == 90 && ckLand![ckSize - 1] == 90,
+		ckLand == null ? '落点不在' : ckLand!.length.toString())
+	const ckDone = askOn(ckBox, SIM_PEER_ID, 'POST', '/v1/offer/' + ckId + '/finalize', '{}', ckToken, new ArrayBuffer(0), '')
+	const ckDoneObj = jsonOf(ckDone)
+	const ckList = ckDoneObj == null ? null : ckDoneObj!.getArray<UTSJSONObject>('verified')
+	let ckEntry: UTSJSONObject | null = null
+	if (ckList != null) {
+		for (let i = 0; i < ckList!.length; i++) {
+			if (ckList![i].getString('id', '') == ckFiles[1].id) {
+				ckEntry = ckList![i]
+			}
+		}
+	}
+	check('§4 这一单最后的防线是整文件摘要：它判不过，台账作废后按全缺重报，好块陪坏块一起重写',
+		ckEntry != null && !ckEntry!.getBoolean('ok', true)
+		&& numList(ckEntry!.getArray<number>('missing')).length == chunkCount(ckSize)
+		&& ckEntry!.getString('path', '') == '', ckDone.body)
+
 	out.push(fail == 0 ? '接收自检 ' + pass.toString() + ' 项全部通过' : '接收自检失败 ' + fail.toString() + ' 项，通过 ' + pass.toString() + ' 项')
 	return out.join('\n')
 }
@@ -2360,6 +2472,11 @@ class ChunkSwallow {
 	 *  a lost write is a ledger the whole-file read then denies. */
 	eraseAfter: number = 0
 	eraseRel: string = ''
+	/** How many chunk writes this peer refuses with spec §4's `422 CHUNK_DIGEST_MISMATCH` without ever
+	 *  serving the bytes (`99` = every one). A peer that answers no to each write is the only way this tier
+	 *  can count the shared sender's write budget: §4's 「最多 3 次」 is three *writes*, while the phone's
+	 *  own constant spells the same number as two *resends* (`CHUNK_RESEND_MAX`). */
+	rejectChunks: number = 0
 	/** The offer id inside the manifest this peer was shown - the prefix the landing sits under. */
 	offerId: string = ''
 	chunksSeen: number = 0
@@ -2395,6 +2512,19 @@ function swallowCaller(probe: ChunkSwallow): Caller {
 		const eat = isChunk && (probe.nth == -1 || probe.chunksSeen + 1 == probe.nth)
 		if (isChunk) {
 			probe.chunksSeen = probe.chunksSeen + 1
+		}
+		if (isChunk && probe.rejectChunks > 0) {
+			probe.rejectChunks = probe.rejectChunks - 1
+			// The refusal §4 draws, with the shape the kernels answer in: `{index, expected}`, and
+			// `expected` is the digest the sender itself declared. The bytes are never served.
+			const saidDetail = new UTSJSONObject()
+			saidDetail['index'] = probe.chunksSeen
+			saidDetail['expected'] = sha
+			const saidCode = new UTSJSONObject()
+			saidCode['code'] = 'CHUNK_DIGEST_MISMATCH'
+			saidCode['detail'] = saidDetail
+			cb(422, JSON.stringify(saidCode))
+			return
 		}
 		const isOffer = method == 'POST' && path == '/v1/offer'
 		if (isOffer) {
@@ -2655,6 +2785,20 @@ export function senderSelfReport(): string {
 	check('那块被整文件摘要推翻后，这一端按答复点名的块补传，第二次 finalize 就绿', rdenied.done && rdenied.ok, rdenied.summary)
 	check('补传写的就是那两个块号（这单一共四次写块）', denied.chunksSeen == 4, denied.chunksSeen.toString())
 	check('它没去问 state：那几个块号是 finalize 那条答复给的', denied.stateAsks == 0, denied.stateAsks.toString())
+
+	// I. 第十七轮巡检（#183）：§4 那句「发送方须重传该块（最多 3 次）」数的是**这条 PUT 一共写几次**。
+	// 两个发送方把同一个数写成两副样子——PC 是 `retries=3` 的写入次数，这一端（与两台手机共用的
+	// `cs-client.uts`）是 `CHUNK_RESEND_MAX = 2` 的重传次数。A–D 量的是「回复没来」，那几种里发送方
+	// 先问对方缺不缺；这一腿量的是「回复来了，说的是这一块不算」：对方逢每块必拒，就没有第二问，
+	// 只有那三次写。
+	const rej = new ChunkSwallow()
+	rej.rejectChunks = 99
+	const rrej = new SenderRun()
+	runSender(rej, big, rrej, '')
+	check('每块都被 422 拒掉时这一单判死', rrej.done && !rrej.ok, rrej.summary)
+	check('§4 那一块一共写三次：首发一次、重传至多两次（这端的常量写的是那两次）', rej.chunksSeen == 3, rej.chunksSeen.toString())
+	check('三次之间它一次 state 都没问：422 说的是这块不算，不是回复没来', rej.stateAsks == 0, rej.stateAsks.toString())
+	check('报出去的就是对方那一句分块校验失败', rrej.summary.indexOf('分块校验失败') >= 0, rrej.summary)
 
 	out.push(fail == 0 ? '发送自检 ' + pass.toString() + ' 项全部通过' : '发送自检失败 ' + fail.toString() + ' 项，通过 ' + pass.toString() + ' 项')
 	return out.join('\n')

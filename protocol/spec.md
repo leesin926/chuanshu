@@ -227,10 +227,63 @@ manifest（这份摊开就是三端今天真发上线的字节，一个不多一
 两种之后，同一个 `offer_id` 的清单再投一次都是 `404 OFFER_UNKNOWN`：这一单在本场会话里已经有了回答，
 而那个回答是"没有这一单"。
 
-分块：`chunk_size` 固定 4 MiB，`index = offset // chunk_size`，末块可短。请求头
-`X-Sha256` 为本块摘要，`X-File-Size` 为文件总长。接收方按 `index*chunk_size` 定位写偏移，
-因此**分块可乱序、可重复、可断点补齐**。重复写入同一 index 且摘要一致 → `200`；摘要不一致
-→ `422 CHUNK_DIGEST_MISMATCH`，发送方须重传该块（最多 3 次）。
+分块：`chunk_size` 固定 4 MiB，`index = offset // chunk_size`，末块可短。请求头 `X-Sha256` 为
+本块摘要，两个发送方都**无条件带上它**（PC `app/net/send.py:562`、手机 `cs-client.uts:444-448`），
+接收方却只在它非空时做块级校验：PC `app/net/receive.py:766` 与手机 `cs-receive.uts:1009` 写的是同一句
+`sha != '' && sha != digest`。头缺失时三端都**照收、不校验**（2026-10-29 第十七轮实测：一个不带
+`X-Sha256`、体是七个大写 `Z` 的 PUT 在 PC 上拿到 `200`，那七个字节真的落进了那个偏移；同一句在共用内核
+上也从屏上量到一次——接收自检里那条「不带 X-Sha256 的 PUT 照收」，体长按这一端清单里那个尾块自己的长度
+（`.probe/r17_chunk_probe.txt` 第 5/5b/5c 行、`.probe/r17_web_after.txt`）；这一单最后的
+防线只剩 `finalize` 的整文件摘要，而摘要一推翻台账就按下面续传那一节改口成全缺，好块陪坏块一起重写）。
+`X-File-Size` 这个头**没有任何一端发、也没有任何
+一端读**：接收方要比的长度来自清单里这一条自己的 `size`（`receive.py:761-764`、
+`cs-receive.uts:1004-1007`），纸上从前把它和 `X-Sha256` 并列写成分块的请求头（#163 记下的那道题，
+这一轮从纸上收掉）。接收方按 `index*chunk_size` 定位写偏移，因此**分块可乱序、可重复、可断点补齐**；
+序号不在 `[0, 该文件块数)` 里是 `400 BAD_CHUNK_INDEX`，detail 给 `{index, count}`（`receive.py:758-760`、
+`cs-receive.uts:999-1001`、浏览器 `web/index.uts:660-663`）。
+
+一块写成的应答（这份摊开也是三端今天真发上线的字节，一个不多一个不少）：
+
+```json
+{ "index": 0, "stored": true }
+```
+
+重复写入同一 index 且这一条请求与已存的那份整体一致时还是 `200`，只是多带一个键：
+
+```json
+{ "index": 0, "stored": true, "idempotent": true }
+```
+
+「摘要一致」比的是一条完整请求反解之后的体，不是块号：同一 index 只发前 2048 字节、抬头仍是全块那份
+摘要，拿到的是 `422`（`.probe/r17_chunk_probe.txt` 第 2b 行）。`idempotent` 是接收方自己写下的说明，
+没有任何发送方读它——PC 的 `_put_chunk` 与手机的 `putChunk` 都只判 `status == 200`；它存在是因为三个
+接收端都用它省掉一次重写（`receive.py:770-777`、`cs-receive.uts:1015-1018`、`web/index.uts` 的
+`routeChunk`），而重发的那一次仍然要给这一单续命，所以心跳记在校验之后、跳过写盘之前。
+
+被拒时 detail 在网上有两副形状，纸上从前一副都没画。长度不对：
+
+```json
+{ "reason": "length", "got": 1024, "want": 4194304 }
+```
+
+摘要与体不符：
+
+```json
+{ "index": 0, "expected": "a58789e910e5f939…49bd6ffe1d" }
+```
+
+`expected` 里装的是**发送方自己声明的那一份**，接收方算出来的摘要从不上网（两端都直接把 `claimed_digest`
+/ `sha` 回回去：`receive.py:767`、`cs-receive.uts:1010`；`.probe/r17_chunk_probe.txt` 第 3a/3b 行）。
+
+「发送方须重传该块（最多 3 次）」说的是这一条 PUT **一共写三次**：首发一次、重传至多两次。同一个数在两个
+发送方手里写成两副样子——PC 是 `send(..., retries=3)` 配 `for attempt in range(retries)`
+（`app/net/send.py:513`、`:557-608`），手机是 `CHUNK_RESEND_MAX = 2` 配 `attempt < CHUNK_RESEND_MAX`
+（`cs-client.uts:66`、`:371-401`）。2026-10-29 拿一个逢分块 PUT 必回 `422 CHUNK_DIGEST_MISMATCH` 的对端
+量到两边都恰好三次，第三次之后把 422 抛出去（PC：`.probe/r17_chunk_probe.txt` 第 4 行；手机那半边跑的是
+同一份 `cs-client.uts`，在浏览器档位上量到那三次、且三次之间一次 `state` 都没问——发送自检「§4 那一块
+一共写三次」那一条，`.probe/r17_web_after.txt`；PC 那三次之间还各升了一档节奏，见下面节奏那一节）。
+这个数不进 `protocol.json`：`transport` 里的字段是三端都要读的，而重传
+次数只有发送方自己用，加进去就是一个没人读的格子（`X-File-Size` 那种）。
 
 **零字节转义**：鸿蒙的平台 TLS 服务端把请求体交给 JS 时只给到第一个 `0x00` 为止，之后的字节连同
 这条连接的读通道一起消失（`.probe/nul.py`：600 B/4 MiB 无零体的请求都完整落到底，把 `0x00` 种在第

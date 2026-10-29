@@ -1356,6 +1356,143 @@ def phase_offer_reply(proto: protocol_spec.Protocol, workspace: Path) -> None:
         service2.stop()
 
 
+def phase_chunk_reply(proto: protocol_spec.Protocol, workspace: Path) -> None:
+    """§4's chunk replies read as claims about wire bytes - and about how many times a sender writes.
+
+    Round-seventeen shape (§6 第 34 条): the paper drew no body for the chunk `200`, although every receiver
+    answers `{index, stored}` and the idempotent repeat adds `idempotent: true`; it drew no detail for either
+    `422`, although the two refusals travel as `{index, expected}` (carrying the *sender's own claim*, never
+    the digest the receiver computed) and `{reason, got, want}`; it promised 「最多 3 次」, which the two
+    senders spell as `retries=3` writes and `CHUNK_RESEND_MAX = 2` resends and which measures as three writes
+    on both; and it listed `X-File-Size` among the chunk headers when no end sends it and no end reads it,
+    while a PUT with no `X-Sha256` is accepted with the block check skipped (`receive.py:766`,
+    `cs-receive.uts:1009`) - so the bytes land as sent and only `finalize`'s whole-file digest can say so.
+    """
+    spec = (ROOT / "protocol" / "spec.md").read_text(encoding="utf-8")
+    section = spec.split("## 4. 传输")[1].split("## 5.")[0]
+    blocks = [json.loads(body) for body in re.findall(r"```json\n(.*?)```", section, re.S)]
+    first_answer = next(b for b in blocks if set(b) == {"index", "stored"})
+    repeat_answer = next(b for b in blocks if "idempotent" in b)
+    length_detail = next(b for b in blocks if set(b) == {"reason", "got", "want"})
+    digest_detail = next(b for b in blocks if set(b) == {"index", "expected"})
+
+    base = workspace / "chunk-corpus"
+    base.mkdir(parents=True, exist_ok=True)
+    payload = blob(31, proto.chunk_size + 7)
+    (base / "两块.bin").write_bytes(payload)
+    head, tail = payload[: proto.chunk_size], payload[proto.chunk_size:]
+    head_sha, tail_sha = hashlib.sha256(head).hexdigest(), hashlib.sha256(tail).hexdigest()
+
+    sender = load_or_create(workspace / "chunk-sender17")
+    receiver = load_or_create(workspace / "chunk-receiver17")
+    root = workspace / "chunk-received17"
+    service = ReceiveService(receiver, "PC-Chunk17", lambda manifest, who, caller: True,
+                             host="127.0.0.1", port=0, root=root)
+    service.start()
+    try:
+        files = plan([base / "两块.bin"], base=base)
+        conn = PeerConnection(sender, "PC-Chunk17", "127.0.0.1", service.port, receiver.served_fingerprint)
+        conn.hello()
+        conn.pair(service.current_pair_code())
+        conn.offer(files)
+        landing = root / conn.offer_id / files[0].relpath
+
+        def put(index: int, body: bytes, sha: str, extra: dict | None = None):
+            headers = {"X-Sha256": sha} if sha else {}
+            if extra:
+                headers.update(extra)
+            return conn._request("PUT", f"/v1/offer/{conn.offer_id}/chunk/{files[0].id}/{index}",
+                                 raw_body=body, headers=headers)
+
+        status, reply = put(0, head, head_sha)
+        check("§4 一块写成的 200 摊开就是纸上这块：两个键，stored 是真",
+              status == 200 and set(reply) == first_answer.keys() and reply.get("stored") is True
+              and reply.get("index") == 0, f"{status} {reply}")
+        written = landing.stat().st_mtime_ns
+        time.sleep(0.05)
+        status, repeat = put(0, head, head_sha)
+        check("§4 重复写入同一 index 且这一条请求整体一致：多带的那一个键也是纸上那个",
+              status == 200 and set(repeat) == repeat_answer.keys() and repeat.get("idempotent") is True,
+              f"{status} {repeat}")
+        check("§4 那一个键换来的是不重写：落点的 mtime 没动过",
+              landing.stat().st_mtime_ns == written, (written, landing.stat().st_mtime_ns))
+
+        status, truncated = put(0, head[:2048], head_sha)
+        check("§4「摘要一致」比的是一条完整请求的体，不是块号：同一 index 只送前 2048 字节配全块那份摘要是 422",
+              status == proto.http_status("CHUNK_DIGEST_MISMATCH")
+              and truncated.get("code") == "CHUNK_DIGEST_MISMATCH", f"{status} {truncated}")
+        status, lied = put(1, b"Z" * len(tail), tail_sha)
+        detail = lied.get("detail") or {}
+        check("§4 摘要与体不符那副 detail 摊开就是纸上这块，而 expected 装的是发送方自己声明的那一份",
+              status == proto.http_status("CHUNK_DIGEST_MISMATCH") and set(detail) == digest_detail.keys()
+              and detail.get("index") == 1 and detail.get("expected") == tail_sha
+              and detail.get("expected") != hashlib.sha256(b"Z" * len(tail)).hexdigest(), f"{status} {lied}")
+        status, wrong_len = put(1, tail + b"!", tail_sha)
+        detail = wrong_len.get("detail") or {}
+        check("§4 长度不对那副 detail 摊开就是纸上这块，报的是反解之后该有多长",
+              status == proto.http_status("CHUNK_DIGEST_MISMATCH") and set(detail) == length_detail.keys()
+              and detail.get("reason") == "length" and detail.get("got") == len(tail) + 1
+              and detail.get("want") == len(tail), f"{status} {wrong_len}")
+        status, phantom = put(0, head[:2048], head_sha, extra={"X-File-Size": "2048"})
+        check("§4 的 X-File-Size 谁都不读：谎报这个头的截断体拿的还是同一句 422「该有 4 MiB」",
+              status == proto.http_status("CHUNK_DIGEST_MISMATCH")
+              and (phantom.get("detail") or {}).get("want") == proto.chunk_size, f"{status} {phantom}")
+        status, out_of_range = put(len(payload) // proto.chunk_size + 5, head, head_sha)
+        detail = out_of_range.get("detail") or {}
+        check("§4 序号越界是 400 BAD_CHUNK_INDEX，detail 只有 index 与 count 两个键",
+              status == proto.http_status("BAD_CHUNK_INDEX") and out_of_range.get("code") == "BAD_CHUNK_INDEX"
+              and set(detail) == {"index", "count"} and detail.get("count") == 2, f"{status} {out_of_range}")
+
+        status, naked = put(1, b"ZZZZZZZ", "")
+        check("§4 不带 X-Sha256 的 PUT 三端都照收：这一端回 200，七个字节真的落进那个偏移",
+              status == 200 and set(naked) == first_answer.keys()
+              and landing.stat().st_size == proto.chunk_size + 7
+              and landing.read_bytes()[proto.chunk_size:] == b"ZZZZZZZ", f"{status} {naked}")
+        done = conn.finalize()
+        entry = (done.get("verified") or [{}])[0]
+        check("§4 块级校验被跳过时最后的防线只剩整文件摘要：那一单判不过，而台账作废后好块陪坏块一起重报",
+              entry.get("ok") is False and entry.get("missing") == [0, 1] and entry.get("path") is None,
+              json.dumps(entry, ensure_ascii=False))
+    finally:
+        service.stop()
+
+    # The write budget §4 states as 「最多 3 次」: one peer that refuses every chunk, counting the PUTs.
+    root2 = workspace / "chunk-received17b"
+    service2 = ReceiveService(receiver, "PC-Chunk17b", lambda manifest, who, caller: True,
+                              host="127.0.0.1", port=0, root=root2)
+    service2.start()
+    try:
+        files = plan([base / "两块.bin"], base=base)
+        conn = PeerConnection(sender, "PC-Chunk17b", "127.0.0.1", service2.port, receiver.served_fingerprint)
+        conn.hello()
+        conn.pair(service2.current_pair_code())
+        conn.offer(files)
+        writes: list[str] = []
+        real = conn._request
+
+        def always_reject(method, path, json_body=None, raw_body=b"", headers=None, pace_ms=0):
+            if path.startswith(f"/v1/offer/{conn.offer_id}/chunk/"):
+                writes.append(path.rsplit("/", 1)[1])
+                return 422, {"code": "CHUNK_DIGEST_MISMATCH",
+                             "detail": {"index": int(path.rsplit("/", 1)[1]), "expected": "0" * 64}}
+            return real(method, path, json_body=json_body, raw_body=raw_body, headers=headers, pace_ms=pace_ms)
+
+        conn._request = always_reject
+        raised = ""
+        try:
+            conn.send(files)
+        except protocol_spec.ProtocolError as exc:
+            raised = exc.code
+        finally:
+            conn._request = real
+        check("§4 那一块一共写三次：首发一次、重传至多两次，第三次之后把 422 抛出去",
+              writes == ["0", "0", "0"] and raised == "CHUNK_DIGEST_MISMATCH", f"{writes} {raised}")
+        check("§4 重传之间节奏往上升一档：三写之后 ladder 离开了起点",
+              conn.pace_ms > PACE_MS_LADDER[0], conn.pace_ms)
+    finally:
+        service2.stop()
+
+
 def phase_discovery(proto: protocol_spec.Protocol, workspace: Path) -> None:
     """Two symmetric peers finding each other, then promoting a prefix to an anchor."""
     from app.net.discovery import DiscoveryService, Peer, adopt_hello
@@ -1643,6 +1780,7 @@ def main() -> int:
         phase_manifest_fields(proto, workspace)
         phase_finalize_reply(proto, workspace)
         phase_offer_reply(proto, workspace)
+        phase_chunk_reply(proto, workspace)
         phase_chunk_reply_lost(proto, workspace)
         phase_discovery(proto, workspace)
         phase_reverse_pin(proto, workspace)

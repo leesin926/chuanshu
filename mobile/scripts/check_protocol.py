@@ -762,6 +762,137 @@ def check_offer_reply_shapes() -> None:
              "shapes itself, not only trust this guard")
 
 
+def check_chunk_reply() -> None:
+    """§4's chunk replies are the only bytes a transfer is actually made of, and until round seventeen the
+    paper drew none of them.
+
+    Round seventeen (#183) read 「分块」 against all four bodies that answer a chunk `PUT`. The section gave a
+    status for a rejected chunk and nothing else: no body for the `200`, no body for the idempotent repeat,
+    no detail for either `422`, and `X-File-Size` listed among the chunk headers when no end sends it and no
+    end reads it. It also said 「最多 3 次」 where the PC counts three *writes* (`retries=3` around
+    `range(retries)`) and the phone counts two *resends* (`CHUNK_RESEND_MAX = 2`) - the same three writes,
+    spelled one number apart. Every one of those is on the paper now, so a reader copying §4 builds the body
+    the receivers really answer. This guard keeps the four blocks, the sentences that carry the load, and the
+    three receivers' literals from drifting back apart.
+    """
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    section = spec.split("## 4.", 1)[1].split("\n## ", 1)[0] if "## 4." in spec else ""
+    flat = re.sub(r"\s+", "", section)
+
+    def said(needle: str) -> bool:
+        """§4's prose wraps mid-sentence, so a check that wants a whole clause folds the breaks out first."""
+        return re.sub(r"\s+", "", needle) in flat
+
+    blocks = re.findall(r"```json\n(.*?)```", section, re.S)
+
+    stored = [json.loads(one) for one in blocks if '"stored"' in one]
+    if len(stored) != 2:
+        fail(f"§4 holds {len(stored)} json blocks mentioning stored - a chunk write and its repeat are two "
+             "answers and both need drawing")
+    fresh = [one for one in stored if set(one) == {"index", "stored"}]
+    again = [one for one in stored if set(one) == {"index", "stored", "idempotent"}]
+    if len(fresh) != 1 or len(again) != 1:
+        fail(f"§4's chunk replies are {sorted({tuple(sorted(one)) for one in stored})} - the write answers "
+             "index/stored and the byte-identical repeat adds exactly idempotent")
+    if fresh[0]["stored"] is not True or again[0]["idempotent"] is not True:
+        fail("§4's chunk replies no longer say stored/idempotent are true - two keys that answer nothing")
+    if fresh[0]["index"] != again[0]["index"]:
+        fail("§4's two chunk replies report different indexes - the repeat is the same chunk, that is the point")
+
+    lengths = [json.loads(one) for one in blocks if '"reason"' in one]
+    if len(lengths) != 1 or set(lengths[0]) != {"reason", "got", "want"}:
+        fail("§4 no longer draws the length refusal as reason/got/want - all three receivers answer those "
+             "three keys and a reader needs to know `want` is the manifest's own size sliced")
+    if lengths and lengths[0]["reason"] != "length":
+        fail("§4's detail-with-reason block is no longer the length one - `reason` has exactly one value on the wire")
+    claimed = [json.loads(one) for one in blocks if '"expected"' in one]
+    if len(claimed) != 1 or set(claimed[0]) != {"index", "expected"}:
+        fail("§4 no longer draws the digest refusal as index/expected - and `expected` is the sender's own "
+             "claim, which is the half a reader gets wrong without it written down")
+
+    # The sentences that carry the load: who sends the header, who reads it, and what three writes means.
+    for needle, why in (
+        ('接收方却只在它非空时做块级校验', "a header the receivers treat as optional is not optional"),
+        ('头缺失时三端都**照收、不校验**', "the accepted-but-unverified PUT is §4's sharpest edge"),
+        ('没有任何一端发、也没有任何', "`X-File-Size` is back on the paper as a live header"),
+        ('`expected` 里装的是**发送方自己声明的那一份**', "the receiver's own digest must not look like it went on the wire"),
+        ('**一共写三次**：首发一次、重传至多两次', "「最多 3 次」 is three writes spelled two ways again - the sentence that made two ends disagree"),
+        ('加进去就是一个没人读的格子', "the reason the retry count stays out of protocol.json"),
+        ('detail 给 `{index, count}`', "BAD_CHUNK_INDEX's detail went back un-drawn"),
+    ):
+        if not said(needle):
+            fail(f"§4 no longer says {needle!r} - {why}")
+
+    recv = (HERE.parent / "app" / "net" / "receive.py").read_text(encoding="utf-8")
+    chunk_body = recv.split("def handle_chunk", 1)[1].split("\n    def ", 1)[0]
+    for literal, why in (
+        ('return {"index": index, "stored": True}', "the accepted write"),
+        ('return {"index": index, "stored": True, "idempotent": True}', "the accepted repeat"),
+        ('{"index": index, "count": count}', "BAD_CHUNK_INDEX's detail"),
+        ('{"reason": "length", "got": len(data), "want": want}', "the length detail"),
+        ('{"index": index, "expected": claimed_digest}', "the digest detail - claimed, not computed"),
+    ):
+        if literal not in chunk_body:
+            fail(f"app/net/receive.py's handle_chunk() no longer answers {literal} - §4 drew {why}")
+    if 'if claimed_digest and claimed_digest != digest:' not in chunk_body:
+        fail("app/net/receive.py no longer skips the chunk check for an absent X-Sha256 - §4's 照收、不校验 is "
+             "this one condition, and the sender-side rule to always send the header is the only thing keeping it honest")
+
+    utssdk = HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk"
+    kernel = (utssdk / "cs-receive.uts").read_text(encoding="utf-8")
+    for literal in ("return okWith({ index: index, stored: true } as UTSJSONObject)",
+                    "return okWith({ index: index, stored: true, idempotent: true } as UTSJSONObject)",
+                    "return failWith('BAD_CHUNK_INDEX', { index: index, count: count } as UTSJSONObject)",
+                    "if (sha != '' && sha != digest)",
+                    "{ reason: 'length', got: data.byteLength, want: want }",
+                    "return failWith('CHUNK_DIGEST_MISMATCH', { index: index, expected: sha } as UTSJSONObject)"):
+        if literal not in kernel:
+            fail(f"cs-receive.uts no longer answers {literal} - the phone and the PC answer one shape, and §4 says so")
+
+    # The browser's stand-in peer is the fourth body, and the only tier where the idempotent skip is witnessed.
+    harness = (utssdk / "web" / "index.uts").read_text(encoding="utf-8")
+    for literal in ("reply(200, { index: index, stored: true } as UTSJSONObject, cb)",
+                    "reply(200, { index: index, stored: true, idempotent: true } as UTSJSONObject, cb)",
+                    "failure('BAD_CHUNK_INDEX', { index: index, count: count } as UTSJSONObject, 400, cb)",
+                    "if (sha != '' && sha != digest)",
+                    "{ reason: 'length', got: data.length, want: want }",
+                    "failure('CHUNK_DIGEST_MISMATCH', { index: index, expected: sha } as UTSJSONObject, 422, cb)"):
+        if literal not in harness:
+            fail(f"web/index.uts's routeChunk() no longer answers {literal} - the demo peer teaches the "
+                 "sender legs to expect a reply no real peer sends")
+    if "if (kept != null && sameBytes(kept!, data))" not in harness or "let recvWrites: number = 0" not in harness:
+        fail("web/index.uts's repeat branch no longer compares bytes and counts writes - 「多带一个键」 has to "
+             "come with 省掉一次重写, and the counter next to the write is the only witness of that here")
+
+    # Neither sender may put X-File-Size back on the wire, and the retry budget stays written two ways.
+    send = (HERE.parent / "app" / "net" / "send.py").read_text(encoding="utf-8")
+    client = (utssdk / "cs-client.uts").read_text(encoding="utf-8")
+    for label, source in (("app/net/send.py", send), ("cs-client.uts", client),
+                          ("app/net/receive.py", recv), ("cs-receive.uts", kernel)):
+        if "X-File-Size" in source:
+            fail(f"{label} reads or writes X-File-Size again - §4 says no end sends it and no end reads it, "
+                 "and the length a receiver compares is sliced from the manifest's own size")
+    if "retries: int = 3" not in send or "for attempt in range(retries)" not in send:
+        fail("app/net/send.py's chunk budget is no longer three writes - `range(3)` is the three §4 counts")
+    if "const CHUNK_RESEND_MAX: number = 2" not in client or "attempt < CHUNK_RESEND_MAX" not in client:
+        fail("cs-client.uts's chunk budget is no longer two resends after the first write - the phone writes "
+             "three times too, and only the constant's name says so")
+
+    selftest = (HERE.parent / "scripts" / "protocol_selftest.py").read_text(encoding="utf-8")
+    if "def phase_chunk_reply(" not in selftest or \
+            re.search(r"^\s+phase_chunk_reply\(proto, workspace\)$", selftest, re.M) is None:
+        fail("scripts/protocol_selftest.py has no chunk-reply phase in its run - the four bodies, the "
+             "headerless PUT and the three-write budget are unmeasured again")
+
+    legs = len(re.findall(r"check\(\s*'§4 (一块写成|重复写入|那一个键换来|摘要与体不符|长度不对|序号越界|不带 X-Sha256|块级校验被跳过|这一单最后的防线)", harness))
+    if legs < 9:
+        fail(f"the receiving kernel has {legs} §4 chunk legs - it answers all four shapes itself, and has to prove it")
+    sender_legs = len(re.findall(r"check\(\s*'(每块都被 422 拒掉|§4 那一块一共写三次|三次之间它一次 state 都没问|报出去的就是对方那一句)", harness))
+    if sender_legs < 4:
+        fail(f"the sending harness has {sender_legs} legs for a peer that refuses every chunk - the phone's "
+             "three writes are §4's claim too, not only the PC's")
+
+
 def main() -> int:
     stamp_path = CONTRACT / "SOURCE.json"
     for name in ("protocol.json", "spec.md", "SOURCE.json"):
@@ -826,6 +957,7 @@ def main() -> int:
     check_manifest_fields()
     check_finalize_reply()
     check_offer_reply_shapes()
+    check_chunk_reply()
 
     print(f"OK  protocol v{body['protocol_version']} from {stamp['source_repo']}@{stamp['source_commit'][:8]}")
     print(f"OK  {len(body['error_codes'])} error codes, {len(body['endpoints'])} endpoints, chunk {chunk // 1024} KiB")
@@ -847,6 +979,7 @@ def main() -> int:
     print("OK  §4's manifest block is the wire: both senders' keys, and no receiver acts on total_size")
     print("OK  §4's finalize reply is one shape on paper and in both receivers; `missing` is who both senders resend by")
     print("OK  §4's three offer replies are one shape on paper and in all four bodies; the abort knows the question still open")
+    print("OK  §4's chunk replies are one shape on paper and in all four bodies; three writes, two names, one budget")
     return 0
 
 
