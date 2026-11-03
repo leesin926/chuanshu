@@ -1235,6 +1235,26 @@ msgstr ""
 msgid "收到 {who} 发来的 {n} 个文件（{size}）"
 msgstr "{who}에서 파일 {n}개({size}) 받음"
 
+#: app/net/spec.py:288
+msgid "配对码只能是数字。"
+msgstr "페어링 코드는 숫자만 사용할 수 있습니다."
+
+#: app/net/spec.py:290
+#, python-brace-format
+msgid "配对码是 {n} 位数字。"
+msgstr "페어링 코드는 {n}자리 숫자입니다."
+
+#: app/net/spec.py:305
+#, python-brace-format
+msgid "连接密码是 {m} 位。"
+msgstr "연결 비밀번호는 {m}자입니다."
+
+#: app/net/spec.py:308
+#, python-brace-format
+msgid "连接密码只有大写字母和数字：{bad}"
+msgstr "연결 비밀번호는 대문자와 숫자만 사용할 수 있습니다: {bad}"
+
+
 #~ msgid "附近的设备"
 #~ msgstr "근처의 기기"
 

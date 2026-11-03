@@ -1239,6 +1239,26 @@ msgstr ""
 msgid "收到 {who} 发来的 {n} 个文件（{size}）"
 msgstr "{who} から {n} ファイル（{size}）を受信"
 
+#: app/net/spec.py:288
+msgid "配对码只能是数字。"
+msgstr "ペアリングコードは数字のみ入力できます。"
+
+#: app/net/spec.py:290
+#, python-brace-format
+msgid "配对码是 {n} 位数字。"
+msgstr "ペアリングコードは{n}桁の数字です。"
+
+#: app/net/spec.py:305
+#, python-brace-format
+msgid "连接密码是 {m} 位。"
+msgstr "接続パスワードは{m}文字です。"
+
+#: app/net/spec.py:308
+#, python-brace-format
+msgid "连接密码只有大写字母和数字：{bad}"
+msgstr "接続パスワードは英大文字と数字のみです：{bad}"
+
+
 #~ msgid "附近的设备"
 #~ msgstr "近くのデバイス"
 

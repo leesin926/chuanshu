@@ -1350,6 +1350,26 @@ msgstr ""
 msgid "收到 {who} 发来的 {n} 个文件（{size}）"
 msgstr "{n} fichier(s) reçus de {who} ({size})"
 
+#: app/net/spec.py:288
+msgid "配对码只能是数字。"
+msgstr "Le code de jumelage ne peut contenir que des chiffres."
+
+#: app/net/spec.py:290
+#, python-brace-format
+msgid "配对码是 {n} 位数字。"
+msgstr "Le code de jumelage comporte {n} chiffres."
+
+#: app/net/spec.py:305
+#, python-brace-format
+msgid "连接密码是 {m} 位。"
+msgstr "Le mot de passe de connexion comporte {m} caractères."
+
+#: app/net/spec.py:308
+#, python-brace-format
+msgid "连接密码只有大写字母和数字：{bad}"
+msgstr "Le mot de passe de connexion n’utilise que des majuscules et des chiffres : {bad}"
+
+
 #~ msgid "附近的设备"
 #~ msgstr "Appareils à proximité"
 

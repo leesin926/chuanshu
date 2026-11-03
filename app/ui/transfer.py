@@ -2072,11 +2072,18 @@ class TransferPanel(QWidget):
         if not code and not self._pin_known(peer):
             self.status_label.setText(_("还差对方屏幕上那 {n} 位配对码。").format(n=self.proto.pair_code_digits))
             return
+        secret = self.secret_edit.text().strip()
+        why = (protocol_spec.code_reject(code, self.proto) if code else "") or protocol_spec.pass_reject(
+            secret, self.proto
+        )
+        if why:
+            self.status_label.setText(why)
+            return
         self._connecting = peer
         self.nearby_label.setText(self._nearby_text())
         self._sync_buttons()
         self._connect_worker = threading.Thread(
-            target=self._connect_run, args=(peer, code, self.secret_edit.text().strip()), name="chuanshu-connect", daemon=True
+            target=self._connect_run, args=(peer, code, secret), name="chuanshu-connect", daemon=True
         )
         self._connect_worker.start()
 

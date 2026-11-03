@@ -1883,6 +1883,143 @@ def check_lost_registration() -> None:
              f"only body for this clause on the phone, and this is the tier that runs the kernel")
 
 
+def check_pair_shape_local() -> None:
+    """§3's other half of the two secrets: a hand-typed `c`/`k` is measured for shape before it goes on the wire.
+
+    Round twenty-nine (#195) took the sentence 「旧的当场作废」 and found all three ends doing it - so what this
+    guard holds open is the clause written next to it. The receiver's only use for these two strings is equality,
+    which makes a 7th digit or a lowercase letter a *wrong guess* rather than a weaker promise: it spends one of
+    `pair_code_max_fails` marks booked against this source, and the person locked out is whoever pairs next. Before
+    this round PC measured nothing (the fields' max length caps digits but not letters, and both entry points asked
+    only "is it blank"), and the kernel's pairing-string parser asked about the code *or* the passphrase - never
+    both - so every QR payload, which always carries `c`, had an unmeasured `k`.
+    """
+    note = json.loads((CONTRACT / "protocol.json").read_text(encoding="utf-8-sig"))["transport"].get("note", "")
+    for needle, why in (
+        ("Shape is asked of a value a person typed or pasted", "the clause this round added - without it the paper "
+                                                             "only says what a receiver does with a wrong guess"),
+        ("the kernel's pairing-string parser asks both fields rather than one of them", "the else-if that made `k` "
+                                                                                        "unmeasurable on the scan path "
+                                                                                        "is now part of the contract"),
+        ("says why locally and sends nothing", "the promised shape of the refusal: this end speaks, the wire stays quiet"),
+    ):
+        if needle not in note:
+            fail(f"protocol.json's transport.note no longer says {needle!r} - {why}")
+
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    section = spec.split("## 3.", 1)[1].split("\n## ", 1)[0] if "## 3." in spec else ""
+    prose = "\n".join(p for p in section.split("\n\n") if not p.lstrip().startswith("（20"))
+    flat = re.sub(r"\s+", "", prose)
+    for needle, why in (
+        ("人手抄进来或粘进来的`c`与`k`", "the sentence's subject is what a person typed, not what a QR carried - "
+                                    "that is the path with typos on it"),
+        ("一次请求都不发", "the refusal is local: a sender that could never match does not reach the peer's bucket"),
+        ("`k`留空不在这一问里", "blank is the shape of「没有这个字段」, so measuring it here would turn an honest "
+                          "answer into a refusal"),
+        ("都不是一次更弱的承诺", "why this is a quota question and not an input-hygiene question - the reason the "
+                          "contract states it rather than leaving it to taste"),
+    ):
+        if re.sub(r"\s+", "", needle) not in flat:
+            fail(f"§3 no longer says {needle!r} - {why}")
+
+    root = HERE.parent
+    sdk = HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk"
+    spec_py = (root / "app" / "net" / "spec.py").read_text(encoding="utf-8")
+    ident_py = (root / "app" / "net" / "identity.py").read_text(encoding="utf-8")
+    ui = (root / "app" / "ui" / "transfer.py").read_text(encoding="utf-8")
+    cli = (root / "app" / "cli.py").read_text(encoding="utf-8")
+    kernel = (sdk / "cs-protocol.uts").read_text(encoding="utf-8")
+    harness = (sdk / "web" / "index.uts").read_text(encoding="utf-8")
+    store = (HERE / "chuanshu" / "store" / "session.uts").read_text(encoding="utf-8")
+
+    for literal, why in (
+        ("def code_reject(code: str, proto: Protocol) -> str:", "the code's shape question, asked of the contract's "
+                                                                "own numbers"),
+        ("def pass_reject(secret: str, proto: Protocol) -> str:", "and the passphrase's - blank answers it, a typed "
+                                                                  "string does not"),
+        ('if not secret:\n        return ""', "the blank half has to stay open: §3 reads an absent key as「没有这个字段」"),
+        ("PASSPHRASE_ALPHABET = \"ABCDEFGHJKLMNPQRSTUVWXYZ23456789\"",
+         "the one table both the minting side and the refusing side read"),
+        ("from app.i18n import _", "the refusals are sentences a person reads, so they go through the catalogue"),
+    ):
+        if literal not in spec_py:
+            fail(f"app/net/spec.py no longer contains {literal!r} - {why}")
+    if "PASSPHRASE_ALPHABET = \"ABCDEFGHJKLMNPQRSTUVWXYZ23456789\"" in ident_py:
+        fail("app/net/identity.py defines the passphrase alphabet again - two tables means the machine that mints a "
+             "secret can refuse the same secret, which is the failure this clause exists to prevent; read it from "
+             "app.net.spec")
+    if "from app.net.spec import PASSPHRASE_ALPHABET" not in ident_py or \
+            "secrets.choice(PASSPHRASE_ALPHABET)" not in ident_py:
+        fail("identity.py no longer mints the passphrase from the contract's single alphabet - the minting side has "
+             "to read the table the refusing side measures against")
+
+    connect = ui.split("def _start_connect(self)", 1)[1].split("\n    def ", 1)[0] if "def _start_connect(self)" in ui else ""
+    for literal, why in (
+        ('protocol_spec.code_reject(code, self.proto) if code else ""', "the panel asks the code's shape, and only "
+                                                                        "when there is one to ask about"),
+        ("protocol_spec.pass_reject(", "and the passphrase's"),
+        ("if why:\n            self.status_label.setText(why)\n            return", "the answer goes on this page, "
+                                                                                     "before the thread starts"),
+    ):
+        if literal not in connect:
+            fail(f"_start_connect() no longer contains {literal!r} - {why}")
+    if "args=(peer, code, self.secret_edit.text().strip())" in connect:
+        fail("the connect thread reads the passphrase field again instead of the measured `secret` - a value that "
+             "went to the wire without being asked about is the state §3's new clause refuses")
+
+    send = cli.split("def cmd_send(", 1)[1].split("\ndef ", 1)[0] if "def cmd_send(" in cli else ""
+    for literal, why in (
+        ('protocol_spec.code_reject(code, proto) if code else ""', "the CLI is the same sender as the panel - a "
+                                                                   "typo in --code costs the peer's bucket the same way"),
+        ("protocol_spec.pass_reject(secret, proto)", "and so is a typo in --secret"),
+        ("return 2", "a shape refusal is an argument problem, which is the exit code this command already uses for "
+                     "「没固定过这台，得用它的配对码」"),
+    ):
+        if literal not in send:
+            fail(f"cmd_send() no longer contains {literal!r} - {why}")
+
+    parser = kernel.split("export function parsePairUrl(", 1)[1].split("\n\treturn out\n}", 1)[0] \
+        if "export function parsePairUrl(" in kernel else ""
+    for literal, why in (
+        ("if (out.reject.length == 0 && out.code.length > 0)", "the code is measured when present - and the guard "
+                                                               "on `reject` keeps an unreadable payload's own reason "
+                                                               "from being overwritten"),
+        ("out.reject = codeReject(out.code)", "the code's shape question"),
+        ("out.reject = passReject(out.secret)", "and the passphrase's, which used to be reachable only when `c` "
+                                                "was absent - every current QR carries `c`"),
+    ):
+        if literal not in parser:
+            fail(f"parsePairUrl() no longer contains {literal!r} - {why}")
+    if re.search(r"}\s*else\s*\{\s*out\.reject\s*=\s*passReject", parser):
+        fail("parsePairUrl put the two secrets back into an if/else - with `c` in the payload (which is every QR this "
+             "contract prints) the passphrase then goes on the wire unmeasured")
+    check_code = store.split("function checkCodeAndNetwork()", 1)[1].split("\n}", 1)[0] if "function checkCodeAndNetwork()" in store else ""
+    for literal, why in (
+        ("const why = codeReject(activeOptions.code)", "the hand-typed path on the phone - the one this round found "
+                                                       "already whole, and it has to stay whole"),
+        ("const passWhy = passReject(activeOptions.secret)", "measured on its own branch, not as the else of the code's"),
+    ):
+        if literal not in check_code:
+            fail(f"checkCodeAndNetwork() no longer contains {literal!r} - {why}")
+
+    head = harness.split("} from '../cs-protocol.uts'", 1)[0]
+    for literal, why in (
+        ("parsePairUrl,", "the browser harness calls the kernel's parser; an export used and never imported compiles "
+                          "and then blanks the page"),
+        ("passReject,", "same for the two shape functions"),
+        ("QR_SCHEME,", "and for the scheme the legs build a payload out of"),
+    ):
+        if literal not in head:
+            fail(f"web/index.uts no longer imports {literal!r} - {why}")
+    legs = len(re.findall(r"check\('(照着屏幕抄对的码和密码不会被本地拦下|密码留空是一个答案而不是错误|"
+                          r"串里没有 c 与 k 时不因缺码被拒|密码抄成小写时这一串在本地就停住|"
+                          r"说的是连接密码的字母表|码多抄了一位时同样在本地停住|"
+                          r"两个都抄错时先答码那一句|扫码/粘贴那一趟与手输那一格答的是同一句话)", harness))
+    if legs < 8:
+        fail(f"the H5 sender self-check holds {legs} of the eight shape legs - the kernel is where these functions "
+             f"live for both phones, and the browser is the only tier that runs them without a device")
+
+
 def main() -> int:
     stamp_path = CONTRACT / "SOURCE.json"
     for name in ("protocol.json", "spec.md", "SOURCE.json"):
@@ -1956,6 +2093,7 @@ def main() -> int:
     check_finalize_replay()
     check_session_release()
     check_lost_registration()
+    check_pair_shape_local()
 
     print(f"OK  protocol v{body['protocol_version']} from {stamp['source_repo']}@{stamp['source_commit'][:8]}")
     print(f"OK  {len(body['error_codes'])} error codes, {len(body['endpoints'])} endpoints, chunk {chunk // 1024} KiB")
@@ -1974,6 +2112,8 @@ def main() -> int:
           "name, 不再监听 clears the sessions that outlived the port, and the idle window still sweeps alone")
     print("OK  §3's idle reclaim registers the loss by fingerprint on both ends: the kernel carries the number "
           "beside the caption, and the phone's card stops saying 已连接 when its own slot went quiet")
+    print("OK  §3 asks a typed-in code and passphrase for their shape before they go on the wire: one alphabet on "
+          "PC, both fields on the phone's scan path, and a sender that could never match says why locally")
     print("OK  vendored copies match their stamps")
     print("OK  cs-protocol.uts mirrors the contract")
     print("OK  §5 names every limit a receiver refuses a transfer on")

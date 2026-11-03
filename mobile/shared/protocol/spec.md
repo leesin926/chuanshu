@@ -154,6 +154,30 @@ key does"——纸面一直没写，现在两边一致。守卫钉的是这两�
 密码不用丢（256 除得尽 32）。鸿蒙那半边顺手把自己文件里的 `randomBytes` 也接到同一个源上，因为它铸的
 是套接字那边的证书序列号与 id；iOS 已终止，`app-ios/index.uts` 递的是那端本来就有的 `CsBytes.randomHex`。）
 
+铸是一头，**读**是另一头。人手抄进来或粘进来的 `c` 与 `k`，发送方在放上线之前先按上面那两个形状自己问一遍
+（PC `spec.code_reject` / `spec.pass_reject`，共用内核 `codeReject` / `passReject`），不合格就在本机说出为什么，
+一次请求都不发。理由不是输入体验，是上面那句「猜中任何一个就等于顶下那台设备」的另一面：接收方对这两个串只做
+逐字相等，所以多抄的第 7 位、抄成小写的那个字母，都不是一次更弱的承诺，而是那一格来源
+`pair_code_max_fails` 枚名额里的一次——锁满 `pair_code_lock_s` 之后，等不到门的是下一个真来配的人。
+`k` 留空不在这一问里：那是「没有这个字段」的形状（上面第 `secret` 那一段），问它 = 把它当成一次错误猜测。
+
+（2026-11-03 第二十九轮巡检：这一轮接手的是「只有点「更换配对码和密码」时才换新生成的一组，旧的当场作废」，
+量完的答案是**那一句三端都成立**：PC `identity.rotate_pairing` 写盘 + `_atomic`，接收侧每次请求现读
+`identity.pair_code` / `passphrase`（`app/net/receive.py:408-427`），所以监听中途换码，旧码当场不再答；手机
+`receiveRotatePairing` 写盘后 `refreshReceive` 重读，安卓那半边把 sync 包进 `CsServe.gate` 正是为了「屏幕上
+显示一个、套接字答另一个」不能发生。缺的是**相邻那半句**，而且缺的两处都不是「没人拦」这么简单：
+PC 从头到尾不按形状量——`parse_qr`（`app/net/spec.py:209`）只筛 `h`/`f`/`v`/`p`，`pairing_secrets` 把 `c`/`k`
+原样交出去，GUI 那一格只问「码是不是空且没钉」（`app/ui/transfer.py:2071`），CLI 只问「有没有带」（`app/cli.py:485`）；
+`code_edit.setMaxLength(6)` 限长度不限字符，字母照样进框。手机这一半两个函数早就有了（`cs-protocol.uts:641`/`:657`），
+手输那一趟（`store/session.uts:1324-1338`）也确实两个都问，**但扫码/粘贴那一趟读的是 `parsePairUrl`，它把两个字段
+写成 `if/else` 互斥**（改前 `:822-826`）——带 `c` 的那一串，也就是现在每一张二维码，从来没有量过 `k`。
+于是本轮把三件事一起收：纸面补上面那一段；PC 补两个纯函数并让 GUI 与 CLI 各问一次（同一份字母表，
+`identity.py` 里那一份复制品删掉、改读 `spec.PASSPHRASE_ALPHABET`，因为铸它的那张表与量它的那张表必须是同一张，
+否则一台机器会拒掉正确答案）；`parsePairUrl` 改成两个字段各问各的。这一轮的负面各条都单独跑红过
+（`.probe/red29.py`，`r29_red.txt`），门禁给 PC 那两个纯函数加了腿，守卫钉的是四个调用点的字面量与那句
+「`if (out.code.length > 0)` 之后还要再问 `passReject`」。浏览器那七条腿写在 `web/index.uts` 的发送自检 L 组里，
+要用户开 HBuilderX 才跑得到——本轮没跑。）
+
 一次只允许一台设备连着（点对点传输的语义，不是并发下载）：某个 fingerprint 手里有有效 token 时，
 别的设备首次配对会拿到 `429 PEER_BUSY`（`detail.reason = "one peer at a time"`，`detail.peer` 是
 当前那台的名字）。已连着的那台自己重连不受影响；三条路都会释放这个名额。**一是持有方点「断开」**：

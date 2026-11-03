@@ -1228,6 +1228,26 @@ msgstr ""
 msgid "收到 {who} 发来的 {n} 个文件（{size}）"
 msgstr "收到 {who} 发来的 {n} 个文件（{size}）"
 
+#: app/net/spec.py:288
+msgid "配对码只能是数字。"
+msgstr "配对码只能是数字。"
+
+#: app/net/spec.py:290
+#, python-brace-format
+msgid "配对码是 {n} 位数字。"
+msgstr "配对码是 {n} 位数字。"
+
+#: app/net/spec.py:305
+#, python-brace-format
+msgid "连接密码是 {m} 位。"
+msgstr "连接密码是 {m} 位。"
+
+#: app/net/spec.py:308
+#, python-brace-format
+msgid "连接密码只有大写字母和数字：{bad}"
+msgstr "连接密码只有大写字母和数字：{bad}"
+
+
 #~ msgid "菜单"
 #~ msgstr "菜单"
 

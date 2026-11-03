@@ -491,6 +491,10 @@ def cmd_send(args: argparse.Namespace, out: Terminal) -> int:
         out.say(f"没固定过这台，得用它的配对码：--code（{proto.pair_code_digits} 位，在它屏幕上）"
                 "或者把它那份完整的 chuanshu:// 串贴进来，里面就带着码")
         return 2
+    why = (protocol_spec.code_reject(code, proto) if code else "") or protocol_spec.pass_reject(secret, proto)
+    if why:
+        out.say(f"{why}  (--code / --secret 是照着对方屏幕抄的，改对了再来一次。)")
+        return 2
     out.say(f"{'它已经固定过' if known else '第一次见它，要用配对码'}：{len(files)} 个文件，{_human(total_bytes)}")
 
     conn = PeerConnection(identity, device_name(settings), peer.host, peer.port, peer.fingerprint)

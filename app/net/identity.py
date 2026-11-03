@@ -32,6 +32,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
 from cryptography.x509.oid import NameOID
 
+from app.net.spec import PASSPHRASE_ALPHABET
 from app.paths import identity_dir
 
 log = logging.getLogger(__name__)
@@ -42,9 +43,6 @@ _LEAF = "tls-leaf.pem"
 _LEAF_KEY = "tls-leaf-key.pem"
 _TRUSTED = "trusted.json"
 _PAIRING = "pairing.json"
-
-#: No I/O/0/1: this is read out loud to another person and typed on a phone keypad.
-PASSPHRASE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 
 def new_pair_code(digits: int) -> str:

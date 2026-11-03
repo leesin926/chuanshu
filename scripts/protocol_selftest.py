@@ -2681,6 +2681,53 @@ def phase_session_release(proto: protocol_spec.Protocol, workspace: Path) -> Non
     service.stop()
 
 
+def phase_pair_shape(proto: protocol_spec.Protocol) -> None:
+    """§3: the shape of a typed-in code and passphrase is asked on THIS end, before either goes on the wire.
+
+    第二十九轮（#195）。合同在纸上早写了两条形状——那 {n} 位数字、那 {m} 位且字母表去掉 I/O/0/1——而接收方拿
+    这两个串只做一件事：逐字相等。所以多抄的第 7 位、抄成小写的那个字母，不是一次更弱的承诺，它是对面那一格
+    来源 `pair_code_max_fails` 枚名额里的一次，答完还替下一个真来配的人锁上 `pair_code_lock_s`。改前 PC 这一半
+    一个都不问：`parse_qr` 只筛 h/f/v/p，界面上那 `setMaxLength` 限长度不限字符，两个入口只问「填了没有」；
+    手机那半边的两个函数早就有，但扫码/粘贴读的是 `parsePairUrl`，它把两个字段写成 if/else，于是带 `c` 的
+    那一串（现在每一张二维码都带）从来没量过 `k`。
+    """
+    n, m = proto.pair_code_digits, proto.passphrase_chars
+    good_code, good_phrase = "1" * n, "K7QMXZ2P" if m == 8 else "K" * m
+    check(f"§3 照屏幕抄对的 {n} 位码与 {m} 位密码不会被本机拦下：这一问只在真答不上时才开口",
+          protocol_spec.code_reject(good_code, proto) == "" and protocol_spec.pass_reject(good_phrase, proto) == "",
+          (protocol_spec.code_reject(good_code, proto), protocol_spec.pass_reject(good_phrase, proto)))
+    long_code = protocol_spec.code_reject("1" * (n + 1), proto)
+    check(f"§3 码多抄一位时本机答的是「那 {n} 位」，而不是让对端去数",
+          long_code != "" and str(n) in long_code, long_code)
+    letter_code = protocol_spec.code_reject("12345a"[: n - 1] + "a", proto)
+    check("§3 码里混进字母时先答「只能是数字」：框上那个最大长度挡不住一个字母",
+          letter_code != "" and "数字" in letter_code and str(n) not in letter_code, letter_code)
+    lower_phrase = protocol_spec.pass_reject(good_phrase.lower(), proto)
+    check("§3 密码抄成小写在本地就停住，说的是大写字母：对面逐字比，不会替人改大小写",
+          lower_phrase != "" and "大写" in lower_phrase, lower_phrase)
+    ambiguous = {one: protocol_spec.pass_reject(good_phrase[:-1] + one, proto) for one in "IO01"}
+    check("§3 字母表去掉的 I/O/0/1 四个字符，抄进密码框也照样被本机拦下——每一个都点名是哪一个",
+          all(why != "" and bad in why for bad, why in ambiguous.items()), ambiguous)
+    short_phrase = protocol_spec.pass_reject(good_phrase[:-1], proto)
+    check(f"§3 密码少抄一位时本机答的是「那 {m} 位」", short_phrase != "" and str(m) in short_phrase, short_phrase)
+    check("§3 密码留空是一个答案而不是错误：那是 §3 的「没有这个字段」，量它 = 把诚实的省略烧成一次错误猜测",
+          protocol_spec.pass_reject("", proto) == "", protocol_spec.pass_reject("", proto))
+
+    minted = [(identity_mod.new_pair_code(n), identity_mod.new_passphrase(m)) for _ in range(300)]
+    refused = [(code, phrase) for code, phrase in minted
+               if protocol_spec.code_reject(code, proto) or protocol_spec.pass_reject(phrase, proto)]
+    check("§3 铸出来的一组自己过得了自己那道问：铸的表与量的表是同一张（本轮删掉 identity.py 里那份复制品，"
+          "两张表意味着一台机器能拒掉自己发的正确答案）",
+          not refused, refused[:3])
+
+    payload = f"{proto.qr_scheme}?h=127.0.0.1&p={proto.transport_port}&v={proto.version}&f={'0' * 64}&c={good_code}&k={good_phrase.lower()}"
+    fields = protocol_spec.parse_qr(payload)
+    baked_code, baked_phrase = protocol_spec.pairing_secrets(payload, proto)
+    why = (protocol_spec.code_reject(baked_code, proto) if baked_code else "") or protocol_spec.pass_reject(baked_phrase, proto)
+    check("§3 读串那一步照旧只管 h/f/v/p（§7：字段只会长），形状问在发送那一步：带小写 k 的一串读得进来、发不出去",
+          fields.get("k") == good_phrase.lower() and why != "" and "大写" in why, (fields.get("k"), why))
+
+
 def main() -> int:
     proto = protocol_spec.load()
     REPORT.write_text("", encoding="utf-8")
@@ -2712,6 +2759,7 @@ def main() -> int:
         phase_pair_scope(proto, workspace)
         phase_optional_secret(proto, workspace)
         phase_session_release(proto, workspace)
+        phase_pair_shape(proto)
     phase_catalogue(proto)
     check("chunks per file match the contract", proto.chunk_size == 4194304, proto.chunk_size)
     # The four shapes §7 can arrive in; the wire legs above are what prove both ends consult them.

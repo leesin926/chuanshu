@@ -29,8 +29,12 @@ import {
 	CHUNK_ESCAPE_VALUE,
 	escapeChunk,
 	unescapeChunk,
+	QR_SCHEME,
 	nameReject,
 	nameWithDefault,
+	codeReject,
+	passReject,
+	parsePairUrl,
 	MAX_PATH_DEPTH,
 	MAX_NAME_BYTES,
 	MAX_FILES_PER_OFFER,
@@ -3244,6 +3248,22 @@ export function senderSelfReport(): string {
 	runSender(hiddenLeaf, '.env', rhiddenLeaf, '')
 	check('叶子名自己以点开头的那一条同样在本地停住', rhiddenLeaf.done && !rhiddenLeaf.ok, rhiddenLeaf.summary)
 	check('它也没能把清单发出去', hiddenLeaf.offerAsks == 0, hiddenLeaf.offerAsks.toString())
+
+	// L. 第二十九轮巡检（#195）：§3 给这两个 secret 定的形状——`c` 是那 6 位数字，`k` 是去掉 I/O/0/1
+	// 的 32 个符号。接收方拿它们只做一件事：逐字相等。所以一个多抄的第 7 位、一个带小写的密码，都不是
+	// 一个更弱的承诺，而是对面那一格来源 5 次名额里的一次。改前这一端 `parsePairUrl` 把两个字段写成
+	// if/else 互斥，于是带 `c` 的那一串（现在每一张二维码都带）从来没量过 `k`；PC 那一半两个都不量。
+	// 合同这一轮把「发送方上线前按形状自己拦」写成句子，下面量的就是那一句的四种读法。
+	const base = QR_SCHEME + '?h=192.0.2.1&p=' + TRANSPORT_PORT.toString() + '&v=' + PROTOCOL_VERSION.toString() + '&f=' + myFp
+	const whyPair = (tail: string): string => parsePairUrl(base + tail).reject
+	check('照着屏幕抄对的码和密码不会被本地拦下', whyPair('&c=123456&k=K7QMXZ2P') == '', whyPair('&c=123456&k=K7QMXZ2P'))
+	check('密码留空是一个答案而不是错误（§3：省略这个键 = 只用码配）', passReject('') == '', passReject(''))
+	check('串里没有 c 与 k 时不因缺码被拒：那是手输地址那一格的形状', whyPair('') == '', whyPair(''))
+	check('密码抄成小写时这一串在本地就停住', whyPair('&c=123456&k=k7qmxz2p') != '', '这一串被放行了')
+	check('说的是连接密码的字母表，不是配对码的事', whyPair('&c=123456&k=k7qmxz2p').indexOf('连接密码') >= 0, whyPair('&c=123456&k=k7qmxz2p'))
+	check('码多抄了一位时同样在本地停住，原因是那 6 位', whyPair('&c=1234567&k=K7QMXZ2P').indexOf('6 位') >= 0, whyPair('&c=1234567&k=K7QMXZ2P'))
+	check('两个都抄错时先答码那一句：这里没有"第二个字段只在第一个没带时才问"那回事', whyPair('&c=12a456&k=k7qmxz2p').indexOf('数字') >= 0, whyPair('&c=12a456&k=k7qmxz2p'))
+	check('扫码/粘贴那一趟与手输那一格答的是同一句话', codeReject('12a456') != '' && codeReject('12a456') == whyPair('&c=12a456&k=K7QMXZ2P'), codeReject('12a456') + ' / ' + whyPair('&c=12a456&k=K7QMXZ2P'))
 
 	out.push(fail == 0 ? '发送自检 ' + pass.toString() + ' 项全部通过' : '发送自检失败 ' + fail.toString() + ' 项，通过 ' + pass.toString() + ' 项')
 	return out.join('\n')

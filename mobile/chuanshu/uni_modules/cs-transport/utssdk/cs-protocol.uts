@@ -819,9 +819,15 @@ export function parsePairUrl(text: string): PairTarget {
 		out.reject = '对端协议版本 v' + out.version + ' 本机听不懂'
 	} else if (out.port.length > 0 && !isDigits(out.port)) {
 		out.reject = '配对信息里的端口不合法'
-	} else if (out.code.length > 0) {
+	}
+	// Both secrets get asked about, in their own terms - the last shape of this chain used to be an
+	// `if/else` between them, so a payload carrying a code (which is every current one: §3 puts `c` and
+	// `k` in the same picture) never had its `k` measured at all, and a mistyped `k` went out as one of
+	// this source's `pair_code_max_fails` wrong guesses.
+	if (out.reject.length == 0 && out.code.length > 0) {
 		out.reject = codeReject(out.code)
-	} else {
+	}
+	if (out.reject.length == 0) {
 		out.reject = passReject(out.secret)
 	}
 	return out

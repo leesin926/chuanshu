@@ -10,6 +10,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from app.i18n import _
 from app.paths import resource_path
 
 
@@ -263,3 +264,46 @@ def pairing_secrets(text: str, proto: Protocol) -> tuple[str, str]:
         return "", ""
     fields = parse_qr(text)
     return fields.get("c", ""), fields.get("k", "")
+
+
+#: No I/O/0/1: this is read out loud to another person and typed on a phone keypad. The one copy of
+#: this table is what the minting side (``identity.new_passphrase``) and the two refusal sides below
+#: both read, because a secret measured against a different alphabet than the one that minted it
+#: would refuse a correct answer.
+PASSPHRASE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+CODE_DIGITS = "0123456789"
+
+
+def code_reject(code: str, proto: Protocol) -> str:
+    """Why this code cannot be worth sending, or "" when it can.
+
+    spec §3 hands the receiver one job with these two secrets: compare them for equality. So a
+    hand-typed or pasted string that could never be what the other screen shows is not a weaker
+    promise - it is one of the ``pair_code_max_fails`` wrong guesses that lock this source out of
+    that peer for ``pair_code_lock_s``. Measuring it here is the difference between telling the
+    person now and spending the quota for a typo.
+    """
+    if any(one not in CODE_DIGITS for one in code):
+        return _("配对码只能是数字。")
+    if len(code) != proto.pair_code_digits:
+        return _("配对码是 {n} 位数字。").format(n=proto.pair_code_digits)
+    return ""
+
+
+def pass_reject(secret: str, proto: Protocol) -> str:
+    """The same question about the second secret, where blank is an answer.
+
+    Leaving the passphrase out means "this sender has none to offer" and pairs on the code alone
+    (spec §3), so only what was actually typed gets measured. Case counts: the peer compares these
+    bytes for equality, and a lowercase letter surfacing as an unexplained pairing failure is
+    exactly the message this function exists to avoid.
+    """
+    if not secret:
+        return ""
+    if len(secret) != proto.passphrase_chars:
+        return _("连接密码是 {m} 位。").format(m=proto.passphrase_chars)
+    for one in secret:
+        if one not in PASSPHRASE_ALPHABET:
+            return _("连接密码只有大写字母和数字：{bad}").format(bad=one)
+    return ""
