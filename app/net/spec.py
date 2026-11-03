@@ -291,6 +291,20 @@ def code_reject(code: str, proto: Protocol) -> str:
     return ""
 
 
+def pass_omitted(secret: str, proto: Protocol) -> str:
+    """What a blank passphrase box actually puts on the wire, said before it goes there.
+
+    spec §3 reads an absent `secret` as "a build with no passphrase concept" and pairs on the code
+    alone, so a person who leaves this box blank is not refused - they are downgraded, quietly,
+    unless this end says so. Nothing here rejects anything: the request still goes out.
+    """
+    if secret:
+        return ""
+    return _("连接密码留空：这一趟线上不带那个字段，对方只按屏幕上那 {n} 位配对码认这把钥匙。").format(
+        n=proto.pair_code_digits
+    )
+
+
 def pass_reject(secret: str, proto: Protocol) -> str:
     """The same question about the second secret, where blank is an answer.
 

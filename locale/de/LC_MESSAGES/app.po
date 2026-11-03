@@ -1371,6 +1371,11 @@ msgstr "Das Verbindungspasswort besteht aus {m} Zeichen."
 msgid "连接密码只有大写字母和数字：{bad}"
 msgstr "Das Verbindungspasswort enthält nur Großbuchstaben und Ziffern: {bad}"
 
+#: app/net/spec.py:303
+#, python-brace-format
+msgid "连接密码留空：这一趟线上不带那个字段，对方只按屏幕上那 {n} 位配对码认这把钥匙。"
+msgstr "Das Verbindungspasswort ist leer: Diese Anfrage führt ein solches Feld nicht, daher erkennt die Gegenstelle diesen Schlüssel nur über den {n}-stelligen Code auf ihrem Bildschirm."
+
 
 #~ msgid "附近的设备"
 #~ msgstr "Geräte in der Nähe"

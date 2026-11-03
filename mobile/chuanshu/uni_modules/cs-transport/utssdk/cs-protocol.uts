@@ -671,6 +671,17 @@ export function passReject(secret: string): string {
 	return ''
 }
 
+/** What a blank passphrase box actually puts on the wire, said before it goes there. §3 reads an
+ *  absent `secret` as a build that has no passphrase concept and pairs on the code alone, so an empty
+ *  box is not a refusal - it is a downgrade, and this end is the only one that can still be heard:
+ *  the peer answers the same token either way. Nothing here rejects - the request still goes out. */
+export function passOmitted(secret: string): string {
+	if (secret.length > 0) {
+		return ''
+	}
+	return '连接密码留空：这一趟线上不带那个字段，对方只按屏幕上那 ' + PAIR_CODE_DIGITS.toString() + ' 位配对码认这把钥匙'
+}
+
 /** Why this name cannot be used, or "" when it can. §1 puts no shape on `name` and the PC accepts
  *  whatever the user types (it only trims, and an empty answer means "nothing changed"), so a phone
  *  that capped the length would be the odd one out - the one thing both ends have to agree on is that

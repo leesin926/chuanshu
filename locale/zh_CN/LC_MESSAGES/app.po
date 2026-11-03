@@ -1247,6 +1247,11 @@ msgstr "连接密码是 {m} 位。"
 msgid "连接密码只有大写字母和数字：{bad}"
 msgstr "连接密码只有大写字母和数字：{bad}"
 
+#: app/net/spec.py:303
+#, python-brace-format
+msgid "连接密码留空：这一趟线上不带那个字段，对方只按屏幕上那 {n} 位配对码认这把钥匙。"
+msgstr "连接密码留空：这一趟线上不带那个字段，对方只按屏幕上那 {n} 位配对码认这把钥匙。"
+
 
 #~ msgid "菜单"
 #~ msgstr "菜单"

@@ -24,7 +24,7 @@ import {
 	BufferCallback,
 	HexCallback
 } from '@/uni_modules/cs-transport/utssdk/cs-client.uts'
-import { TRANSPORT_PORT, PAIR_CODE_DIGITS, PASSPHRASE_CHARS, SESSION_IDLE_S, RandFn, codeReject, passReject, nameReject, digitsOnly, formatSize, parsePairUrl } from '@/uni_modules/cs-transport/utssdk/cs-protocol.uts'
+import { TRANSPORT_PORT, PAIR_CODE_DIGITS, PASSPHRASE_CHARS, SESSION_IDLE_S, RandFn, codeReject, passReject, passOmitted, nameReject, digitsOnly, formatSize, parsePairUrl } from '@/uni_modules/cs-transport/utssdk/cs-protocol.uts'
 import { selfInfo, signPair, request, prepareFile, readChunk, digestHex, transportMocked, transportNote, lanCheck } from '@/uni_modules/cs-transport'
 // #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
 import { pinnedFor, unpinPeer, receiveStart, receiveStop, receiveStatus } from '@/uni_modules/cs-transport'
@@ -1335,6 +1335,14 @@ function checkCodeAndNetwork() {
 	if (passWhy != '') {
 		refuse('配对密码：' + passWhy)
 		return
+	}
+	// §3: an empty box leaves the key off the request, and the peer then authenticates this phone by
+	// the code alone. Nothing refuses it, so this is the only place the downgrade gets said.
+	if (activeOptions.code != '') {
+		const omitted = passOmitted(activeOptions.secret)
+		if (omitted != '') {
+			log(omitted)
+		}
 	}
 	checkNet(activeOptions.host, function (level: string): void {
 		if (level == 'bad') {

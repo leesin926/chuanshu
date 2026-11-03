@@ -1337,6 +1337,11 @@ msgstr "The password is {m} characters."
 msgid "连接密码只有大写字母和数字：{bad}"
 msgstr "The password uses only uppercase letters and digits: {bad}"
 
+#: app/net/spec.py:303
+#, python-brace-format
+msgid "连接密码留空：这一趟线上不带那个字段，对方只按屏幕上那 {n} 位配对码认这把钥匙。"
+msgstr "The passphrase box is empty: this request carries no such field, so the peer accepts this key on the {n}-digit code from its screen alone."
+
 
 #~ msgid "菜单"
 #~ msgstr "Menu"

@@ -31,7 +31,7 @@ import {
  *  browser's and the phone's copy of cs-protocol.uts literally the same file. */
 export {
 	TRANSPORT_PORT, PAIR_CODE_DIGITS, PASSPHRASE_CHARS, PAIR_CODE_STATIC, SESSION_IDLE_S, RandFn,
-	codeReject, passReject, nameReject, nameWithDefault, digitsOnly, formatSize, parsePairUrl
+	codeReject, passReject, passOmitted, nameReject, nameWithDefault, digitsOnly, formatSize, parsePairUrl
 } from '../cs-protocol.uts'
 export {
 	TransferOptions, PeerSession, connectPeer, sendFiles, cancelSend,

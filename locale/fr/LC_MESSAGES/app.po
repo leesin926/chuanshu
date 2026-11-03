@@ -1369,6 +1369,11 @@ msgstr "Le mot de passe de connexion comporte {m} caractères."
 msgid "连接密码只有大写字母和数字：{bad}"
 msgstr "Le mot de passe de connexion n’utilise que des majuscules et des chiffres : {bad}"
 
+#: app/net/spec.py:303
+#, python-brace-format
+msgid "连接密码留空：这一趟线上不带那个字段，对方只按屏幕上那 {n} 位配对码认这把钥匙。"
+msgstr "Le mot de passe de connexion est vide : cette requête ne porte pas ce champ, l'autre machine ne reconnaîtra donc cette clé qu'au code à {n} chiffres affiché à son écran."
+
 
 #~ msgid "附近的设备"
 #~ msgstr "Appareils à proximité"

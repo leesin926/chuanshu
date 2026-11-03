@@ -2689,6 +2689,126 @@ def phase_optional_secret(proto: protocol_spec.Protocol, workspace: Path) -> Non
     service.stop()
 
 
+def phase_second_layer(proto: protocol_spec.Protocol, workspace: Path) -> None:
+    """§3 那句「码固定之后单次锁流不够看，所以这道承诺加了第二层：`k` 是 32 字母表 8 位」——它绑的是把 `k` 发上线的那一方。
+
+    第三十一轮（#197）。这句话读起来像一道门：线上多了一个 40 bit 的东西，猜中 6 位码的那一位还差一层。
+    量下来它不是门——接收器对 `secret` 这一格的读法是「键不在，或者值是 null = 旧构建」（§3 明写的兼容让步，
+    §7 又不许改已有字段的语义），所以只带正确码、把这格整个省略的发送方照样拿到 token 且一枚名额都不烧，
+    而错值的空串要烧（`.probe/r31_probe.txt`）。于是这一层的强度落在**发送方是否肯把它发上线**：这一端留空，
+    线上就没有这一格。这些腿一半量那道门今天真实有几层——省略不是第二条路、码错照样烧一枚、限流数的是来源
+    而不是这 10⁶——另一半量发送方自己的形状：`secret` 那一格在留空时是不是真的不在体里，以及这一端有没有在
+    上线前把「这一趟只剩 6 位」说出来。
+    """
+    receiver = load_or_create(workspace / "second-layer-receiver")
+    service = ReceiveService(receiver, "PC-Second-Layer", lambda manifest, who, caller: True,
+                             host="127.0.0.1", port=0, root=workspace / "second-layer-received")
+    service.start()
+    code, secret = service.current_pair_code(), service.passphrase()
+    wrong_code = ("1" if code[0] != "1" else "2") + code[1:]
+
+    def release() -> None:
+        service._tokens.clear()
+        service._seen.clear()
+        service._held_by = ""
+
+    class _Absent:
+        pass
+
+    absent = _Absent()
+
+    def ask(source: str, slot, *, use_code: str | None = None):
+        """One pair body whose `secret` slot is left off / nulled / filled, answered by the real receiver."""
+        release()
+        who = load_or_create(workspace / f"second-layer-{source}")
+        nonce = secrets.token_hex(16)
+        leaf = who.declared_tls_fingerprint
+        message = protocol_spec.pair_message(who.peer_id, nonce, leaf)
+        body = {
+            "peer_id": who.peer_id,
+            "name": f"Second-Layer-{source}",
+            "protocol_version": proto.version,
+            "compatible_versions": list(proto.compatible_versions),
+            "nonce": nonce,
+            "public_key": base64.b64encode(who.raw_public_key()).decode(),
+            "signature": base64.b64encode(who.key.sign(message)).decode(),
+            "code": code if use_code is None else use_code,
+            "tls_fingerprint": leaf,
+        }
+        if slot is not absent:
+            body["secret"] = slot
+        try:
+            reply = service.handle_pair(body, source)
+            return ("PAIRED", reply.get("token", "")[:12], reply.get("resumed"),
+                    len(service._code_failures.get(source, [])))
+        except protocol_spec.ProtocolError as error:
+            return (error.code, error.detail, None, len(service._code_failures.get(source, [])))
+
+    # 一、那两句里的两个数：这一层值多少，是这两个数算出来的，不是形容词。
+    alphabet, digits = protocol_spec.PASSPHRASE_ALPHABET, protocol_spec.CODE_DIGITS
+    check("§3 「`k` 是 32 字母表 8 位」那两个数：字母表真 32 个（去掉 I/O/0/1 后）、位数真取合同那个 8，"
+          "而 32^8 正好等于 2^40——纸上这句不许多算",
+          len(alphabet) == 32 and "I" not in alphabet and "0" not in alphabet
+          and proto.passphrase_chars == 8 and len(alphabet) ** proto.passphrase_chars == 2 ** 40,
+          (len(alphabet), proto.passphrase_chars))
+    check("§3 「`c` 那 10^6 是线上唯一的凭据」：码那一格的空间由合同的位数算出来，字母表是十进制",
+          len(digits) == 10 and proto.pair_code_digits == 6 and len(digits) ** proto.pair_code_digits == 10 ** 6,
+          (len(digits), proto.pair_code_digits))
+
+    # 二、省略不另开一条路：码错的那一趟，少了 `secret` 也照烧一枚，答的还是那一句、detail 还是空的。
+    bad_omitted = ask("badcode", absent, use_code=wrong_code)
+    check("§3 省略不是第二条路：码错 + 不带 `secret` 那一格，答 BAD_PAIR_CODE（不点名 passphrase）并烧一枚名额",
+          bad_omitted[0] == "BAD_PAIR_CODE" and bad_omitted[1] is None and bad_omitted[3] == 1, bad_omitted)
+
+    # 三、那道锁的范围：密码猜错攒满的来源，换成「省略」也不再得到一次机会——它数的是这台机器试了几次。
+    floods = [ask("flooded", "ZZZZZZZZ") for _ in range(proto.pair_code_max_fails)]
+    locked = ask("flooded", absent)
+    check("§3 限流不看这一格填没填：同一来源被密码错值攒满以后，带正确的码、省略 `secret` 也被拒",
+          floods[-1][3] == proto.pair_code_max_fails and locked[0] == "PEER_BUSY"
+          and locked[1] == {"reason": "too many failed codes"}, f"{floods[-1]} {locked}")
+
+    # 四、已经钉住的那一把：这一层连问都不问——签名就是这一支的凭据，错的码也进得来。
+    pinned = ask("pinned", absent)
+    again_wrong = ask("pinned", absent, use_code=wrong_code)
+    check("§3 已固定的钥匙不走这一层：同一把钉住的 key 带**错误的码 + 省略密码**照样拿到 token，且答的是 resumed",
+          pinned[0] == "PAIRED" and again_wrong[0] == "PAIRED" and again_wrong[2] is True, f"{pinned} {again_wrong}")
+
+    # 五、发送方那一半才是这一层的落点：留空时这一格真的不在线上，填了才在。
+    seen_bodies: list[dict] = []
+    honest_pair = service.handle_pair
+
+    def spy_pair(body: dict, client_ip: str) -> dict:
+        seen_bodies.append(dict(body))
+        return honest_pair(body, client_ip)
+
+    service.handle_pair = spy_pair
+    try:
+        omitter = load_or_create(workspace / "second-layer-omitter")
+        typer = load_or_create(workspace / "second-layer-typer")
+        for who, secret_slot in ((omitter, ""), (typer, secret)):
+            # One peer at a time (§3) would shadow this measurement, so the slot goes back between the two.
+            release()
+            conn = PeerConnection(who, "PC-Second-Layer", "127.0.0.1", service.port, receiver.served_fingerprint)
+            conn.hello()
+            conn.pair(code, secret_slot)
+        service.handle_pair = honest_pair
+    finally:
+        if len(seen_bodies) != 2:
+            service.handle_pair = honest_pair
+    omitted_body, filled_body = seen_bodies
+    check("§3 这一层绑的是发送方：密码框留空时这一整个键不上线（不是空串），填了才带上对的值",
+          "secret" not in omitted_body and filled_body.get("secret") == secret,
+          (sorted(omitted_body), sorted(filled_body)))
+
+    # 六、降级要在这上线之前说得出声：留空那一趟是本机唯一能把这句话讲出来的地方，填了的那趟它必须闭嘴。
+    note = protocol_spec.pass_omitted("", proto)
+    check("§3 留空那一趟不是安静的：这一端在上线前说清「只剩屏幕上那 6 位」，句子带着合同的位数",
+          note != "" and str(proto.pair_code_digits) in note, note)
+    check("§3 填了密码的那一趟这句不开口：它只会在真的少一格时说话",
+          protocol_spec.pass_omitted(secret, proto) == "", protocol_spec.pass_omitted(secret, proto))
+    service.stop()
+
+
 def phase_session_release(proto: protocol_spec.Protocol, workspace: Path) -> None:
     """§3's three named ways the one-session slot is given back, measured on the PC's receiver.
 
@@ -2863,6 +2983,7 @@ def main() -> int:
         phase_random_source(proto, workspace)
         phase_pair_scope(proto, workspace)
         phase_optional_secret(proto, workspace)
+        phase_second_layer(proto, workspace)
         phase_session_release(proto, workspace)
         phase_pair_shape(proto)
     phase_catalogue(proto)

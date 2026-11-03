@@ -495,6 +495,10 @@ def cmd_send(args: argparse.Namespace, out: Terminal) -> int:
     if why:
         out.say(f"{why}  (--code / --secret 是照着对方屏幕抄的，改对了再来一次。)")
         return 2
+    if not known and code:
+        omitted = protocol_spec.pass_omitted(secret, proto)
+        if omitted:
+            out.say(omitted)
     out.say(f"{'它已经固定过' if known else '第一次见它，要用配对码'}：{len(files)} 个文件，{_human(total_bytes)}")
 
     conn = PeerConnection(identity, device_name(settings), peer.host, peer.port, peer.fingerprint)

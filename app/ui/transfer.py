@@ -559,6 +559,7 @@ class TransferPanel(QWidget):
         self._pending: Peer | None = None
         #: The peer a handshake is in flight for, so the page can say what it is doing.
         self._connecting: Peer | None = None
+        self._omit_note = ""
         self._connect_worker: threading.Thread | None = None
         #: The last answer from the platform's firewall, and the thread that asked for it. None
         #: means nobody has asked yet, which the card shows as an empty line rather than as "ok".
@@ -2079,6 +2080,13 @@ class TransferPanel(QWidget):
         if why:
             self.status_label.setText(why)
             return
+        # §3: a blank box puts no `secret` on the wire, and the peer then authenticates this key
+        # by the 6-digit code alone. Nothing refuses that, so this end is the only place it is heard.
+        self._omit_note = (
+            protocol_spec.pass_omitted(secret, self.proto) if code and not self._pin_known(peer) else ""
+        )
+        if self._omit_note:
+            self.status_label.setText(self._omit_note)
         self._connecting = peer
         self.nearby_label.setText(self._nearby_text())
         self._sync_buttons()
@@ -2149,11 +2157,16 @@ class TransferPanel(QWidget):
         self.secret_edit.clear()
         self._refresh_peers()
         self._select_row(peer)
-        self.status_label.setText(_("已连接 {name}，指纹前缀 {fp}。核对无误再发。").format(name=peer.name or peer.prefix, fp=peer.prefix))
+        self.status_label.setText(
+            _("已连接 {name}，指纹前缀 {fp}。核对无误再发。").format(name=peer.name or peer.prefix, fp=peer.prefix)
+            + self._omit_note
+        )
+        self._omit_note = ""
         log.info("paired with %s at %s:%d", peer.name, peer.host, peer.port)
 
     def _on_connect_failed(self, reason: str) -> None:
         self._connecting = None
+        self._omit_note = ""
         self.nearby_label.setText(self._nearby_text())
         self.status_label.setText(reason)
         self._sync_buttons()

@@ -34,6 +34,7 @@ import {
 	nameWithDefault,
 	codeReject,
 	passReject,
+	passOmitted,
 	parsePairUrl,
 	MAX_PATH_DEPTH,
 	MAX_NAME_BYTES,
@@ -1367,12 +1368,18 @@ const SLOT_MARK = 'R26SecretSlot'
  *  §3's 「没有它」 is a claim about this one slot, and `pairJson` cannot produce the bodies the round needed:
  *  it omits an empty value, so null and `""` have to be pasted in over the value the harness just wrote.
  *  A splice that misses returns the body untouched, so the leg goes red instead of quietly measuring
- *  whatever else came back. */
+ *  whatever else came back.
+ *  `mark` covers the whole entry, key name included, so the write branch has to put `"secret":` back: paste a
+ *  bare `null` where the entry used to be and the body reads `…"code":"421376",null}` — the kernel then answers
+ *  「body is not a JSON object」, and a leg about §3's null slot is measuring the splice instead. That is what the
+ *  two legs written in #192 did for five rounds: nobody ran this tier, so a leg that could never go green looked
+ *  exactly like a kernel that had nothing to fix. */
 function pairBodySlots(withKey: string, code: string, secretRaw: string, leafRaw: string): string {
 	const nonce = randomHex(16)
 	const signature = b64(sha256Bytes(utf8(pairMessage(SIM_PEER_ID, nonce, ''))))
 	const baked = pairJson(SIM_PEER_ID, SIM_NAME, nonce, withKey, signature, code, SLOT_MARK, '')
-	const mark = '"secret":"' + SLOT_MARK + '"'
+	const key = '"secret":'
+	const mark = key + '"' + SLOT_MARK + '"'
 	const at = baked.indexOf(mark)
 	const head = at < 0 ? '' : baked.substring(0, at)
 	const tail = at < 0 ? '' : baked.substring(at + mark.length)
@@ -1387,7 +1394,7 @@ function pairBodySlots(withKey: string, code: string, secretRaw: string, leafRaw
 		}
 		body = head.substring(0, comma) + tail
 	} else {
-		body = head + secretRaw + tail
+		body = head + key + secretRaw + tail
 	}
 	if (leafRaw != '') {
 		body = body.substring(0, body.length - 1) + ',"tls_fingerprint":' + leafRaw + '}'
@@ -2724,19 +2731,19 @@ export function receiveSelfReport(): string {
 	const optKeyC = b64(randomBytes(32))
 	const optKeyD = b64(randomBytes(32))
 	const optKeyE = b64(randomBytes(32))
+	const nullBodyB = pairBodySlots(optKeyB, currentPairCode(optBoxB, optAt), 'null', '')
 	const optOmit = askPairRawAt(optBoxA, '203.0.113.60',
 		pairBodySlots(optKeyA, currentPairCode(optBoxA, optAt), '', ''), optAt)
-	const optNull = askPairRawAt(optBoxB, '203.0.113.61',
-		pairBodySlots(optKeyB, currentPairCode(optBoxB, optAt), 'null', ''), optAt)
+	const optNull = askPairRawAt(optBoxB, '203.0.113.61', nullBodyB, optAt)
 	const optOmitObj = jsonOf(optOmit)
 	const optNullObj = jsonOf(optNull)
 	check('§3 这一格的 null 算没有它：密码那一节省略与写成 null，内核答的是同一句「只靠码配上」',
 		optOmitObj != null && optOmitObj!.getString('token', '') != ''
 		&& optNullObj != null && optNullObj!.getString('token', '') != ''
 		&& failsOf(optBoxB, '203.0.113.61') == 0,
-		optOmit.body + '|' + optNull.body)
-	const optBlank = askPairRawAt(optBoxC, '203.0.113.62',
-		pairBodySlots(optKeyC, currentPairCode(optBoxC, optAt), '""', ''), optAt)
+		optOmit.body + '|' + optNull.body + ' 送出的体 ' + nullBodyB)
+	const blankBodyC = pairBodySlots(optKeyC, currentPairCode(optBoxC, optAt), '""', '')
+	const optBlank = askPairRawAt(optBoxC, '203.0.113.62', blankBodyC, optAt)
 	const optBlankObj = jsonOf(optBlank)
 	const optBlankDetail = optBlankObj == null ? null : optBlankObj!.getJSON('detail')
 	const optAfterBlank = askPairRawAt(optBoxC, '203.0.113.62',
@@ -2747,7 +2754,8 @@ export function receiveSelfReport(): string {
 		&& optBlankDetail != null && optBlankDetail!.getString('reason', '') == 'passphrase'
 		&& failsOf(optBoxC, '203.0.113.62') == 1
 		&& optAfterBlankObj != null && optAfterBlankObj!.getString('token', '') != '',
-		optBlank.body + ' | 桶 ' + failsOf(optBoxC, '203.0.113.62').toString() + ' | ' + optAfterBlank.body)
+		optBlank.body + ' | 桶 ' + failsOf(optBoxC, '203.0.113.62').toString() + ' | ' + optAfterBlank.body
+		+ ' 送出的体 ' + blankBodyC)
 	const optLeafNull = askPairRawAt(optBoxD, '203.0.113.63',
 		pairBodySlots(optKeyD, currentPairCode(optBoxD, optAt), '', 'null'), optAt)
 	const optLeafBlank = askPairRawAt(optBoxE, '203.0.113.64',
@@ -2801,12 +2809,15 @@ export function receiveSelfReport(): string {
 		relRepair.status.toString() + '|' + relRepair.body)
 	holdSlotFor(rel, relFpB, relAt)
 	const relTakenAll = releaseSessions(rel)
+	// 这一格必须在这次读、下一台进场之前读：谓词是逐字从左往右算的，把 activePeers() 留在 check() 里就是在
+	// 问"下一台配进来以后名额空不空"，而那一趟刚把名额占上，这条腿永远红——它红的不是内核，是它自己的顺序。
+	const relActiveAfter = activePeers(rel).length
 	const relNext = askPairAt(rel, '203.0.113.71', relCode, relSecret, relKeyB, relAt)
 	const relNextObj = jsonOf(relNext)
 	check('§3 「不再监听」按名字一次请走两半：名额空了，下一台这才配得上',
-		relTakenAll == 2 && activePeers(rel).length == 0
+		relTakenAll == 2 && relActiveAfter == 0
 		&& relNextObj != null && relNextObj!.getString('token', '') != '',
-		relTakenAll.toString() + '|' + relNext.body)
+		relTakenAll.toString() + '|' + relActiveAfter.toString() + '|' + relNext.body)
 
 	// 24. 第二十八轮巡检（#194）：§3 末尾那句「本机拨出去的那台由发起方自己计时，超时同样登记为已断开」。
 	// 计时这一半本来就打得动（`seenNow` 也刷拨出去那一格），本轮量的是「登记」：内核原来只往快照里写一个
@@ -2900,6 +2911,11 @@ class ChunkSwallow {
 	 *  to be a pair whose `code` is empty: a repair that re-offers the number on the screen is the same
 	 *  mistake #195 measured from the other side, just paid for twice. */
 	pairCodes: string[] = []
+	/** What each POST /v1/pair this peer was shown said in its `secret` slot; the string ABSENT stands
+	 *  for a body that carries no such key. §3's second layer is a claim about this slot, and a blank box
+	 *  is supposed to reach the wire as no key at all - an empty string there is one wrong guess, so these
+	 *  legs read the column instead of trusting `pairJson`'s comment about itself. */
+	pairSecrets: string[] = []
 	/** Every line the shared client wrote during the send below. §3's rewrite of this round says the
 	 *  repair must not ask a person to do anything, and that it says nothing about whether a line shows
 	 *  up - so the legs read this column instead of trusting the old promise that the user saw nothing. */
@@ -2937,6 +2953,7 @@ function swallowCaller(probe: ChunkSwallow): Caller {
 		if (method == 'POST' && path == '/v1/pair') {
 			const saidPair = parseJson(jsonBody)
 			probe.pairCodes.push(saidPair == null ? '?' : saidPair!.getString('code', '?'))
+			probe.pairSecrets.push(saidPair == null ? '?' : (saidPair!.get('secret') == null ? 'ABSENT' : saidPair!.getString('secret', '')))
 		}
 		const eat = isChunk && (probe.nth == -1 || probe.chunksSeen + 1 == probe.nth)
 		if (isChunk) {
@@ -3088,6 +3105,26 @@ function runSender(probe: ChunkSwallow, relpath: string, run: SenderRun, pinPref
 			run.ok = ok
 			run.summary = summary
 		})
+}
+
+/** One pairing, and nothing after it, with the two secrets handed over exactly as the user left them.
+ *  §3's 「第二层」 is a claim about what this promise is worth on the wire, and the shape it cannot
+ *  enforce is a right code with no `secret` key at all - so this drives the shared sender against the
+ *  shared receiver instead of pasting a body together, and the legs read what actually went there. */
+function runBarePair(probe: ChunkSwallow, run: SenderRun, useCode: string, useSecret: string): void {
+	const call = pinnedCaller(probe, '')
+	const link = new TransferOptions()
+	link.host = '自检对端'
+	link.port = TRANSPORT_PORT
+	link.pinPrefix = ''
+	link.code = useCode
+	link.secret = useSecret
+	connectPeer(link, simTakeSelf, simSignPair, call, noopWrite, function (ok: boolean, message: string, session: PeerSession | null): void {
+		run.done = true
+		run.ok = ok
+		run.session = session
+		run.summary = message
+	})
 }
 
 /** The same trip with the peer's memory wiped underneath it: pair, then restart the receiver (spec §3's
@@ -3344,14 +3381,57 @@ export function senderSelfReport(): string {
 	check('补回来的是一枚新的 bearer：旧的那枚从此不再在任何一边算话',
 		rstale.staleToken != rstale.newToken && codeOf(stateWithOld.body) == 'NOT_PAIRED' && codeOf(stateWithNew.body) != 'NOT_PAIRED',
 		codeOf(stateWithOld.body) + '/' + codeOf(stateWithNew.body) + ' ' + stale.inbox.tokens.length.toString() + ' 枚')
-	check('那一行「会话失效，用已固定的密钥重新配对」在这一单的日志里，且只有这一行',
-		stale.logLines.length == 1 && stale.logLines[0].indexOf('会话失效') >= 0, stale.logLines.join(' / '))
+	// 这一列是屏幕上的那一列，进度行本来就该在里面——#196 把纸面收窄成「屏幕上留不留一行字由各端自己定」的那一刻，
+	// 数整列的长度就成了那条被收回的绝对承诺的另一种写法。浏览器这一趟量到 6 行，所以这里数的是那一行自己出现几次。
+	let repairs = 0
+	for (let i = 0; i < stale.logLines.length; i++) {
+		if (stale.logLines[i].indexOf('会话失效') >= 0) {
+			repairs = repairs + 1
+		}
+	}
+	check('那一行「会话失效，用已固定的密钥重新配对」在这一单的日志里，且只出现一次（这一列还有进度行，那由各端自己定）',
+		repairs == 1, stale.logLines.join(' / '))
 	check('那一列里没有一句在问人要配对码（§3：它不要求用户做任何事）',
 		stale.logLines.join(' / ').indexOf('配对码') < 0 && rstale.summary.indexOf('配对码') < 0,
 		stale.logLines.join(' / ') + ' / ' + rstale.summary)
 	check('补回来以后重问的那一次清单，在对方仍然只算一单',
 		stale.offerAsks == 2 && stale.inbox.offers.length == 1,
 		stale.offerAsks.toString() + '/' + stale.inbox.offers.length.toString())
+
+	// N. 第三十一轮巡检（#197）：§3 那句「`k` 是 32 字母表 8 位」写的是这道承诺的第二层，本轮量的是它绑的是谁。
+	// 改前纸面把它读成线路上的一个条件，而这一端的接收器（与 PC 那一台同样的读法）不按这个键在不在拒绝：码对、
+	// 键整个省略，token 照样发，那一格来源 5 枚名额一枚都不烧——PC 那八行读数在 `.probe/r31_probe.txt`，下面
+	// 是同一件事在共用内核上的镜像。要做成一道门，动的是既有字段的语义，§7 因此要求升 `protocol_version`，
+	// 而升版本会把 §3 明写要接纳的旧构建关在门外，所以 v1 不做。于是这一档只能量剩下那一半：省略的那一趟线上
+	// 到底长什么样，而本机有没有替它出声——接收方对这两种都答同一句话，出声的只剩发送方这一头。
+	const bare = new ChunkSwallow()
+	const rbare = new SenderRun()
+	runBarePair(bare, rbare, currentPairCode(bare.inbox, nowSeconds()), '')
+	check('密码留空的那一趟，线上带的是配对码，而 `secret` 这个键根本不在',
+		bare.pairSecrets.length == 1 && bare.pairSecrets[0] == 'ABSENT' && bare.pairCodes[0] != '',
+		bare.pairSecrets.join('/') + '/' + bare.pairCodes.join('/'))
+	check('那一趟照样配上：第二层拦不住省略，只拦得住把值带上来并且带错的人',
+		rbare.done && rbare.ok && rbare.session != null, rbare.summary)
+	check('它一枚名额都没烧：这一格来源的失败窗口是空的',
+		failsOf(bare.inbox, SIM_PEER_ID) == 0, failsOf(bare.inbox, SIM_PEER_ID).toString())
+	const filled = new ChunkSwallow()
+	const rfilled = new SenderRun()
+	const saidPass = passphraseOf(filled.inbox, nowSeconds())
+	runBarePair(filled, rfilled, currentPairCode(filled.inbox, nowSeconds()), saidPass)
+	check('填了密码的那一趟，线上那个键就是这个数（省略不是"更弱的密码"，是没有这个字段）',
+		filled.pairSecrets.length == 1 && filled.pairSecrets[0] == saidPass, filled.pairSecrets.join('/'))
+	const wrongCode = new ChunkSwallow()
+	const rwrong = new SenderRun()
+	const goodCode = currentPairCode(wrongCode.inbox, nowSeconds())
+	runBarePair(wrongCode, rwrong, (goodCode.charAt(0) == '1' ? '2' : '1') + goodCode.substring(1), '')
+	check('码错的时候省略帮不上忙：那一关只有码，省略不是第二条路',
+		rwrong.done && !rwrong.ok, rwrong.summary)
+	check('而它烧掉的正是这一格来源 5 枚里的一枚（答的是配对码，不是密码）',
+		failsOf(wrongCode.inbox, SIM_PEER_ID) == 1, failsOf(wrongCode.inbox, SIM_PEER_ID).toString())
+	check('留空那一趟本机要有一句人话，因为线路上再没有第二头能出声',
+		passOmitted('').length > 0 && passOmitted('').indexOf('配对码') >= 0
+			&& passOmitted('').indexOf(PAIR_CODE_DIGITS.toString() + ' 位') >= 0, passOmitted(''))
+	check('填上的那个框什么都不必说（这一句不是又一个拒答）', passOmitted('K7QMXZ2P') == '', passOmitted('K7QMXZ2P'))
 
 	out.push(fail == 0 ? '发送自检 ' + pass.toString() + ' 项全部通过' : '发送自检失败 ' + fail.toString() + ' 项，通过 ' + pass.toString() + ' 项')
 	return out.join('\n')

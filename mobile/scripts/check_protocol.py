@@ -1585,6 +1585,22 @@ def check_optional_secret(body: dict) -> None:
     if legs < 3:
         fail(f"the H5 receiver self-check holds {legs} of the three optional-key legs - the kernel is the end "
              f"whose reading the PC was moved to, and only this tier can hand it a body no sender of ours writes")
+    splice = harness.split("function pairBodySlots(", 1)[1].split("\n}", 1)[0] \
+        if "function pairBodySlots(" in harness else ""
+    if 'body = head + key + secretRaw + tail' not in splice:
+        fail("pairBodySlots() no longer pastes the key name back before the raw slot - `mark` covers the whole "
+             "`\"secret\":\"…\"` entry, so writing just `null` where it was leaves `…\"code\":\"421376\",null}` on the "
+             "wire. The receiver then answers 「body is not a JSON object」 and burns no try, which is a reading of "
+             "the splice rather than of §3: this is what the two null legs did for the five rounds nobody ran "
+             "this tier, and a leg that can only be red has been guarding nothing the whole time")
+    for literal, why in (
+        ("' 送出的体 ' + nullBodyB", "the null leg prints the bytes it sent, not only the answer, so a splice that "
+                                   "broke is visible in the red line itself"),
+        ("' 送出的体 ' + blankBodyC", "and the blank leg the same - these two are the only legs in the file that hand "
+                                   "the kernel a body our own sender could never mint"),
+    ):
+        if literal not in harness:
+            fail(f"the optional-key legs no longer contain {literal!r} - {why}")
 
 
 def check_session_release() -> None:
@@ -1766,6 +1782,14 @@ def check_session_release() -> None:
     if legs < 8:
         fail(f"the H5 receiver self-check holds {legs} of the eight release legs - the kernel is the body this "
              f"round added, and this is the only tier that runs it as the three phone platforms will")
+    if "const relActiveAfter = activePeers(rel).length" not in harness:
+        fail("the 「不再监听」 leg reads the slot list again after the next peer has already paired, so the "
+             "predicate is asking 「名额空了没有」 at the moment the slot is occupied again - that leg was red on "
+             "the first run of this tier and it was red about its own order, not about releaseSessions(). Read "
+             "it into a name before the next trip, as #193's leg now does")
+    if "relTakenAll == 2 && activePeers(rel).length == 0" in harness:
+        fail("the 「不再监听」 leg is back to counting the slot list inside the predicate - `relNext` pairs before "
+             "the check() arguments are evaluated, so this can only ever be red")
 
 
 def check_lost_registration() -> None:
@@ -2118,6 +2142,14 @@ def check_token_repair() -> None:
     ):
         if literal not in stale:
             fail(f"runStaleSend() no longer contains {literal!r} - {why}")
+    if "repairs == 1" not in harness:
+        fail("the 「会话失效」 leg no longer counts that one line - #196 moved the paper to 「屏幕上留不留一行字由各端自己定」, "
+             "and the leg written the round before still measured it the old way: it asserted the whole log column "
+             "holds a single line, which is the retired absolute in another shape. The first run of this tier read "
+             "six lines and went red for the column, not for the repair")
+    if "stale.logLines.length == 1" in harness:
+        fail("the 「会话失效」 leg is back to `stale.logLines.length == 1` - that is 「the user sees nothing」 wearing "
+             "the contract's old sentence, and the browser's own log column (progress lines and all) contradicts it")
     legs = len(re.findall(r"check\('(对面重启把会话抹了，这一单仍然传成|补的那一趟 pair 带的是空码|"
                           r"补回来的是一枚新的 bearer|那一行「会话失效，用已固定的密钥重新配对」在这一单的日志里|"
                           r"那一列里没有一句在问人要配对码|补回来以后重问的那一次清单)", harness))
@@ -2137,6 +2169,170 @@ def check_token_repair() -> None:
     if gatelegs < 11:
         fail(f"phase_token_repair() carries {gatelegs} of the 11 legs this round wrote - each of the PC's three "
              f"repair sites needs its own trip, plus the revoked-trust case that must not be silent")
+
+
+def check_second_layer() -> None:
+    """§3's "second layer": the passphrase is a thing a *sender* puts on the wire, not a condition the line enforces.
+
+    Round thirty-one (#197) read 「码固定之后单次锁流不够看，所以强度来自第二层：`k` 是 32 字母表 8 位」 as the
+    behavioural claim it is written as - that guessing `c` is not enough - and measured one receiver with only the
+    `secret` slot varying. A stranger key presenting the correct code with the key omitted, and the same key
+    presenting it as JSON null, both got a token and spent none of that source's five tries; an empty string and a
+    wrong value both got `BAD_PAIR_CODE {reason: "passphrase"}` and spent one (`.probe/r31_probe.txt`). That is not
+    a gate - it is the compatibility concession two sentences above it, which §3 states out loud and §7 protects:
+    making the field mandatory changes the semantics of an existing field, which means a `protocol_version` bump,
+    which means locking out the old builds this contract promises to accept. So the paper now says who this layer
+    binds, what it therefore only screens out, and what the sender side owes instead: a blank passphrase box is a
+    downgrade the person can hear about, on every end, before the request goes out. The arithmetic in the same
+    sentence was also a lie by one bit - 32^8 is exactly 2^40, not "more than".
+    """
+    note = json.loads((CONTRACT / "protocol.json").read_text(encoding="utf-8-sig"))["transport"].get("note", "")
+    for needle, why in (
+        ("binds a sender that sends the field, not the wire", "whose promise this is - left out, the next reader "
+                                                             "finds a security sentence and assumes a receiver "
+                                                             "enforces it"),
+        ("omits `secret` pairs on every end and spends none of its source's five tries",
+         "the measured answer, both halves: the token and the untouched bucket"),
+        ("A blank passphrase box is therefore loud on the sender side instead of silent",
+         "the obligation this finding leaves the senders with, which is what the bodies below implement"),
+        ("the sentence that says it is `spec.pass_omitted`", "the one function every end's version of this "
+                                                             "sentence comes from, so the guard can follow it"),
+        ("N machines are N times the rate", "the size of the wall in front of the code space: the throttle is "
+                                            "per source, so it is not a rate limit on the guessing"),
+    ):
+        if needle not in note:
+            fail(f"protocol.json's transport.note no longer says {needle!r} - {why}")
+
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    section = spec.split("## 3.", 1)[1].split("\n## ", 1)[0] if "## 3." in spec else ""
+    prose = "\n".join(p for p in section.split("\n\n") if not p.lstrip().startswith("（20"))
+    flat = re.sub(r"\s+", "", prose)
+    for needle, why in (
+        ("但这一层绑的是把`k`发上线的那一方，不是这条线路", "the finding this round wrote into the contract"),
+        ("把`secret`整个省略的发送方", "the case the paper used to not name at all - it is the one a blank box makes"),
+        ("照样拿到token且一枚名额都不烧", "what the receiver actually answers it, measured in .probe/r31_probe.txt"),
+        ("只挡\"手边有码、没有密码\"的那一种人", "what is left of this layer, said as small as it measured"),
+        ("32⁸正好是2⁴⁰", "the arithmetic the sentence quotes, stated as exactly what it is"),
+    ):
+        if re.sub(r"\s+", "", needle) not in flat:
+            fail(f"§3 no longer says {needle!r} - {why}")
+    if re.sub(r"\s+", "", "约40bit以上") in flat:
+        fail("§3 calls the passphrase 约 40 bit 以上 again - 32^8 is exactly 2^40, and a security sentence that "
+             "rounds itself upward is the kind a later round has to re-measure instead of trusting")
+    if "下面那句「码固定之后单次锁流不够看，所以这道承诺加了第二层」" not in spec:
+        fail("§3's own note about the blank passphrase box points at a sentence the contract no longer contains - "
+             "this round rewrote 强度来自第二层 precisely because it claimed more than the bodies protect, and the "
+             "next reader following that pointer looks for words that are gone")
+
+    root = HERE.parent
+    sdk = HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk"
+    spec_py = (root / "app" / "net" / "spec.py").read_text(encoding="utf-8")
+    cli = (root / "app" / "cli.py").read_text(encoding="utf-8")
+    ui = (root / "app" / "ui" / "transfer.py").read_text(encoding="utf-8")
+    kernel = (sdk / "cs-protocol.uts").read_text(encoding="utf-8")
+    harness = (sdk / "web" / "index.uts").read_text(encoding="utf-8")
+    store = (HERE / "chuanshu" / "store" / "session.uts").read_text(encoding="utf-8")
+
+    for literal, why in (
+        ("def pass_omitted(secret: str, proto: Protocol) -> str:",
+         "the sentence this round added, and the only place the PC's downgrade is audible"),
+        ('if secret:\n        return ""', "it speaks for a blank box only - a filled one has nothing to be told "
+                                          "about"),
+    ):
+        if literal not in spec_py:
+            fail(f"app/net/spec.py no longer contains {literal!r} - {why}")
+    omit_fn = spec_py.split("def pass_omitted(", 1)[1].split("\ndef ", 1)[0] if "def pass_omitted(" in spec_py else ""
+    if "n=proto.pair_code_digits" not in omit_fn:
+        fail("pass_omitted() no longer quotes `proto.pair_code_digits` for the number in its own sentence - the "
+             "point of saying the downgrade out loud is that the digit count is the contract's, and a hand-copied "
+             "6 here is the first thing to drift when §3's pair code changes length")
+
+    cmd = cli.split("def cmd_send(", 1)[1].split("\ndef ", 1)[0] if "def cmd_send(" in cli else ""
+    if 'if not known and code:\n        omitted = protocol_spec.pass_omitted(secret, proto)' not in cmd:
+        fail("cmd_send() no longer says the downgrade only when this end is about to spend a code on a stranger - "
+             "a pinned peer never sees an empty `secret` go out, so the sentence would be a lie there")
+    connect = ui.split("def _start_connect(self)", 1)[1].split("\n    def ", 1)[0] \
+        if "def _start_connect(self)" in ui else ""
+    if 'protocol_spec.pass_omitted(secret, self.proto) if code and not self._pin_known(peer) else ""' not in connect:
+        fail("_start_connect() no longer computes the omission note from the same two conditions the CLI asks - "
+             "the panel and the CLI are one sender, and a person reads whichever one they opened")
+    on_connected = ui.split("def _on_connected(self", 1)[1].split("\n    def ", 1)[0] \
+        if "def _on_connected(self" in ui else ""
+    if "+ self._omit_note" not in on_connected:
+        fail("_on_connected() no longer carries the omission note into the success line - a sentence that vanishes "
+             "with the connection it warned about is the silence §3 replaced with this")
+    if "self._omit_note = \"\"" not in ui:
+        fail("the panel never clears the omission note - a stale 留空 sentence would then be read against the next "
+             "peer, one this end may be pairing with a real passphrase")
+
+    fn = kernel.split("export function passOmitted(", 1)[1].split("\n}", 1)[0] \
+        if "export function passOmitted(" in kernel else ""
+    for literal, why in (
+        ("if (secret.length > 0)", "the kernel's copy of the same rule: a filled box has nothing to say"),
+        ("PAIR_CODE_DIGITS.toString()", "and the number it quotes is the contract's, read the way the rest of the "
+                                        "kernel reads its numbers"),
+    ):
+        if literal not in fn:
+            fail(f"cs-protocol.uts's passOmitted() no longer contains {literal!r} - {why}")
+    entry = (sdk / "app-android" / "index.uts").read_text(encoding="utf-8")
+    surface = re.search(r"export \{[^}]*\} from '\.\./cs-protocol\.uts'", entry)
+    if surface is None or "passOmitted" not in surface.group(0):
+        fail("utssdk/app-android/index.uts no longer names passOmitted in the cs-protocol surface - a uni_modules "
+             "plugin on Android keeps only the names its own entry can reach, so the kernel's export is invisible "
+             "to the page and `launch app-android --compile true` fails with 找不到名称 passOmitted (that is exactly "
+             "how #197's first Android run went red; the browser tier never reads this list)")
+    check_code = store.split("function checkCodeAndNetwork()", 1)[1].split("\n}", 1)[0] \
+        if "function checkCodeAndNetwork()" in store else ""
+    for literal, why in (
+        ("if (activeOptions.code != '') {", "the phone says it only on the trip that actually carries a code"),
+        ("const omitted = passOmitted(activeOptions.secret)", "and with the same value the sender is about to put "
+                                                             "on the wire"),
+        ("log(omitted)", "into 传输详情 - the column a person reads, not a dialog this round has no business adding"),
+    ):
+        if literal not in check_code:
+            fail(f"checkCodeAndNetwork() no longer contains {literal!r} - {why}")
+    if "refuse(omitted)" in check_code:
+        fail("the phone turned the omission note into a refusal - §3 reads a blank box as「没有这个字段」and pairs "
+             "on the code alone, so a body that blocks it here would be stricter than the peer on the other end")
+
+    head = harness.split("} from '../cs-protocol.uts'", 1)[0]
+    if "passOmitted," not in head:
+        fail("web/index.uts no longer imports 'passOmitted,' - an export used and never imported compiles and "
+             "then blanks the page")
+    legs = len(re.findall(r"check\('(密码留空的那一趟，线上带的是配对码|那一趟照样配上|它一枚名额都没烧|"
+                          r"填了密码的那一趟，线上那个键就是这个数|码错的时候省略帮不上忙|"
+                          r"而它烧掉的正是这一格来源|留空那一趟本机要有一句人话|"
+                          r"填上的那个框什么都不必说)", harness))
+    if legs < 8:
+        fail(f"the H5 sender self-check holds {legs} of the eight second-layer legs - the kernel is what both "
+             f"phones compile, and the browser is the only tier that drives a sender with a blank box against a "
+             f"receiver that keeps a passphrase")
+
+    gate = (root / "scripts" / "protocol_selftest.py").read_text(encoding="utf-8")
+    if "def phase_second_layer(" not in gate:
+        fail("scripts/protocol_selftest.py no longer has phase_second_layer() - the omitted-key answer is a fact "
+             "about the pair path, and only the tier that pairs can measure it")
+    if re.search(r"^\s+phase_second_layer\(proto, workspace\)$", gate, re.M) is None:
+        fail("phase_second_layer() is defined but never called from main() - a phase nobody runs is the same as "
+             "no leg at all")
+    phase = gate.split("def phase_second_layer(", 1)[1].split("\ndef ", 1)[0] if "def phase_second_layer(" in gate else ""
+    for literal, why in (
+        ("len(alphabet) ** proto.passphrase_chars == 2 ** 40", "the arithmetic in the sentence, pinned to the two "
+                                                               "numbers instead of to the prose"),
+        ('"secret" not in omitted_body', "the sender-side half of the finding: this end decides whether the layer "
+                                         "exists by whether it puts the key on the wire"),
+        ("filled_body.get(\"secret\") == secret", "and the same trip with a typed value does carry it, so the "
+                                                  "omission is the blank box's doing and not the sender's habit"),
+        ("_code_failures", "the legs have to read the bucket, not only the code - spending a try is the other half "
+                           "of what this clause costs"),
+    ):
+        if literal not in phase:
+            fail(f"phase_second_layer() no longer contains {literal!r} - {why}")
+    gatelegs = len(set(re.findall(r'check\("(§3 [^"]+)"', phase)))
+    if gatelegs < 8:
+        fail(f"phase_second_layer() carries {gatelegs} of the 8 legs this round wrote - the receiver's answer, the "
+             f"sender's body shape, and the two sentences that have to stay audible are three different things "
+             f"holding this clause up")
 
 
 def main() -> int:
@@ -2214,6 +2410,7 @@ def main() -> int:
     check_lost_registration()
     check_pair_shape_local()
     check_token_repair()
+    check_second_layer()
 
     print(f"OK  protocol v{body['protocol_version']} from {stamp['source_repo']}@{stamp['source_commit'][:8]}")
     print(f"OK  {len(body['error_codes'])} error codes, {len(body['endpoints'])} endpoints, chunk {chunk // 1024} KiB")
@@ -2236,6 +2433,8 @@ def main() -> int:
           "PC, both fields on the phone's scan path, and a sender that could never match says why locally")
     print("OK  §3's lost token is repaired by the sender at three PC sites and one kernel funnel: the pair carries "
           "an empty code, the log line is each end's own, and a peer that revoked the trust says so out loud")
+    print("OK  §3's second layer binds the sender that writes the field: an omitted `secret` pairs and spends "
+          "nothing on every end, so a blank box is said out loud before it goes on the wire")
     print("OK  vendored copies match their stamps")
     print("OK  cs-protocol.uts mirrors the contract")
     print("OK  §5 names every limit a receiver refuses a transfer on")
