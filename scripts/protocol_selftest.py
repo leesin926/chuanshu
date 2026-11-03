@@ -243,8 +243,11 @@ def phase_in_process(proto: protocol_spec.Protocol, workspace: Path) -> None:
         unpaired.hello()
         expect_error("unpaired device cannot offer", "NOT_PAIRED", lambda: unpaired.offer(files))
 
-        # A known key with a stale token is refused at the transport; the silent re-pair
-        # that phase_restart exercises is _call's repair, not the receiver waving it through.
+        # A known key with a stale token is refused at the transport, and the line below pairs
+        # explicitly - so neither of these is the sentence §3 writes next, which is a still-alive
+        # connection repairing its own session inside `_call`. That one is phase_token_repair (#196);
+        # this pair only shows the receiver is the one that said no, and that a known key can get in
+        # without a code when somebody asks for it.
         no_token = PeerConnection(sender, "PC-Sender", "127.0.0.1", service.port, receiver.served_fingerprint)
         no_token.hello()
         status, payload = no_token._request("POST", "/v1/offer", json_body=conn._manifest)
@@ -454,6 +457,107 @@ def phase_restart(proto: protocol_spec.Protocol, workspace: Path) -> None:
     finally:
         if handle2 is not None:
             stop_host(handle2)
+
+
+def phase_token_repair(proto: protocol_spec.Protocol, workspace: Path) -> None:
+    """§3 那句「发送方此时用已有的 key 做一次只靠签名、不靠配对码的重配对补回来」——中间那一段第一次被跑起来。
+
+    挨着它的两条腿各自量的是别的两头：``stale token rejected by the receiver`` 量的是对端把旧 token
+    拒了，``known key re-pairs without a code``（phase_restart）量的是显式调 ``conn.pair()`` 时进门那
+    一步不要码。这两头中间那句原话由谁兑现——一个还活着的连接，它的 token 在对端没了——今天没有任何
+    一档走过，而 :246-247 那句注释把它说成是 phase_restart 覆盖的。这里三处补的地方各跑一趟（``_call``、
+    offer 轮询、写块重试），每趟都记下发出去的 ``code`` 究竟是不是空的；最后一条量的是这一趟**不该**
+    静默的那一面：对面连信任那份也收回了，报的要是一句"需要配对码"，而不是一句"补好了"。
+    """
+    corpus = build_corpus(workspace / "corpus-repair")
+    sender = load_or_create(workspace / "sender-repair")
+    receiver = load_or_create(workspace / "receiver-repair")
+    service = ReceiveService(receiver, "PC-Repair-Host", lambda m, who, caller: True,
+                             host="127.0.0.1", port=0, root=workspace / "received-repair")
+    honest_pair = service.handle_pair
+    seen_codes: list[str] = []
+
+    def spy_pair(body: dict, client_ip: str) -> dict:
+        code = str(body.get("code"))
+        seen_codes.append(code)
+        return honest_pair(body, client_ip)
+
+    service.handle_pair = spy_pair
+    service.start()
+    try:
+        conn = PeerConnection(sender, "PC-Sender", "127.0.0.1", service.port, receiver.served_fingerprint)
+        conn.hello()
+        conn.pair(service.current_pair_code(), service.passphrase())
+        files = plan(corpus, base=workspace / "corpus-repair")
+        conn.offer(files)
+        offer_id = conn.offer_id
+        big = next(f for f in files if f.relpath.endswith("IMG_大文件.bin"))
+
+        # 第一处：`_call`（state / finalize / abort 都从它走）
+        seen_codes.clear()
+        stale = conn.token
+        service._tokens.clear()
+        status, payload = conn._request("GET", f"/v1/offer/{offer_id}/state")
+        check("§3 令牌没了的第一问确实吃 403 NOT_PAIRED（补之前它先是一次失败）",
+              status == proto.http_status("NOT_PAIRED") and payload.get("code") == "NOT_PAIRED", f"{status} {payload}")
+        try:
+            state = conn.state()
+            check("§3 `_call` 那一处自己补回来了：同一句原话第二次问就读得回来", bool(state.get("files")), state)
+        except Exception as exc:  # noqa: BLE001
+            check("§3 `_call` 那一处自己补回来了：同一句原话第二次问就读得回来", False, f"{type(exc).__name__}: {exc}")
+        check("§3 `_call` 补的那一趟发出去的是一对空码（它没去碰屏幕上那个数）", seen_codes == [""], seen_codes)
+        check("§3 `_call` 补回来的是一枚新的 bearer：旧的那枚从此不再在任何一边算话",
+              conn.token != "" and conn.token != stale and conn.token in set(service._tokens.values()), conn.token[:8])
+
+        # 第二处：写块。它不走 `_call`，所以它必须自己有一处补
+        seen_codes.clear()
+        service._tokens.clear()
+        try:
+            conn._put_chunk(big, 1, 2, None, 3)
+            landed = 1 not in next(e for e in service.handle_state(offer_id)["files"] if e["id"] == big.id)["missing"]
+            check("§3 写块那一处自己补回来了：这一块仍然落上", landed, big.relpath)
+        except Exception as exc:  # noqa: BLE001
+            check("§3 写块那一处自己补回来了：这一块仍然落上", False, f"{type(exc).__name__}: {exc}")
+        check("§3 写块那一处补的趟也只发空码", seen_codes == [""], seen_codes)
+
+        # 第三处：offer 轮询。它也不走 `_call`，而它守的是"有人正在决定"这一趟最贵的时候
+        seen_codes.clear()
+        honest_offer = service.handle_offer
+        polls: list[int] = []
+
+        def flaky_offer(body: dict, caller: str) -> dict:
+            polls.append(1)
+            if len(polls) == 1:
+                raise protocol_spec.ProtocolError("NOT_PAIRED", {"reason": "the peer restarted mid-decision"})
+            return honest_offer(body, caller)
+
+        service.handle_offer = flaky_offer
+        try:
+            got = conn.offer(files)
+            check("§3 offer 轮询那一处第一问吃 403 后仍然把这单谈成", got["state"].get("accepted") is True, got["state"])
+        except Exception as exc:  # noqa: BLE001
+            check("§3 offer 轮询那一处第一问吃 403 后仍然把这单谈成", False, f"{type(exc).__name__}: {exc}")
+        finally:
+            service.handle_offer = honest_offer
+        check("§3 offer 轮询那一处补的趟只发空码", seen_codes == [""], seen_codes)
+        # §4：同一份清单按 offer_id 算一次投递，所以补回来再问一次不会把这一单变成两单
+        check("§3 补回来以后重问的那一次清单，在对方仍然只算一单", len(polls) == 2, len(polls))
+
+        # 反面：信任那份也没了，这一趟不该静默——它要如实报成"需要配对码"，而不是假装补好了
+        receiver.untrust(sender.fingerprint)
+        service._tokens.clear()
+        seen_codes.clear()
+        try:
+            conn.state()
+            check("§3 对面连信任都收回时这一趟不静默：报的是要配对码", False, "补回来了，可对面已经不认识这把钥匙")
+        except PairNeeded:
+            check("§3 对面连信任都收回时这一趟不静默：报的是要配对码", True)
+        except protocol_spec.ProtocolError as error:
+            check("§3 对面连信任都收回时这一趟不静默：报的是要配对码", False, f"{error.code} {error.detail}")
+        check("§3 那一次不肯静默的补也没有偷偷带码：它带的仍是空码，所以拒绝来自对面",
+              seen_codes == [""], seen_codes)
+    finally:
+        service.stop()
 
 
 def phase_lying_ledger(proto: protocol_spec.Protocol, workspace: Path) -> None:
@@ -2736,6 +2840,7 @@ def main() -> int:
         phase_in_process(proto, workspace)
         phase_identity_shapes(proto, workspace)
         phase_restart(proto, workspace)
+        phase_token_repair(proto, workspace)
         phase_lying_ledger(proto, workspace)
         phase_state_lost(proto, workspace)
         phase_chunk_escape(proto, workspace)

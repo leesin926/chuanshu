@@ -2020,6 +2020,125 @@ def check_pair_shape_local() -> None:
              f"live for both phones, and the browser is the only tier that runs them without a device")
 
 
+def check_token_repair() -> None:
+    """§3's lost-token clause: the sender repairs it, and the promise is about what it asks of a person.
+
+    Round thirty (#196) read 「token 丢了…发送方此时用已有的 key 做一次只靠签名、不靠配对码的重配对补回来」 as a
+    behavioural claim and found the *middle* of it undriven by every tier: `stale token rejected by the receiver`
+    measures the peer's 403, `known key re-pairs without a code` measures one explicit pair() - nothing sent a
+    request, took the 403, and read the same request back afterwards. The same round found the sentence beside it
+    false on all three ends: it promised 用户看不到这个过程 while the phone has written a line into 传输详情 for it
+    since #67. The paper now says what the bodies protect - the repair asks nothing of the user - and says where
+    the repair must make noise instead: a peer that revoked the trust as well is not a session waiting to be
+    topped up. What this guard holds open is the repair's shape (an empty `code`), its sites (three on the PC, one
+    in the kernel because every request goes through `authed()`), and the two tiers that now drive it.
+    """
+    note = json.loads((CONTRACT / "protocol.json").read_text(encoding="utf-8-sig"))["transport"].get("note", "")
+    for needle, why in (
+        ("A dropped token is repaired by the sender, not by a person",
+         "whose job this is - left to the prose alone, the next reader finds only a 403 and a pair() somewhere"),
+        ("the promise is that this asks nothing of the user",
+         "the clause §3 now protects; the absolute it replaced was false on every end"),
+        ("Whether a log line shows up is each end's own choice",
+         "why the phone's 会话失效 line stays and the paper stopped counting silence"),
+        ("a peer that revoked the trust as well refuses the empty-code pair",
+         "the honest opposite half, without which 补回来 reads as always silent"),
+    ):
+        if needle not in note:
+            fail(f"protocol.json's transport.note no longer says {needle!r} - {why}")
+
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    section = spec.split("## 3.", 1)[1].split("\n## ", 1)[0] if "## 3." in spec else ""
+    prose = "\n".join(p for p in section.split("\n\n") if not p.lstrip().startswith("（20"))
+    flat = re.sub(r"\s+", "", prose)
+    for needle, why in (
+        ("发送方此时用已有的key做一次**只靠签名、不靠配对码**的重配对补回来",
+         "the repair itself - a signature-only pair is what makes it need no code"),
+        ("它不要求用户做任何事", "the promise this round replaced the false one with"),
+        ("屏幕上留不留一行字由各端自己定", "the half the absolute used to over-promise on"),
+        ("报的就该是「需要配对码」", "the case that must make noise, so a reader cannot take 静默 as total"),
+    ):
+        if re.sub(r"\s+", "", needle) not in flat:
+            fail(f"§3 no longer says {needle!r} - {why}")
+    if "用户看不到这个过程" in flat:
+        fail("§3 claims the user does not see the repair again - no end ever kept that promise (the phone writes "
+             "会话失效 into 传输详情, PC logs it only at _call), and a sentence nobody obeys is the kind the next "
+             "round has to delete rather than measure")
+
+    root = HERE.parent
+    sdk = HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk"
+    send_py = (root / "app" / "net" / "send.py").read_text(encoding="utf-8")
+    client = (sdk / "cs-client.uts").read_text(encoding="utf-8")
+    kernel = (sdk / "cs-protocol.uts").read_text(encoding="utf-8")
+    harness = (sdk / "web" / "index.uts").read_text(encoding="utf-8")
+
+    # The PC: three call sites, because a request can die at any of them, and none of them may reach for the
+    # number on the screen. transfer() pairs without a code too, but as an explicit step - hence 4, not 3.
+    sites = send_py.count('payload.get("code") == "NOT_PAIRED" and self.identity.is_trusted(self.fingerprint)')
+    if sites != 3:
+        fail(f"the PC repairs a dropped token at {sites} request sites instead of 3 (_call, the offer poll, "
+             f"_put_chunk) - the sentence says 发送方 repairs its own session, and a site that forgot leaves the "
+             f"person staring at a failure the peer never declared")
+    if send_py.count("self.pair()") != 4:
+        fail("the number of bare self.pair() calls in app/net/send.py moved off 4 - three repairs plus the "
+             "explicit no-code pair in transfer(); a repair that passes a code is the mistake this clause is for")
+    if 'def pair(self, code: str = ""' not in send_py:
+        fail("SenderClient.pair() no longer defaults to an empty code - the repair has to be able to ask for "
+             "nothing on the wire")
+
+    for literal, why in (
+        ("if (status != 403 || codeOf(resp) != 'NOT_PAIRED' || repaired)",
+         "one repair per request: a peer that still says NOT_PAIRED afterwards genuinely does not know us, and "
+         "looping there would ask for a code the person cannot see"),
+        ("write('会话失效，用已固定的密钥重新配对')",
+         "the line §3 now allows each end to write - and the M group reads it out of the log column"),
+        ("pairOnce(session, '', takeSelf, signPair, call",
+         "the funnel's empty code: every authed request in the shared kernel is repaired through this one call, "
+         "which is why this end needs one site where the PC needs three"),
+        ("write('静默重新配对没成功：' + why)",
+         "the出声 half on this end: a refused repair says so instead of reporting a success nobody asked for"),
+    ):
+        if literal not in client:
+            fail(f"cs-client.uts no longer contains {literal!r} - {why}")
+    if "'NOT_PAIRED'" not in kernel or "尚未与这台设备配对" not in kernel:
+        fail("errorText() no longer turns NOT_PAIRED into a sentence a person reads - the revoked-trust case has "
+             "to reach the user as 需要配对码, not as a silent success")
+
+    if "must not see this" in harness:
+        fail("web/index.uts still comments that spec §3 promises the user sees nothing - the contract dropped "
+             "that absolute in #196, and the comment is what a reader of the harness believes next")
+    stale = harness.split("function runStaleSend(", 1)[1].split("\nexport function senderSelfReport(", 1)[0] \
+        if "function runStaleSend(" in harness else ""
+    for literal, why in (
+        ("restartLike(probe.inbox)", "the restart is what kills the token while the trust stays - without it this "
+                                     "leg measures an ordinary send"),
+        ("run.staleToken = session.token", "the number has to be read before the repair replaces it, or the leg "
+                                            "cannot tell a new bearer from the same one"),
+        ("note, noopProgress, noopFileEvent", "the writer is the log column, which is what §3 now says each end owns"),
+    ):
+        if literal not in stale:
+            fail(f"runStaleSend() no longer contains {literal!r} - {why}")
+    legs = len(re.findall(r"check\('(对面重启把会话抹了，这一单仍然传成|补的那一趟 pair 带的是空码|"
+                          r"补回来的是一枚新的 bearer|那一行「会话失效，用已固定的密钥重新配对」在这一单的日志里|"
+                          r"那一列里没有一句在问人要配对码|补回来以后重问的那一次清单)", harness))
+    if legs < 6:
+        fail(f"the H5 sender self-check holds {legs} of the six repair legs - the kernel is where both phones' "
+             f"sender lives, and the browser is the only tier that runs it without a device")
+
+    gate = (root / "scripts" / "protocol_selftest.py").read_text(encoding="utf-8")
+    if "def phase_token_repair(" not in gate:
+        fail("scripts/protocol_selftest.py no longer has phase_token_repair() - the middle of §3's sentence was "
+             "unmeasured by every tier until #196 wrote it")
+    if "phase_token_repair(proto, workspace)" not in gate:
+        fail("phase_token_repair() is defined but never called from main() - a phase nobody runs is the same as "
+             "no leg at all")
+    body = gate.split("def phase_token_repair(", 1)[1].split("\ndef ", 1)[0] if "def phase_token_repair(" in gate else ""
+    gatelegs = len(set(re.findall(r'check\("(§3 [^"]+)"', body)))
+    if gatelegs < 11:
+        fail(f"phase_token_repair() carries {gatelegs} of the 11 legs this round wrote - each of the PC's three "
+             f"repair sites needs its own trip, plus the revoked-trust case that must not be silent")
+
+
 def main() -> int:
     stamp_path = CONTRACT / "SOURCE.json"
     for name in ("protocol.json", "spec.md", "SOURCE.json"):
@@ -2094,6 +2213,7 @@ def main() -> int:
     check_session_release()
     check_lost_registration()
     check_pair_shape_local()
+    check_token_repair()
 
     print(f"OK  protocol v{body['protocol_version']} from {stamp['source_repo']}@{stamp['source_commit'][:8]}")
     print(f"OK  {len(body['error_codes'])} error codes, {len(body['endpoints'])} endpoints, chunk {chunk // 1024} KiB")
@@ -2114,6 +2234,8 @@ def main() -> int:
           "beside the caption, and the phone's card stops saying 已连接 when its own slot went quiet")
     print("OK  §3 asks a typed-in code and passphrase for their shape before they go on the wire: one alphabet on "
           "PC, both fields on the phone's scan path, and a sender that could never match says why locally")
+    print("OK  §3's lost token is repaired by the sender at three PC sites and one kernel funnel: the pair carries "
+          "an empty code, the log line is each end's own, and a peer that revoked the trust says so out loud")
     print("OK  vendored copies match their stamps")
     print("OK  cs-protocol.uts mirrors the contract")
     print("OK  §5 names every limit a receiver refuses a transfer on")

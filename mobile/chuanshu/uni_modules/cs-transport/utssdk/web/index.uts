@@ -595,7 +595,9 @@ export function demoRestart(): void {
 }
 
 /** A restart that keeps the key: the token dies, every authed endpoint answers NOT_PAIRED, and the
- *  sender is meant to repair it by signature alone. spec §3 says the user must not see this. */
+ *  sender is meant to repair it by signature alone. spec §3 promises that this asks nothing of the
+ *  person - it does not promise the 传输详情 column stays empty, and this end's shared client writes
+ *  one line for it (`cs-client.uts:322`), which is what the M group below reads. */
 export function demoExpireToken(): void {
 	peer.token = ''
 	peer.paired = false
@@ -2894,6 +2896,14 @@ class ChunkSwallow {
 	/** How many request lines this peer was actually shown. A transport that refused the certificate never
 	 *  got that far, so the §2 leg below reads this rather than trusting a sentence about order. */
 	hellosSeen: number = 0
+	/** The `code` each POST /v1/pair this peer was actually shown, in order. Spec §3's silent repair has
+	 *  to be a pair whose `code` is empty: a repair that re-offers the number on the screen is the same
+	 *  mistake #195 measured from the other side, just paid for twice. */
+	pairCodes: string[] = []
+	/** Every line the shared client wrote during the send below. §3's rewrite of this round says the
+	 *  repair must not ask a person to do anything, and that it says nothing about whether a line shows
+	 *  up - so the legs read this column instead of trusting the old promise that the user saw nothing. */
+	logLines: string[] = []
 }
 
 class SenderRun {
@@ -2902,6 +2912,11 @@ class SenderRun {
 	done: boolean = false
 	ok: boolean = false
 	summary: string = ''
+	/** The bearer this end held when the peer restarted, and the one it repaired itself into. Two
+	 *  numbers because §3 promises both halves: the old one stops meaning anything, the new one is what
+	 *  the rest of this transfer is written on. */
+	staleToken: string = ''
+	newToken: string = ''
 }
 
 function swallowed(reason: string): string {
@@ -2918,6 +2933,10 @@ function swallowCaller(probe: ChunkSwallow): Caller {
 		const isChunk = method == 'PUT' && path.indexOf('/chunk/') >= 0
 		if (method == 'GET' && path == '/v1/hello') {
 			probe.hellosSeen = probe.hellosSeen + 1
+		}
+		if (method == 'POST' && path == '/v1/pair') {
+			const saidPair = parseJson(jsonBody)
+			probe.pairCodes.push(saidPair == null ? '?' : saidPair!.getString('code', '?'))
 		}
 		const eat = isChunk && (probe.nth == -1 || probe.chunksSeen + 1 == probe.nth)
 		if (isChunk) {
@@ -3069,6 +3088,47 @@ function runSender(probe: ChunkSwallow, relpath: string, run: SenderRun, pinPref
 			run.ok = ok
 			run.summary = summary
 		})
+}
+
+/** The same trip with the peer's memory wiped underneath it: pair, then restart the receiver (spec §3's
+ *  token dies, the trust does not), then send. Everything the repaired client writes goes into
+ *  `probe.logLines`, because what this leg has to read is the column a person would see. */
+function runStaleSend(probe: ChunkSwallow, relpath: string, run: SenderRun): void {
+	const call = swallowCaller(probe)
+	const link = new TransferOptions()
+	link.host = '自检对端'
+	link.port = TRANSPORT_PORT
+	link.code = currentPairCode(probe.inbox, nowSeconds())
+	link.secret = passphraseOf(probe.inbox, nowSeconds())
+	connectPeer(link, simTakeSelf, simSignPair, call, noopWrite, function (ok: boolean, message: string, session: PeerSession | null): void {
+		if (ok && session != null) {
+			run.session = session
+			return
+		}
+		run.done = true
+		run.summary = '配对没成：' + message
+	})
+	const session = run.session
+	if (session == null) {
+		return
+	}
+	restartLike(probe.inbox)
+	run.staleToken = session.token
+	const opts = new TransferOptions()
+	opts.host = link.host
+	opts.port = link.port
+	opts.paths = [relpath]
+	opts.relpaths = [relpath]
+	const note: Writer = (line: string): void => {
+		probe.logLines.push(line)
+	}
+	sendFiles(session, opts, simTakeSelf, simSignPair, call, simPrepareFile, simReadChunk, simDigestHex,
+		note, noopProgress, noopFileEvent, function (ok: boolean, summary: string): void {
+			run.done = true
+			run.ok = ok
+			run.summary = summary
+		})
+	run.newToken = session.token
 }
 
 /** The 发送半边 of the self-test: spec §4's recovery rules (#120, #130) run against a peer that
@@ -3264,6 +3324,34 @@ export function senderSelfReport(): string {
 	check('码多抄了一位时同样在本地停住，原因是那 6 位', whyPair('&c=1234567&k=K7QMXZ2P').indexOf('6 位') >= 0, whyPair('&c=1234567&k=K7QMXZ2P'))
 	check('两个都抄错时先答码那一句：这里没有"第二个字段只在第一个没带时才问"那回事', whyPair('&c=12a456&k=k7qmxz2p').indexOf('数字') >= 0, whyPair('&c=12a456&k=k7qmxz2p'))
 	check('扫码/粘贴那一趟与手输那一格答的是同一句话', codeReject('12a456') != '' && codeReject('12a456') == whyPair('&c=12a456&k=K7QMXZ2P'), codeReject('12a456') + ' / ' + whyPair('&c=12a456&k=K7QMXZ2P'))
+
+	// M. 第三十轮巡检（#196）：§3 那句「token 丢了……发送方此时用已有的 key 做一次只靠签名、不靠配对码的重配对补回来」。
+	// 三档里以前量到的是两头——`stale token rejected by the receiver` 量对面回 403，`known key re-pairs without a
+	// code` 量一次明写的 pair()，中间那半句「发送方自己补、并且把这单接着传成」在哪个档位都没跑过。PC 那一半
+	// 本轮已补进门禁（phase_token_repair），这一组是同一件事在手机共用内核上的镜像：`cs-client.uts:322` 那一行
+	// 与它下面那次 pairOnce(session, '', …)。合同这一轮把「用户看不到这个过程」改成「它不要求用户做任何事」，
+	// 所以下面既量那一行在不在，也量它有没有替人做任何要求。
+	const stale = new ChunkSwallow()
+	const rstale = new SenderRun()
+	runStaleSend(stale, SIM_TEXT, rstale)
+	check('对面重启把会话抹了，这一单仍然传成', rstale.done && rstale.ok, rstale.summary)
+	check('补的那一趟 pair 带的是空码（它没去碰屏幕上那个数）',
+		stale.pairCodes.length == 2 && stale.pairCodes[1] == '', stale.pairCodes.join('/'))
+	// The state question is the one §4 lets either side ask, so it is what this harness uses to read
+	// the peer's ledger back with each of the two numbers in turn.
+	const stateWithOld = askOn(stale.inbox, SIM_PEER_ID, 'GET', '/v1/offer/' + stale.offerId + '/state', '', rstale.staleToken, new ArrayBuffer(0), '')
+	const stateWithNew = askOn(stale.inbox, SIM_PEER_ID, 'GET', '/v1/offer/' + stale.offerId + '/state', '', rstale.newToken, new ArrayBuffer(0), '')
+	check('补回来的是一枚新的 bearer：旧的那枚从此不再在任何一边算话',
+		rstale.staleToken != rstale.newToken && codeOf(stateWithOld.body) == 'NOT_PAIRED' && codeOf(stateWithNew.body) != 'NOT_PAIRED',
+		codeOf(stateWithOld.body) + '/' + codeOf(stateWithNew.body) + ' ' + stale.inbox.tokens.length.toString() + ' 枚')
+	check('那一行「会话失效，用已固定的密钥重新配对」在这一单的日志里，且只有这一行',
+		stale.logLines.length == 1 && stale.logLines[0].indexOf('会话失效') >= 0, stale.logLines.join(' / '))
+	check('那一列里没有一句在问人要配对码（§3：它不要求用户做任何事）',
+		stale.logLines.join(' / ').indexOf('配对码') < 0 && rstale.summary.indexOf('配对码') < 0,
+		stale.logLines.join(' / ') + ' / ' + rstale.summary)
+	check('补回来以后重问的那一次清单，在对方仍然只算一单',
+		stale.offerAsks == 2 && stale.inbox.offers.length == 1,
+		stale.offerAsks.toString() + '/' + stale.inbox.offers.length.toString())
 
 	out.push(fail == 0 ? '发送自检 ' + pass.toString() + ' 项全部通过' : '发送自检失败 ' + fail.toString() + ' 项，通过 ' + pass.toString() + ' 项')
 	return out.join('\n')
