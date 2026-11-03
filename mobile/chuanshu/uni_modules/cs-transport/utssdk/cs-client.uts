@@ -197,7 +197,7 @@ function pairOnce(
 	takeSelf: (cb: SelfCallback) => void,
 	signPair: (message: string, cb: SignCallback) => void,
 	call: Caller,
-	cb: (ok: boolean, message: string) => void
+	cb: (ok: boolean, message: string, refused: string) => void
 ): void {
 	takeSelf(function (peerId: string, name: string, myFingerprint: string) {
 		const nonce = randomHex(16)
@@ -207,24 +207,40 @@ function pairOnce(
 			call('POST', '/v1/pair', json, '', new ArrayBuffer(0), '', '', function (status: number, body: string) {
 				const wire = codeOf(body)
 				if (status != 200) {
-					cb(false, pinText(wire != '' ? wire : 'NOT_PAIRED') + ' ' + detailOf(body))
+					/** `refused` is the wire code, not the sentence: §3's two faces of a refusal answer with
+					 *  the same `BAD_PAIR_CODE`, and only the caller knows whether this end sent an empty code
+					 *  of its own (the signature-only repair) or a code a person typed. */
+					cb(false, pinText(wire != '' ? wire : 'NOT_PAIRED') + ' ' + detailOf(body), wire)
 					return
 				}
 				const reply = parseJson(body)
 				if (reply == null) {
-					cb(false, errorText('UNSUPPORTED_PROTOCOL'))
+					cb(false, errorText('UNSUPPORTED_PROTOCOL'), wire)
 					return
 				}
 				if (reply.getString('fingerprint', '') != session.peerFingerprint) {
-					cb(false, '配对应答里的指纹和 hello 不一致，已中止')
+					cb(false, '配对应答里的指纹和 hello 不一致，已中止', wire)
 					return
 				}
 				session.token = reply.getString('token', '')
 				session.resumed = reply.getBoolean('resumed', false)
-				cb(true, session.resumed ? '沿用旧指纹' : '首次，已固定指纹')
+				cb(true, session.resumed ? '沿用旧指纹' : '首次，已固定指纹', '')
 			})
 		})
 	})
+}
+
+/** §3's honest opposite of the silent repair, in one sentence this end owns.
+ *
+ *  A peer answers this end's own empty-code repair with `BAD_PAIR_CODE` only once it stopped
+ *  trusting this key - so the person has nothing to retype, and a state name is not a next step.
+ *  Returns '' when the refusal was not a request for a code (a dead socket, a version refusal),
+ *  which stays this end's own line rather than a claim about trust. */
+export function repairRefused(refused: string): string {
+	if (refused == 'BAD_PAIR_CODE') {
+		return '对方不再认识本机的密钥。选中它，输入它屏幕上新显示的配对码再连接。'
+	}
+	return ''
 }
 
 /** The connect button's whole job: reach the peer, agree on a version, redeem the code, hand back a
@@ -251,9 +267,12 @@ export function connectPeer(
 				done(false, message, null)
 				return
 			}
-			pairOnce(session, opts.code, takeSelf, signPair, call, function (paired: boolean, why: string) {
+			pairOnce(session, opts.code, takeSelf, signPair, call, function (paired: boolean, why: string, refused: string) {
 				if (!paired) {
-					done(false, why, session)
+					/** Same rule as the sender's repair: an empty code here is this end's own (a pinned peer
+					 *  connects without asking), so the person has nothing to retype and the sentence names
+					 *  the new code instead of blaming a guess. */
+					done(false, opts.code == '' && repairRefused(refused) != '' ? repairRefused(refused) : why, session)
 					return
 				}
 				done(true, '已连接 ' + session.peerName + '（' + why + '）', session)
@@ -320,10 +339,13 @@ export function sendFiles(
 				return
 			}
 			write('会话失效，用已固定的密钥重新配对')
-			pairOnce(session, '', takeSelf, signPair, call, function (ok: boolean, why: string) {
+			pairOnce(session, '', takeSelf, signPair, call, function (ok: boolean, why: string, refused: string) {
 				if (!ok) {
-					write('静默重新配对没成功：' + why)
-					cb(status, resp)
+					const needs = repairRefused(refused)
+					write(needs != '' ? needs : '静默重新配对没成功：' + why)
+					/** The detail is this end's own words (spec §4's rule that a detail is a whole sentence),
+					 *  so the line the card reads names the next step instead of only the state name. */
+					cb(status, needs != '' ? '{"code":"NOT_PAIRED","detail":{"reason":"' + needs + '"}}' : resp)
 					return
 				}
 				authed(method, path, json, body, sha, escape, true, cb)

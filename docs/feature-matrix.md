@@ -2203,6 +2203,59 @@ Xcode，够不到任何一档编译门**——它改的原因只是共用的 sto
       而它们欠的那五轮里，`#192`/`#193`/`#196` 三轮都在文档里写过「结论只到门禁 + 守卫」——那句话是对的，但它盖住的比它说的多：手机那一半的这几个读数**今天才算第一次被证明**（null = 没有它、`releaseSessions` 一次请走两半、补回来只发空码），
       而这台机器现在有了把 H5 档跑起来的路子，"欠开"从这一轮起不再是可接受的收尾（待办 44）。
 
+49. **#198：合同逐条巡检第三十二轮——§3 那句「对面把信任那一份也收回了，报的就该是『需要配对码』」：两面上线是同一个形状，分开它们的只有发送端自己填的那个空码；改前三端各自把两面说串了**
+    - **量法**：一台接收服务，先正常配好（拿到 token），再分两条路把它变成"不肯静默"的那一面与"该静默"的那一面。
+      ① `restartLike` 只清 token、**留着** `trusted`——这是 §3 那句正常重连路径，补得成；② 在 ① 之外再把 `trusted` 清空，
+      这才是 PC 设置里「撤销」留下的形状。两条都让发送端带着旧 token 去问同一句话，看它给自己人吐出来的**那行字**是什么。
+      接收方那一头的答案是同一格：`receive.py:611` 拿空码去比 `current_pair_code()`，不相等 → `BAD_PAIR_CODE`，
+      并且 `failures.append(time.time())`——**空码在接收方就是一次错猜，这一趟不免费**。
+    - **量到的形状（三端各不一样，而且各错一半）**：PC 的 `pair()` 对所有 `BAD_PAIR_CODE` 一律 `raise PairNeeded()`
+      （`app/net/send.py:394` 改前），于是一句话被两头共用：连接那一站 `except PairNeeded` 说的是
+      「配对码或密码不对…再输一次」（`app/ui/transfer.py:2112` 改前）——机器自己发起的那趟根本没人输过东西，
+      这句指的是一次没发生过的打字；发送那一站 `except PairNeeded` 说的是「对方不再认识本机的密钥…输入新显示的配对码」——
+      而人在连接框里把一个数字敲错时读到的正是这一句，指的是一件没发生过的收回。手机这一半两面上报的是同一句状态名：
+      `cs-client.uts:325` 改前把拒绝拼成 `write('静默重新配对没成功：' + why)`，`why` 来自 `pinText(wire) + ' ' + detailOf(body)`
+      = 「配对码不正确或已过期」/「尚未与这台设备配对」，卡片上始终没有"下一步是什么"。
+      **第三点更硬**：`pairOnce` 的回调原来只交出一句话，不交出对面答的那个码——机器那一面**没有信息**判
+      "这是要码还是网络断了"，所以就算想分开也分不了。
+    - **改法（身体跟着纸面，不是纸面跟着身体）**：判别只认一个事实——这一趟发出去的 `code` 是不是本机自己填的空。
+      PC：`send.py` 的 `pair()` 按它分派 `PairNeeded`（空码）/ 新增的 `WrongPairCode`（人给的码），
+      句子从两站各自硬写收进 `app/net/spec.py:pair_refusal(repair, proto)`（第三十一轮 `pass_omitted` 住的那一格），
+      两站统一 `except (PairNeeded, WrongPairCode)` 并调它；CLI 补 `except WrongPairCode` 那一支，并在句子里说出
+      "这一格来源五个名额已经被这一次占掉一个"。手机：`pairOnce` 的回调加第三个参数 `refused`（对面答的那个码），
+      `repairRefused(refused)` 只认 `BAD_PAIR_CODE`，命中时那一行 `write` 与发回卡片的 `detail.reason` 装的都是
+      **和 PC 逐字相同**的那句「对方不再认识本机的密钥。选中它，输入它屏幕上新显示的配对码再连接。」——
+      §3 只许一个下一步，人在哪一端站着都一样。`connectPeer` 那一趟同样按 `opts.code == ''` 判：已固定的对端点"连接"，
+      填的也是空码，那是机器那一面不是人那一面。
+    - **档位（按拿到的证据分级，别写高）**：
+      ① **PC 进程内门禁 282 → 288 条全绿**（`.probe/r32_gate.txt`：`RESULT ALL PASS`）——新增的六条量的是
+      `pair_refusal(True/False, proto)` 出来的**两行字**、两面不许共用一句、两面各在对面桶里记一次，
+      以及人那一面拿到的是哪个异常；同一次运行还**改掉两条旧腿**（`phase_in_process` 的 wrong-code / wrong-password
+      那两条原本站在 `except PairNeeded` 上，也就是把串了的那一面当成了正确行为钉住——本轮把它们挪到 `except WrongPairCode`，
+      并对"退回成一句"的情形明写 FAIL）。
+      ② **静态守卫 31 行 OK**（`.probe/r32_guard.txt`，`rc=0`）——新增 `check_pair_refusal()`，
+      并把第三十轮那条 `write('静默重新配对没成功：' + why)` 的钉子改成新的三目形状（不改它，本轮一改就红）。
+      ③ **浏览器档真编真跑**：`发送自检 66 → 73 项全部通过`，新增 O 组七条（`.probe/r32_web.txt`），
+      同一次运行里 `接收自检 172`、`发现自检 29` 都仍然全绿、`bad: []`——这是 §3 这一句**第一次被执行**：
+      第三十轮把它写进纸面时只有 `.probe/red30.py` 按文本钉它，第三十一轮的 §6 第 48 条因此老实写着
+      「这一条本轮只在代码上核过、没跑」。要造出那一格拒绝，`restartLike` 不够（它偏偏留着 `trusted`，那正是补能成的原因），
+      本轮补了 `runRevokedSend()`：清 token **并且**清空 `trusted`。
+      ④ **负向 19 处各红一次**（`.probe/r32_negatives.txt`，`rc=0`）——四处合同正文（note 两句、§3 两句，改完必须
+      重新 vendor 才量得到，因为守卫比的是抄本）、四处 PC 身体、四处内核 + 面板 + CLI、三处两档的腿、
+      外加两处"退回成无条件/不读 pair_refusal"。其中两处第一次跑**没红**，原因都在我这侧：一处是守卫读抄本而我改了原件
+      （没走 vendor），一处是我把 `protocol_spec.pair_refusal(` 只换掉了 `True` 那一支、`False` 那一支还在——
+      守卫没错，是负向自己没拆干净。
+      ⑤ **本轮没跑的那一档**：两道 UTS 编译门（Kotlin / ArkTS）。`cs-client.uts` 是三端共用的一只文件，
+      浏览器档编的是它的 web 半边，Kotlin 与 ArkTS 那两侧的代码生成本轮**未证**——`cli open` + `launch app-android --compile true`
+      这一趟被自动拦停（它把 `--compile true` 当成"上真机"，而用户这一轮的指示是暂不做真机测试）。
+      这不是"过了"，是"欠着"：记在下面待办 46 里，下一轮动这只文件时先补这一档再谈别的。
+    - **i18n 一格没动**：`locale/app.pot` 仍是 286 条 msgid（`scripts/i18n_sync.py` rc=0，`git status locale` 空）。
+      本轮把两句话从 `app/ui/transfer.py` 挪进 `app/net/spec.py`，文本逐字未改，所以 msgid 集合不变——
+      这是刻意的：新写一句"更贴切"的话会制造第 287 条，而本轮的病不是没话，是**有话却挑错了场合**。
+    - **一句话的形状**：一句"该说什么"的承诺，如果它的判据不在应答里而在自己发出去的那串字节里，那么**必须有人替它记住**；
+      没人记，两面的句子就会各自串到对面去，而且三端串法还不一样——PC 把机器的事说成人的手误，手机把人的事和机器的事
+      说成同一句状态名。本轮真正补上的不是措辞，是那条从 `pair()` 一路递到句子的**信息通路**（`code` 空不空 → 异常名 / 回调第三个参数 → 那句人话）。
+
 ### 需要用户点头才能做的四件事
 - 唤醒/解锁并使用那台个人鸿蒙真机（#45/#46 + 鸿蒙发现真机腿）。
 - 跑 `pack --iscustom`（Android 自定义基座，#36/#90 的钥匙，也是 #143 那条"退到后台还收得到"的钥匙）。
@@ -2263,6 +2316,15 @@ Xcode，够不到任何一档编译门**——它改的原因只是共用的 sto
   把一次配成功记成失败同样是既有字段语义的改动，一样要升版本——巡检自己判：它并不比②便宜，只是看起来不像。
   这一条不由巡检签字：②③都是 §7 的兼容决定，代价是"今天能配上的旧构建配不上"，换到的是"少一种攻击面"，这个兑换比归人判。
   v1 冻结期内维持①；下一轮巡检若看到②或③被采纳，本轮写下的那几句（连三端出声那四处）要按新语义一起改，否则守卫会替一个已经不存在的口径钉着纸面。
+  #198 没有添新的点头项——两面各自的那句话早就在词表里，本轮改的只是**按什么挑**（挑的键 = 这一趟的码是不是本机自己填的空）。
+    留在桌上的只有设备那一档（2026-11-03 那台 vivo V3Max A 撞出来的，见 §7 前四条与待办 45）：它的
+    `ro.product.cpu.abilist` 是 `armeabi-v7a,armeabi`，而两个基座只带 `lib/arm64-v8a`，装不上
+    （`INSTALL_FAILED_NO_MATCHING_ABIS`）。两条路：换一台 **arm64** 真机（不花钱；Android 6~8 最划算——装得上现有基座，
+    又还在 API<28 那一支，一次量到 `CsDiscovery.kt:423` 那句「mDNS 记录带不出指纹前缀」与 `CsKeepAlive.kt` 的
+    <23/<26/<34 三支，这四组分支至今零执行、零守卫）；或跑一次 `pack --iscustom` 做 32 位自定义基座（花 DCloud 账号的
+    一次额度，且 DCloud 那侧给不给 uni-app x 出 v7a 运行时无法在此证明；可先 `--precheck true`，不提交、不花额度）。
+    本轮用户的选择是**先只记边界**，两条都还没动。巡检自己判：这两条都不是协议层的决定——协议在这台机器上根本没被跑到，
+    拦住它的是 `.so` 的目录表与一次账号额度，而这两样都不归这份合同管。
 
 ## 7. 已知平台坑（写给下一次动手的人）
 
@@ -2425,6 +2487,44 @@ Xcode，够不到任何一档编译门**——它改的原因只是共用的 sto
   `text=auto eol=lf`。一次 `git checkout protocol/protocol.json` 会把工作区那份还原成 **CRLF**（这台机器 `core.autocrlf=true`），
   随后 vendor 就抄出一份 149 行的整文件假变更——真正改过的那一行被埋在假变更里，`git diff` 翻不到它。做法：改完源文件先把它的字节
   换成 LF（`b.replace(b"\r\n", b"\n")` 再 `write_bytes`），然后 vendor，摘要与 vendored 那份才会一起回到"只有一行差异"的形状。
+- **真机的第一道门是 CPU 架构，不是 Android 版本**（2026-11-03 第一次上真 Android 机撞的）：vivo V3Max A（`PD1523`，
+  `ro.build.version.sdk=22`、`release=5.1.1`、`ro.build.type=user`）在总线上认得、adb 也授权到位（`devices -l` 报 `device`），
+  装 `unpackage/debug/android_debug.apk` 回的是 `Failure [INSTALL_FAILED_NO_MATCHING_ABIS]`。根因**不在版本**：uni-app x 的
+  `minSdkVersion` 默认 **21**（`F:\HBuilderX\plugins\hbuilderx-language-services\jsservice\src\schemas\manifestUniAppx.json` 第 692 行），
+  5.1.1 在范围内；而这台机器的 `ro.product.cpu.abilist` 是 `armeabi-v7a,armeabi`——64 位核 + 32 位用户态——**两个基座都只带
+  `lib/arm64-v8a`**（我们那份 13 个 `.so`、HBuilderX `plugins/uniappx-launcher/base/android_base.apk` 那 47 个）。`abiFilters`
+  的默认值正是 `["arm64-v8a"]`（同一份 schema 第 731 行），`armeabi-v7a` 是合法枚举项但**只有云打包吃它**：`launch app-android`
+  用的是预制基座，改 manifest 不会让本地那 13 个 `.so` 多出一个架构。规矩：**在谈"这台机器能测什么"之前先 `getprop
+  ro.product.cpu.abilist` 看里面有没有 `arm64-v8a`**；没有就只剩两条路——换一台 arm64 真机，或花一次 DCloud 账号做 32 位自定义
+  基座（`pack --iscustom true`，要点头）。
+- **这台机器顺手量出纸面缺的那一句下限**（同上）：`protocol/spec.md`、本文件与 `mobile/README.md` 到今天**没有任何一处写过
+  Android 版本下限**（`grep 'Android 5' / 'minSdk' / 'API 2' / 'Android 9'` 三份都空），而「需要 Android 9 以上」那句只活在
+  `CsDiscovery.kt:428` 那一行里——`mdnsDetail`，门禁、守卫、自检都没钉它。于是「支持 Android」在生产上的真形状是
+  「Android 5.0+ **且** 64 位用户态」：这一条与 §3 那句「可达范围由这台机器怎么装起来的决定，不是这份合同的属性」是同一族，
+  只是这回收窄它的不是防火墙或装机，是 `.so` 的目录表。
+- **跨机那一趟别拿 ping 不通当"被挡掉"的证据**（2026-11-03 量的）：这台机器 WLAN 属 **Public** profile，`chuanshu`/`chuanshu-cli`
+  的入站放行是 **按 exe 路径**筛的（`E:\wowo3\dist\chuanshu\chuanshu.exe` 与 `…\chuanshu-cli.exe`）、`Any` port、TCP 与 UDP 都有、
+  Profile=Public、Enabled=True；而手机 → PC 的 ICMP **100% 丢包**，PC → 手机通（55/64 ms）。丢的是 Windows 默认拦的 ping，
+  不是应用端口——所以要判"入站到底进不进得来"，得读规则命中或把接收服务起起来真连一次，不能读 ping。
+- **本机没有 build-tools，别指望 aapt 读 minSdk**（2026-11-03 撞的）：`E:\android-sdk` 里只有 `cmdline-tools`/`platform-tools`/
+  `platforms`/`system-images`/`emulator`，`apkanalyzer manifest print` 直接 `IllegalStateException: Cannot locate latest build tools`。
+  定架构不用解析二进制 manifest——`zipfile` 列出 `lib/` 下的目录名就够了；`adb` 也不在 PATH，在
+  `E:\android-sdk\platform-tools\adb.exe`（1.0.41；HBuilderX 另带 1.0.31 与 1.0.36 两份，别混着用）。
+
+- **负向集改合同正文时，改完必须重新 vendor，而抄本自己在索引里可能还是 CRLF**（#198 撞的，代价是两条"没红"）：
+  `check_protocol.py` 比的是 `mobile/shared/protocol/` 那两份**抄本**（`CONTRACT`），不是 `protocol/` 原件——只改原件再跑守卫，
+  守卫照样绿，读起来像"这条守卫认不出被拆的句子"，其实是它根本没看这一头。所以负向的每一步是 `sub(...) → vendor() → guard()`，
+  还原时也要 `restore() → vendor()`（`vendor_protocol.py` 写完 `SOURCE.json` 后 Windows 有极短时间会交出旧的戳，
+  照着「抄本与戳对不上」重跑几次即可，别把它当成契约 bug）。顺带一条同族的坑：`git ls-files --eol` 今天读出来是
+  `mobile/shared/protocol/protocol.json = i/crlf w/lf`——**索引里存的还是 CRLF 字节**，而源文件是 LF、`attr/-text` 意味着
+  git 原样存不动。也就是说第三十一轮 §7 那条"先换成 LF 再 vendor"的规矩，管住了工作区却没追认历史：本轮重新 vendor
+  付了一次 149 行整文件翻 LF 的账（`git diff --numstat` 读作 149/149），那一次性纠偏是对的——**别为了 diff 好看再把 CRLF
+  抄回去**，否则每次改一行都要重演一次假变更。
+- **一道静态守卫不能替两道 UTS 编译门作证**（#198 记下来的欠账，不是结论）：`cs-client.uts` 是三端共用的一只文件，
+  浏览器那档编的是它的 `web` 半边，Kotlin/ArkTS 那两侧的代码生成一点没被证。本轮改的是回调的参数个数
+  （`pairOnce` 的 `(ok, message, refused)`）——恰好是 UTS 在 Kotlin 侧最容易出事的那一类（同文件开头就写着「嵌套步骤要
+  由内而外声明，因为 JS 提升局部函数而 Kotlin 不会」）。`cli open` + `launch app-android --compile true` 这一趟被自动拦停，
+  于是文档只能说"未证"，不能说"应该没问题"。
 
 ## 8. 索引
 

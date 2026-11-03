@@ -1115,6 +1115,54 @@ py -X utf8 scripts/check_protocol.py
       「body is not a JSON object」且一枚名额都不烧，**从写下那天起就不可能绿**），一条坏在谓词读 `activePeers()` 的时机在下一台拨入之后（`relTakenAll` 数到 2、下一台也真配上了，内核是对的）。
       三处修法都有守卫钉 + 负向红一次（`.probe/r31_negatives.txt`，本轮 34 处）。**规矩**：往 `senderSelfReport()` / `receiveSelfReport()` 里写新断言的那一轮，同一轮把这一档跑一次；
       只让守卫按文本钉一条没跑过的腿，等于给下一轮留一条会冒充"已经证明"的假绿。
+45. **第一台真 Android 机接上了，但装不上：这台 5.1.1 是 32 位用户态，而基座只有 arm64——设备档那笔账照旧欠着，欠的方式变了（2026-11-03）**
+    - **接真机的读数顺序，下次照这四步走，别从"能连上"直接跳到"能测"**：`adb devices -l` → `getprop ro.build.version.sdk` →
+      **`getprop ro.product.cpu.abilist`** → 才谈安装。这台（vivo V3Max A，`PD1523`，serial `20753caf`）前两步给的是 `22` / `5.1.1`，
+      第三步给的是 `armeabi-v7a,armeabi`——64 位核跑 32 位用户态——于是 `install -r -t unpackage/debug/android_debug.apk` 回
+      `Failure [INSTALL_FAILED_NO_MATCHING_ABIS]`。挡它的**不是版本**：`minSdkVersion` 默认 21，5.1.1 在范围内；
+      是 `abiFilters` 默认 `["arm64-v8a"]`，而两个基座（我们那份 13 个 `.so`、HBuilderX 那份 47 个）都只有 arm64 那一层目录。
+      另一个坑是"看起来全都通了"：USB 调试要连点版本号七下，且**弹窗没点掉时 Windows 只枚举出 MTP 口、`adb devices` 是空的**——
+      先 `撤销 USB 调试授权`、关掉再打开、重插线，屏幕那个带 RSA 指纹的「允许 USB 调试」必须点掉；这一格卡掉的时间与协议无关。
+    - **为什么恰恰是这台机器值得跑**：它落在两组从没执行过的分支里。`CsDiscovery.kt:423`（API<28 主动放弃 mDNS——DNS-SD 的
+      TXT 带不出 `fp=` 前缀，落回 UDP 广播 + 二维码，那句「这台系统的 mDNS 记录带不出指纹前缀（需要 Android 9 以上）」至今没被
+      任何一档跑过，门禁、守卫、自检都不认它）与 `CsKeepAlive.kt:160`/`:122`/`:59`（<23 权限是安装期授予所以 `missingPermissions`
+      永远返回空、<26 走 `startService` 且不建 NotificationChannel、<34 的 `startForeground` 不带 `FOREGROUND_SERVICE_TYPE_DATA_SYNC`）。
+      §6 那条保活承诺（#143）点名的机制在这台上根本不存在，要量的正是这一端改口说什么。
+    - **两条路都要点头、都不免费**：① 换一台 **arm64** 真机（Android 6~8 最划算：装得上现有基座，又还在 API<28 那一支，一次量到两组分支）；
+      ② 云打包一个 32 位自定义基座——manifest 里 `app-android.distribute.android.abiFilters` 加上 `"armeabi-v7a"`，再
+      `"F:/HBuilderX/cli.exe" pack --project E:/wowo3/mobile/chuanshu --iscustom true`；这花的是 DCloud 账号的一次打包额度，
+      且 DCloud 那侧给不给 uni-app x 出 v7a 运行时无法在此证明，可以先 `--precheck true`（不提交、不花额度）听它怎么说。
+      2026-11-03 的决定是**只记边界**：打包与挑设备都还没动，边界写在 `docs/feature-matrix.md` §7 那四条里。
+    - **顺手清掉一条旧假设**：Android 的版本下限**从来没写在纸上**——`protocol/spec.md`、`docs/feature-matrix.md` 与这份 README
+      三份 grep `Android 5` / `minSdk` / `API 2` / `Android 9` 全空，而"需要 Android 9 以上"那句只活在 `CsDiscovery.kt:428` 一行里。
+      「支持 Android」在生产上的真形状是「Android 5.0+ **且** 64 位用户态」：收窄它的不是协议，是 `.so` 的目录表。
+      另外 `adb` 不在 PATH（`E:\android-sdk\platform-tools\adb.exe`，1.0.41），本机 SDK **没有 build-tools**，
+      `apkanalyzer manifest print` 会报 `Cannot locate latest build tools`——定架构别去解二进制 manifest，列 `lib/` 目录名就够了。
+46. **#198：第三十二轮把 §3「该出声的那一面」补上了身体，也是这一面第一次被真跑（发送自检 `66 → 73`）——欠的只剩两道 UTS 编译门**
+    - **本轮补的是哪一格**：§3 那句「对面把信任那一份也收回了，报的就该是『需要配对码』」第三十轮进纸面、第三十一轮老实记着
+      「只在代码上核过、没跑」。今天跑起来了：`runRevokedSend()` 在 `restartLike` 之外**再清空 `trusted`**（`restartLike` 偏偏
+      留着它，那正是补能成的原因），发送端那趟空码自补于是第一次拿到一个真拒绝。七条量的是——这一单没说成成功、补的那趟带的
+      仍是空码、卡片与日志里都是那句「对方不再认识本机的密钥…新显示的配对码」、里面没有「再输一次」（人没输过）、
+      对面那一格来源被记了一次（**空码就是一次错猜，这一趟不免费**），以及人自己输错码那一面答的是**另一句**。
+    - **判别只有一个键**：这一趟的 `code` 是不是本机自己填的空。线上两面同形（都 `403 BAD_PAIR_CODE`，
+      `receive.py:611` 拿空码去比屏幕上那 6 位），所以句子不能按应答选。PC 落在 `app/net/spec.py:pair_refusal(repair, proto)`
+      + `send.py` 的 `PairNeeded` / 新增 `WrongPairCode`；手机落在 `cs-client.uts` 的 `repairRefused(refused)`，
+      而 `pairOnce` 的回调**多带一个对面答的码**——改前它只交出一句话，机器那一面连"是要码还是断线"都无从判。
+      三端那句人话逐字相同（`§3 promises one next step to a person whichever end they are standing at`，守卫按文本钉着）。
+    - **今天清掉的账**：`.probe/r32_gate.txt` 门禁 `282 → 288 条全绿`（新六条量的是**给人看的两行字**而不是异常名；
+      同一次运行还改掉两条旧腿——`phase_in_process` 的 wrong-code / wrong-password 那两条原本站在 `except PairNeeded` 上，
+      等于把串了的那一面当正确行为钉住）；`.probe/r32_guard.txt` 守卫 **31 行 OK**；`.probe/r32_negatives.txt` **19 处各红一次**
+      且每处红的是它自己那一处；`.probe/r32_web.txt` 发送 73 / 接收 172 / 发现 29 全绿、零「不符」。
+      `locale/app.pot` 仍 **286 条**：本轮是把已有的两句挪进 `spec.py` 并按场合选，没有新写"更贴切"的第三句。
+    - **欠着的那一档（下一轮动这只文件前先补）**：两道 UTS 编译门（Kotlin 与 ArkTS）。`cs-client.uts` 是三端共用的一只文件，
+      浏览器档编的只是它的 web 半边——本轮 `F:/HBuilderX/cli.exe open` + `launch app-android --compile true` 这一趟
+      **被自动拦停**（它把 `--compile true` 当成"上真机"，而这一轮的指示是暂不做真机测试），所以 Kotlin/ArkTS 的代码生成
+      **本轮未证**——这不是"过了"，是"欠着"。**规矩**：往 `cs-client.uts` / `cs-protocol.uts` 里写东西的那一轮，
+      同一轮把两道编译门跑一次并读输出里那句 `项目 chuanshu 编译成功。`；只跑浏览器档等于只证了三端里的一端。
+    - **与本条同形状的另一头**（#138 还开着）：问不到答案时报哪一句——那里也是"线上同形、只有发送端知道自己试过几次"。
+      本轮这条至少有了身体与一条能跑的腿；#138 还只有纸面。负向集里两处第一次**没红**，原因都在我这侧
+      （一处改了原件没重新 vendor，守卫比的是抄本；一处只换掉 `pair_refusal(True, …)`、`False` 那一支还在），
+      不是守卫漏了——记下来是因为"没红"永远要先怀疑负向自己。
 
 M2a 的最小切口是"手机发、PC 收"：扫（或粘贴）PC 的二维码拿到地址与完整指纹，用户只核对同屏的
 一次性配对码——PC 侧接收端已经跑绿，手机只要把

@@ -305,6 +305,23 @@ def pass_omitted(secret: str, proto: Protocol) -> str:
     )
 
 
+def pair_refusal(repair: bool, proto: Protocol) -> str:
+    """The two faces of one `BAD_PAIR_CODE`, said apart - because nothing on the wire separates them.
+
+    spec §3 makes a sender's *own* empty code a signature-only repair ("它不要求用户做任何事"), and the
+    peer that revoked the trust answers exactly that request with the same code a mistyped one gets.
+    Only this end knows which it sent, so the sentence is chosen here rather than from the reply: an
+    empty code means the person typed nothing and needs a new code; their own guess means only
+    retyping it can help. Saying one of these where the other belongs talks about a typing that
+    never happened, or about a trust that was never taken back.
+    """
+    if repair:
+        return _("对方不再认识本机的密钥。选中它，输入它屏幕上新显示的配对码再连接。")
+    return _("配对码或密码不对。请照着对方屏幕上现在的 {n} 位码和 {m} 位密码再输一次。").format(
+        n=proto.pair_code_digits, m=proto.passphrase_chars
+    )
+
+
 def pass_reject(secret: str, proto: Protocol) -> str:
     """The same question about the second secret, where blank is an answer.
 

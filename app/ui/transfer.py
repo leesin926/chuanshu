@@ -71,7 +71,7 @@ from app.net import spec as protocol_spec
 from app.net.discovery import DiscoveryService, Peer, local_ipv4, verify_peer
 from app.net.identity import load_or_create
 from app.net.receive import ReceiveService
-from app.net.send import PairNeeded, PeerConnection, PeerIdentityMismatch, Throttle, TooManyFilesForOffer, plan
+from app.net.send import PairNeeded, PeerConnection, PeerIdentityMismatch, Throttle, TooManyFilesForOffer, WrongPairCode, plan
 from app.paths import identity_dir, receive_root, user_data_dir
 from app.ui import theme
 
@@ -133,6 +133,16 @@ def _human(size: int) -> str:
             return f"{text}{unit}"
         value /= 1024
     return f"{size}B"
+
+
+def refusal_text(error: Exception, proto: protocol_spec.Protocol) -> str:
+    """Which of §3's two refusals this is, said in the one place that chooses the words.
+
+    The choice is `isinstance`, not the reply: both faces arrive as `BAD_PAIR_CODE`, and this end is
+    the only one that knows whether the code was its own empty one. `spec.pair_refusal` holds the
+    sentences, so the gate can read them without importing this module's toolkit.
+    """
+    return protocol_spec.pair_refusal(not isinstance(error, WrongPairCode), proto)
 
 
 def _arrivals_file() -> Path:
@@ -2106,13 +2116,9 @@ class TransferPanel(QWidget):
                 conn.pair()
             else:
                 conn.pair(code, secret)
-        except PairNeeded:
+        except (PairNeeded, WrongPairCode) as error:
             self._close_quietly(conn)
-            self._connect_failed.emit(
-                _("配对码或密码不对。请照着对方屏幕上现在的 {n} 位码和 {m} 位密码再输一次。").format(
-                    n=self.proto.pair_code_digits, m=self.proto.passphrase_chars
-                )
-            )
+            self._connect_failed.emit(refusal_text(error, self.proto))
         except PeerIdentityMismatch:
             self._close_quietly(conn)
             self._connect_failed.emit(_("配对应答里的指纹和 hello 不一致，已中止"))
@@ -2580,8 +2586,8 @@ class TransferPanel(QWidget):
                 False,
                 _("已取消发给 {name}：本机停止发送，对方那半件也撤掉了。").format(name=peer.name or peer.prefix),
             )
-        except PairNeeded:
-            self._finished.emit(False, _("对方不再认识本机的密钥。选中它，输入它屏幕上新显示的配对码再连接。"))
+        except (PairNeeded, WrongPairCode) as error:
+            self._finished.emit(False, refusal_text(error, self.proto))
         except PeerIdentityMismatch:
             self._finished.emit(False, _("配对应答里的指纹和 hello 不一致，已中止"))
         except protocol_spec.ProtocolError as error:

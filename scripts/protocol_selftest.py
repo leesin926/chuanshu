@@ -37,7 +37,9 @@ from app.net import receive as receive_mod  # noqa: E402
 from app.net import spec as protocol_spec  # noqa: E402
 from app.net.identity import fingerprint_of_public_key, load_or_create  # noqa: E402
 from app.net.receive import STATE_FILE, ReceiveService, sanitize_relpath  # noqa: E402
-from app.net.send import PACE_MS_LADDER, PairNeeded, PeerConnection, PeerIdentityMismatch, TooManyFilesForOffer, plan  # noqa: E402
+from app.net.send import (  # noqa: E402
+    PACE_MS_LADDER, PairNeeded, PeerConnection, PeerIdentityMismatch, TooManyFilesForOffer, WrongPairCode, plan,
+)
 
 REPORT = Path(os.environ.get("CHUANSHU_REPORT", str(ROOT / ".probe" / "protocol_report.txt")))
 REPORT.parent.mkdir(parents=True, exist_ok=True)
@@ -175,21 +177,28 @@ def phase_in_process(proto: protocol_spec.Protocol, workspace: Path) -> None:
             current = service.current_pair_code()
             wrong.pair(("1" if current[0] != "1" else "2") + current[1:])
             check("wrong pair code rejected", False, "pairing succeeded with a bogus code")
-        except PairNeeded:
+        except WrongPairCode:
             check("wrong pair code rejected", True)
+        except PairNeeded:
+            # §3's two faces shared this one prompt until #198: a code the person typed is refused
+            # with the same wire shape as their own empty one, and only this end knows which it sent.
+            check("wrong pair code rejected", False, "答成了「对方不再认识这把钥匙」——那一趟人没输过任何东西")
         except protocol_spec.ProtocolError as error:
             check("wrong pair code rejected", error.code == "BAD_PAIR_CODE", error.code)
 
         # The code is read off the screen, the password typed; getting one right and the other
-        # wrong must not be a way in. The refusal arrives as PairNeeded rather than a labelled
-        # BAD_PAIR_CODE because the sender turns any failed pair into that one prompt on purpose -
-        # a wrong password is not a different kind of mistake to a stranger than a wrong code is.
+        # wrong must not be a way in. Both of those are things the person *typed*, so the refusal
+        # arrives as WrongPairCode - the sentence that asks them to look at the screen and enter it
+        # again (#198). PairNeeded now belongs only to a repair this end started on its own empty
+        # code, where nothing was typed and retyping would be advice about an event that never happened.
         bogus = PeerConnection(sender, "PC-Sender", "127.0.0.1", service.port, receiver.served_fingerprint)
         try:
             bogus.pair(service.current_pair_code(), "!" * proto.passphrase_chars)
             check("right code with a wrong password rejected", False, "pairing succeeded with a bogus password")
-        except PairNeeded:
+        except WrongPairCode:
             check("right code with a wrong password rejected", True)
+        except PairNeeded:
+            check("right code with a wrong password rejected", False, "答成了「对方不再认识这把钥匙」")
         except protocol_spec.ProtocolError as error:
             check("right code with a wrong password rejected", error.code == "BAD_PAIR_CODE", error.code)
 
@@ -556,6 +565,36 @@ def phase_token_repair(proto: protocol_spec.Protocol, workspace: Path) -> None:
             check("§3 对面连信任都收回时这一趟不静默：报的是要配对码", False, f"{error.code} {error.detail}")
         check("§3 那一次不肯静默的补也没有偷偷带码：它带的仍是空码，所以拒绝来自对面",
               seen_codes == [""], seen_codes)
+        # 第三十二轮（#198）：这一格线上是同一个形状，能分开两面的只有「这一趟的码是不是本机自己填的空」。
+        # 改前 `pair()` 对所有 `BAD_PAIR_CODE` 一律抛 PairNeeded，于是两句话各自配错了一面——连接那一站把
+        # 机器自补说成「请再输一次」，发送那一站把人输错码说成「对方不再认识本机的密钥」。这里量的不是异常
+        # 名，是给人看的那两句，以及它们各自只在自己的那一面出现。
+        machine_said = protocol_spec.pair_refusal(True, proto)
+        person_said = protocol_spec.pair_refusal(False, proto)
+        check("§3 机器自补被拒时，给人看的那句要的是屏幕上那个新码，而不是让人重输",
+              "新显示的配对码" in machine_said and "再输一次" not in machine_said, machine_said)
+        check("§3 人输错码那一句说的是照着屏幕再输一次，并把两个位数都念出来",
+              "再输一次" in person_said and f"{proto.pair_code_digits} 位" in person_said
+              and f"{proto.passphrase_chars} 位" in person_said, person_said)
+        check("§3 两面不共用一句话（同一条 BAD_PAIR_CODE 不许有两个一样的说法）",
+              machine_said != person_said, machine_said)
+        spent_after_repair = sum(len(v) for v in service._code_failures.values())
+        check("§3 那一趟不肯静默的补在对面记了一次：空码就是一次错猜，纸面不能只当它没花什么",
+              spent_after_repair == 1, spent_after_repair)
+        wrong = "0" * proto.pair_code_digits
+        if wrong == service.current_pair_code():
+            wrong = "1" * proto.pair_code_digits
+        try:
+            conn.pair(wrong, "")
+            check("§3 人自己输错的那一趟也得有个答案（它不该配上）", False, "它居然配上了")
+        except WrongPairCode:
+            check("§3 人输错码那一面报的是重输那一面，不再是「对方不再认识这把钥匙」", True)
+        except PairNeeded:
+            check("§3 人输错码那一面报的是重输那一面，不再是「对方不再认识这把钥匙」", False,
+                  "两面又串回同一句：PairNeeded")
+        check("§3 人输错码那一趟同样在对面记了一次（它和机器那一趟共用同一格来源的名额）",
+              sum(len(v) for v in service._code_failures.values()) == spent_after_repair + 1,
+              sum(len(v) for v in service._code_failures.values()))
     finally:
         service.stop()
 

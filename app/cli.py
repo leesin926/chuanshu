@@ -40,7 +40,7 @@ from app.net import spec as protocol_spec
 from app.net.discovery import DiscoveryService, Peer, verify_peer
 from app.net.identity import load_or_create
 from app.net.receive import ReceiveService
-from app.net.send import PairNeeded, PeerConnection, PeerIdentityMismatch, TooManyFilesForOffer, plan
+from app.net.send import PairNeeded, PeerConnection, PeerIdentityMismatch, TooManyFilesForOffer, WrongPairCode, plan
 from app.paths import identity_dir, receive_root, user_data_dir
 
 log = logging.getLogger(__name__)
@@ -506,8 +506,12 @@ def cmd_send(args: argparse.Namespace, out: Terminal) -> int:
     try:
         result = conn.transfer(files, code, out.progress, secret)
     except PairNeeded:
-        out.say(f"对方不认识这把钥匙。把它屏幕上那 {proto.pair_code_digits} 位配对码用 --code 传给我，"
-                "或者重新贴一份它现在的串。")
+        out.say(f"对方不再认这把钥匙了（它那边把这台设备撤销过）。把它屏幕上那 {proto.pair_code_digits} 位配对码"
+                "用 --code 传给我，或者重新贴一份它现在的串。")
+        return 1
+    except WrongPairCode:
+        out.say(f"你给的配对码或密码对方不认——这一格来源五个名额已经被这一次占掉一个。"
+                f"照着它屏幕上现在的 {proto.pair_code_digits} 位码和 {proto.passphrase_chars} 位密码再输一次。")
         return 1
     except PeerIdentityMismatch:
         out.say("配对应答里的指纹和 hello 不一致，已中止。")

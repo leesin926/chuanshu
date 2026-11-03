@@ -2119,8 +2119,9 @@ def check_token_repair() -> None:
         ("pairOnce(session, '', takeSelf, signPair, call",
          "the funnel's empty code: every authed request in the shared kernel is repaired through this one call, "
          "which is why this end needs one site where the PC needs three"),
-        ("write('静默重新配对没成功：' + why)",
-         "the出声 half on this end: a refused repair says so instead of reporting a success nobody asked for"),
+        ("write(needs != '' ? needs : '静默重新配对没成功：' + why)",
+         "the出声 half on this end: a refused repair says so instead of reporting a success nobody asked for - "
+         "and since #198 it says the *right* thing first, because the sentence differs by which face this was"),
     ):
         if literal not in client:
             fail(f"cs-client.uts no longer contains {literal!r} - {why}")
@@ -2335,6 +2336,135 @@ def check_second_layer() -> None:
              f"holding this clause up")
 
 
+def check_pair_refusal() -> None:
+    """§3's two faces of one `BAD_PAIR_CODE` stay apart, chosen by what this end sent rather than by the reply.
+
+    Round thirty-two (#198) went back for 待办 44's ①那一面 - the sentence the person is left with when the
+    signature-only repair cannot work - and found the wire carrying one code for two different events. The receiver
+    answers a revoked trust and a mistyped code identically (`403 BAD_PAIR_CODE`, `receive.py` compares an empty
+    `code` against the screen's six digits), so `.probe/r32_gate.txt` shows both faces measured through the same
+    reply. Nothing but this end's own `code` separates them, and the bodies had been *ignoring* that: `pair()` turned
+    every refusal into `PairNeeded`, which made the connect panel tell a person who typed a wrong code that the peer
+    had stopped recognising their key, and made the send panel tell a machine's repair - for which nobody typed
+    anything - to type it again. So the rule pinned here is not the wording, it is the discriminator: an empty code
+    may only ask for a new code, a typed one may only ask to re-enter it, and both are one wrong guess in the peer's
+    bucket, which is why §3 no longer says the repair costs nothing.
+    """
+    note = json.loads((CONTRACT / "protocol.json").read_text(encoding="utf-8-sig"))["transport"].get("note", "")
+    for needle, why in (
+        ("Both faces of that refusal answer with the same `BAD_PAIR_CODE`",
+         "the fact this whole round turns on - the reply cannot tell the two events apart"),
+        ("whether the `code` in that request was its own empty one",
+         "the only thing that can tell them apart, and it lives on the sender"),
+        ("describes a typing that never happened",
+         "why the repair face may not be answered with 再输一次"),
+        ("describes a revocation that never happened",
+         "why the typed face may not be answered with 不再认识"),
+        ("an empty code is one wrong guess, so it is booked into that source's bucket",
+         "the cost §3 used to imply was zero; measured twice in the gate, once per face"),
+    ):
+        if needle not in note:
+            fail(f"protocol.json's transport.note no longer says {needle!r} - {why}")
+
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    section = spec.split("## 3.", 1)[1].split("\n## ", 1)[0] if "## 3." in spec else ""
+    prose = "\n".join(p for p in section.split("\n\n") if not p.lstrip().startswith("（20"))
+    flat = re.sub(r"\s+", "", prose)
+    for needle, why in (
+        ("分开它们的只有发送端自己知道的一件事", "the finding, written as the rule it is"),
+        ("空码那一面只能要一个新的配对码", "the one sentence the machine's face is allowed to say"),
+        ("那一面只能请他照着屏幕重输", "and the one the typed face is allowed to say"),
+        ("两面都照样在对面那一格来源的5枚里记一次", "the bucket cost of both faces, which §3's 不要求用户做任何事 did not count"),
+    ):
+        if re.sub(r"\s+", "", needle) not in flat:
+            fail(f"§3 no longer says {needle!r} - {why}")
+
+    root = HERE.parent
+    sdk = HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk"
+    spec_py = (root / "app" / "net" / "spec.py").read_text(encoding="utf-8")
+    send_py = (root / "app" / "net" / "send.py").read_text(encoding="utf-8")
+    cli = (root / "app" / "cli.py").read_text(encoding="utf-8")
+    ui = (root / "app" / "ui" / "transfer.py").read_text(encoding="utf-8")
+    gate = (root / "scripts" / "protocol_selftest.py").read_text(encoding="utf-8")
+    client = (sdk / "cs-client.uts").read_text(encoding="utf-8")
+    harness = (sdk / "web" / "index.uts").read_text(encoding="utf-8")
+
+    for literal, why in (
+        ("def pair_refusal(repair: bool, proto: Protocol) -> str:",
+         "the one place either PC face chooses its words"),
+        ('if repair:\n        return _("对方不再认识本机的密钥。选中它，输入它屏幕上新显示的配对码再连接。")',
+         "and the machine's face owns that sentence alone"),
+    ):
+        if literal not in spec_py:
+            fail(f"app/net/spec.py no longer contains {literal!r} - {why}")
+    if "对方不再认识本机的密钥" not in spec_py or "再输一次" not in spec_py:
+        fail("the two sentences this round separated no longer both live in spec.py - with them split across "
+             "modules the next round re-merges them, which is the exact shape #198 found")
+
+    for literal, why in (
+        ("class WrongPairCode(RuntimeError)", "the typed face needs its own name or the panel cannot pick a "
+                                              "sentence for it"),
+        ('raise PairNeeded() if not code else WrongPairCode(code)',
+         "the discriminator itself: this end's own empty code is the only thing that may say 不再认识"),
+    ):
+        if literal not in send_py:
+            fail(f"app/net/send.py no longer contains {literal!r} - {why}")
+    if 'payload.get("code") == "BAD_PAIR_CODE":\n            raise PairNeeded()' in send_py:
+        fail("send.py is back to turning every BAD_PAIR_CODE into PairNeeded - that is the conflation #198 "
+             "measured: a person who typed a wrong code was told the peer had revoked their key")
+
+    if "protocol_spec.pair_refusal(not isinstance(error, WrongPairCode), proto)" not in ui:
+        fail("_connect_failed / _finished no longer read their sentence through spec.pair_refusal - two panels "
+             "choosing between the same two sentences independently is how they ended up each配错了一面")
+    if "except (PairNeeded, WrongPairCode)" not in ui:
+        fail("the panels no longer catch both faces - a refusal that escapes as an unhandled RuntimeError reaches "
+             "the person as a crash, not as a next step")
+    if "except WrongPairCode:" not in cli:
+        fail("app/cli.py no longer answers the typed face on its own line - a person at a terminal gets whichever "
+             "sentence the GUI happened to pick, and the two are different advice")
+
+    for literal, why in (
+        ("export function repairRefused(refused: string): string",
+         "the kernel's copy of the discriminator, so all three phone platforms say the same thing"),
+        ("cb: (ok: boolean, message: string, refused: string) => void",
+         "pairOnce has to hand the refusal back as a code, not only as a sentence, or the caller can only guess"),
+        ("const needs = repairRefused(refused)", "and the repair site actually asks it"),
+        ("cb(status, needs != '' ? '{\"code\":\"NOT_PAIRED\",\"detail\":{\"reason\":\"' + needs",
+         "the refusal the card reads carries this end's own sentence in the detail (spec §4: a detail is a whole "
+         "sentence), so the next step survives the trip to the screen"),
+    ):
+        if literal not in client:
+            fail(f"cs-client.uts no longer contains {literal!r} - {why}")
+    if "对方不再认识本机的密钥。选中它，输入它屏幕上新显示的配对码再连接。" not in client:
+        fail("the kernel's machine-face sentence is no longer the PC's sentence verbatim - §3 promises one "
+             "next step to a person whichever end they are standing at")
+
+    if "except WrongPairCode:" not in gate:
+        fail("phase_token_repair no longer asks which exception the typed face gets - without it the discrimination "
+             "is only asserted in prose and the next refactor can re-merge the two faces silently")
+    if "protocol_spec.pair_refusal(" not in gate:
+        fail("scripts/protocol_selftest.py no longer reads the two sentences through spec.pair_refusal - the gate "
+             "would then be checking exception names again, which is exactly the level #198 found to be too shallow: "
+             "an exception cannot be wrong, only the sentence hung on it can")
+    legs = len(re.findall(r"check\(\"(§3 机器自补被拒时，给人看的那句要的是屏幕上那个新码|§3 人输错码那一句说的是照着屏幕再输一次|"
+                          r"§3 两面不共用一句话|§3 那一趟不肯静默的补也没有偷偷带码|§3 那一趟不肯静默的补在对面记了一次|"
+                          r"§3 人输错码那一面报的是重输那一面|§3 人输错码那一趟同样在对面记了一次)", gate))
+    if legs < 7:
+        fail(f"the gate holds {legs} of the 7 refusal legs this round wrote - the sentences and the exception each "
+             f"face gets are what §3's 「报的就该是需要配对码」 promises a person, and dropping one of them is how "
+             f"the two faces quietly merge back together")
+    o_legs = len(re.findall(r"check\('(对面把信任也收回时，这一单没被传成|补的那一趟仍然先按 §3 用空码试了签名|"
+                            r"说的是要屏幕上那个新的配对码|那一列里也留下同一句人话|它没把人没输过的东西说成输错了|"
+                            r"空码在对面就是一次错猜|人输错码那一面答的还是那句关于码的)", harness))
+    if o_legs < 7:
+        fail(f"the H5 sender self-check holds {o_legs} of the seven refusal legs - 待办 44's ①那一面 was the "
+             f"sentence this series kept saying 「只在代码上核过、没跑」, and a leg that never runs is how it stayed owed")
+    if "function runRevokedSend(" not in harness:
+        fail("the browser tier lost runRevokedSend() - without a receiver that took the trust back too, the "
+             "refusal face cannot be reached at all (`restartLike` deliberately keeps `trusted`, which is what "
+             "makes the repair succeed)")
+
+
 def main() -> int:
     stamp_path = CONTRACT / "SOURCE.json"
     for name in ("protocol.json", "spec.md", "SOURCE.json"):
@@ -2411,6 +2541,7 @@ def main() -> int:
     check_pair_shape_local()
     check_token_repair()
     check_second_layer()
+    check_pair_refusal()
 
     print(f"OK  protocol v{body['protocol_version']} from {stamp['source_repo']}@{stamp['source_commit'][:8]}")
     print(f"OK  {len(body['error_codes'])} error codes, {len(body['endpoints'])} endpoints, chunk {chunk // 1024} KiB")
@@ -2453,6 +2584,8 @@ def main() -> int:
     print("OK  §4's three offer replies are one shape on paper and in all four bodies; the abort knows the question still open")
     print("OK  §4's chunk replies are one shape on paper and in all four bodies; three writes, two names, one budget")
     print("OK  §4's re-posted finalize: a second pass on both senders, and one announcement per landing on both receivers")
+    print("OK  §3's two faces of one refusal are told apart by this end's own empty code: the machine's face asks "
+          "for a new code, the typed face asks to re-enter, and both still cost one record in the peer's bucket")
     return 0
 
 

@@ -53,9 +53,27 @@ Progress = Callable[[str, int, int], None]
 
 
 class PairNeeded(RuntimeError):
-    """The peer does not know our key yet, so its one-time pair code has to be entered."""
+    """The peer does not know our key yet, so its one-time pair code has to be entered.
+
+    Only this end's *own* empty code reaches here: §3 lets a sender whose token died re-pair by
+    signature alone, and a peer that revoked the trust as well refuses exactly that request. The
+    person typed nothing on that path, so the sentence may only ask for a new code - never to
+    retype one. A refusal of a code the person did type is WrongPairCode below.
+    """
 
     def __init__(self, reason: str = "peer does not recognise our key") -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+class WrongPairCode(RuntimeError):
+    """The code (or passphrase) this end was *given* did not match, so the person can fix it.
+
+    The peer answers this and the revoked-trust refusal with the same `BAD_PAIR_CODE`, and no byte
+    on the wire tells the faces apart - only whether this end filled `code` itself does.
+    """
+
+    def __init__(self, reason: str = "the code this end was given did not match") -> None:
         super().__init__(reason)
         self.reason = reason
 
@@ -392,7 +410,10 @@ class PeerConnection:
             request["tls_fingerprint"] = tls_fingerprint
         status, payload = self._request("POST", "/v1/pair", json_body=request)
         if status == 403 and payload.get("code") == "BAD_PAIR_CODE":
-            raise PairNeeded()
+            # One wire shape, two faces. An empty `code` means this end sent §3's signature-only
+            # repair, so the only thing that can help is a *new* code from the peer's screen;
+            # a code the caller handed us is the person's own guess, and only retyping it can help.
+            raise PairNeeded() if not code else WrongPairCode(code)
         if status != 200:
             raise protocol_spec.ProtocolError(str(payload.get("code") or "NOT_PAIRED"), payload.get("detail"))
         # §1: the pair reply restates the identity hello announced, and the mobile client stops when it

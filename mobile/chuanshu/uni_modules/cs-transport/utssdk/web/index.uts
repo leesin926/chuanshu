@@ -3168,6 +3168,51 @@ function runStaleSend(probe: ChunkSwallow, relpath: string, run: SenderRun): voi
 	run.newToken = session.token
 }
 
+/** §3's honest opposite of the repair above: the peer took the *trust* back too, so the empty-code
+ *  pair is refused. `restartLike` deliberately keeps `trusted`, which is what lets the repair succeed;
+ *  clearing it as well is the shape PC's 撤销 leaves behind, and it is the only way this tier can
+ *  measure what the person is told when the machine's repair cannot work. (#198) */
+function runRevokedSend(probe: ChunkSwallow, relpath: string, run: SenderRun): void {
+	const call = swallowCaller(probe)
+	const link = new TransferOptions()
+	link.host = '自检对端'
+	link.port = TRANSPORT_PORT
+	link.code = currentPairCode(probe.inbox, nowSeconds())
+	link.secret = passphraseOf(probe.inbox, nowSeconds())
+	connectPeer(link, simTakeSelf, simSignPair, call, noopWrite, function (ok: boolean, message: string, session: PeerSession | null): void {
+		if (ok && session != null) {
+			run.session = session
+			return
+		}
+		run.done = true
+		run.summary = '配对没成：' + message
+	})
+	const session = run.session
+	if (session == null) {
+		return
+	}
+	probe.inbox.trusted = []
+	probe.inbox.tokens = []
+	probe.inbox.nonces = []
+	probe.inbox.fails = []
+	run.staleToken = session.token
+	const opts = new TransferOptions()
+	opts.host = link.host
+	opts.port = link.port
+	opts.paths = [relpath]
+	opts.relpaths = [relpath]
+	const note: Writer = (line: string): void => {
+		probe.logLines.push(line)
+	}
+	sendFiles(session, opts, simTakeSelf, simSignPair, call, simPrepareFile, simReadChunk, simDigestHex,
+		note, noopProgress, noopFileEvent, function (ok: boolean, summary: string): void {
+			run.done = true
+			run.ok = ok
+			run.summary = summary
+		})
+	run.newToken = session.token
+}
+
 /** The 发送半边 of the self-test: spec §4's recovery rules (#120, #130) run against a peer that
  *  swallows a chunk reply, so the branch the phones share is measured rather than read. */
 export function senderSelfReport(): string {
@@ -3432,6 +3477,31 @@ export function senderSelfReport(): string {
 		passOmitted('').length > 0 && passOmitted('').indexOf('配对码') >= 0
 			&& passOmitted('').indexOf(PAIR_CODE_DIGITS.toString() + ' 位') >= 0, passOmitted(''))
 	check('填上的那个框什么都不必说（这一句不是又一个拒答）', passOmitted('K7QMXZ2P') == '', passOmitted('K7QMXZ2P'))
+
+	// O. 第三十二轮巡检（#198）：§3 那句「对面把信任那一份也收回了，报的就该是『需要配对码』，而不是一句『已经补好了』」。
+	// 这一句第三十轮写在纸上、第三十一轮承认它「只在代码上核过、没跑」——因为这一档一条腿都没有。今天补的正是那一条：
+	// 两面在网线里是同一个形状（都答 `BAD_PAIR_CODE`），分得开它们的只有「这一趟的码是不是本机自己填的空」，
+	// 而这个信息发送端一直握着却没用：改前手机把机器自补报成错误表里的状态名，PC 把人输错码报成「不再认识密钥」。
+	const revoked = new ChunkSwallow()
+	const rrevoked = new SenderRun()
+	runRevokedSend(revoked, SIM_TEXT, rrevoked)
+	check('对面把信任也收回时，这一单没被传成（它不是一次静默的成功）', rrevoked.done && !rrevoked.ok, rrevoked.summary)
+	check('补的那一趟仍然先按 §3 用空码试了签名（它没让人代劳）',
+		revoked.pairCodes.length == 2 && revoked.pairCodes[1] == '', revoked.pairCodes.join('/'))
+	check('说的是要屏幕上那个新的配对码，不是错误表里那个状态名',
+		rrevoked.summary.indexOf('新显示的配对码') >= 0, rrevoked.summary)
+	check('那一列里也留下同一句人话（留不留由各端自己定，但留就要留对的那句）',
+		revoked.logLines.join(' / ').indexOf('新显示的配对码') >= 0, revoked.logLines.join(' / '))
+	check('它没把人没输过的东西说成输错了（这一句里不许有「再输一次」）',
+		rrevoked.summary.indexOf('再输一次') < 0, rrevoked.summary)
+	check('空码在对面就是一次错猜：这一格来源被记了一次',
+		failsOf(revoked.inbox, SIM_PEER_ID) == 1, failsOf(revoked.inbox, SIM_PEER_ID).toString())
+	const typed = new ChunkSwallow()
+	const rtyped = new SenderRun()
+	const typedGood = currentPairCode(typed.inbox, nowSeconds())
+	runBarePair(typed, rtyped, (typedGood.charAt(0) == '1' ? '2' : '1') + typedGood.substring(1), '')
+	check('人输错码那一面答的还是那句关于码的，没串到「要一个新码」上去',
+		rtyped.summary.indexOf('配对码') >= 0 && rtyped.summary.indexOf('新显示的配对码') < 0, rtyped.summary)
 
 	out.push(fail == 0 ? '发送自检 ' + pass.toString() + ' 项全部通过' : '发送自检失败 ' + fail.toString() + ' 项，通过 ' + pass.toString() + ' 项')
 	return out.join('\n')
