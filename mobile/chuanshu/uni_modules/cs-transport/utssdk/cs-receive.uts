@@ -218,6 +218,11 @@ export class Inbox {
 	 *  says "现在没有对端连着" makes a person hunt for the button they forgot to press; this says
 	 *  whose window closed. A new pair, or this end dialling somebody, replaces it. */
 	lostName: string = ''
+	/** …and the same peer by the number that actually identifies it. `lostName` is a display string
+	 *  built from the pin entry, which is empty for a peer this device only ever dialled out to, so a
+	 *  page that has to decide whether *its* session went silent can only compare fingerprints
+	 *  (spec §3: 本机拨出去的那台超时同样登记为已断开). */
+	lostFp: string = ''
 	/** Answers a person already gave, kept by offer id and only for this session. A sender that has to
 	 *  ask again on a new connection cannot tell a decline from a delivery nobody has looked at yet, so
 	 *  without this a decline would reopen the same dialog every poll. */
@@ -291,6 +296,11 @@ export class ReceiveSnapshot {
 	 *  since. A card that only says 现在没有对端连着 makes a person hunt for a button nobody forgot
 	 *  to press. */
 	lostName: string = ''
+	/** That same peer as a number, for the page that has to decide whether the session it is holding
+	 *  is the one that was reclaimed. A name cannot answer that: the one this end dialled out to is
+	 *  introduced to the sender by hello and to the receiver by its pin entry, and those are not the
+	 *  same string. */
+	lostFp: string = ''
 }
 
 /** spec.json error_codes carries the HTTP status for every code; the sender checks nothing else,
@@ -402,6 +412,7 @@ export function holdSlotFor(inbox: Inbox, fingerprint: string, now: number): voi
 		return
 	}
 	inbox.lostName = ''
+	inbox.lostFp = ''
 	// Only taking the slot starts the clock. This is called from every roster repaint, and stamping
 	// it each time would keep a stalled outbound session alive forever.
 	if (changed) {
@@ -580,11 +591,13 @@ export function sweep(inbox: Inbox, now: number, drop: DropFn, digestFile: Diges
 			inbox.heldSeen = 0
 		}
 		inbox.lostName = nameFor(inbox, entry.fingerprint)
+		inbox.lostFp = entry.fingerprint
 		lost.push(entry.fingerprint)
 	}
 	if (inbox.heldBy != '' && now - inbox.heldSeen >= SESSION_IDLE_S) {
 		const stalled = inbox.heldBy
 		inbox.lostName = nameFor(inbox, stalled)
+		inbox.lostFp = stalled
 		inbox.heldBy = ''
 		inbox.heldSeen = 0
 		lost.push(stalled)
@@ -718,6 +731,7 @@ function fpOfToken(inbox: Inbox, token: string): string {
 function setToken(inbox: Inbox, fingerprint: string, token: string, now: number): void {
 	// A session that just started has nothing to do with the one that went silent before it.
 	inbox.lostName = ''
+	inbox.lostFp = ''
 	for (let i = 0; i < inbox.tokens.length; i++) {
 		if (inbox.tokens[i].fingerprint == fingerprint) {
 			inbox.tokens[i].token = token
@@ -1365,6 +1379,7 @@ export function snapshot(inbox: Inbox, now: number): ReceiveSnapshot {
 	out.codeSecondsLeft = codeSecondsLeft(inbox, now)
 	out.peers = inbox.trusted.length
 	out.lostName = inbox.lostName
+	out.lostFp = inbox.lostFp
 	const active = activePeers(inbox)
 	for (let i = 0; i < active.length; i++) {
 		// The name came in on the pair request and lives in the pin entry; a peer this end dialled
@@ -1672,6 +1687,7 @@ export function restartLike(inbox: Inbox): void {
 	inbox.heldBy = ''
 	inbox.heldSeen = 0
 	inbox.lostName = ''
+	inbox.lostFp = ''
 	if (!PAIR_CODE_STATIC) {
 		inbox.pairCode = ''
 		inbox.passphrase = ''

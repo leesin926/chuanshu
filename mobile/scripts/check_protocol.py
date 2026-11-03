@@ -1768,6 +1768,121 @@ def check_session_release() -> None:
              f"round added, and this is the only tier that runs it as the three phone platforms will")
 
 
+def check_lost_registration() -> None:
+    """§3's last clause: the peer this machine dialled is timed by its own sender, and the timeout registers as 已断开.
+
+    Round twenty-eight (#194) found the clock running and the registration dead. Both ends keep the outbound
+    half's stamp from the sender (`seenNow` / ``ReceiveService.seen``), and both sweeps do reclaim the slot -
+    but the shared kernel only told the page *a name*, and the page compared it to the name ``hello`` had
+    carried into the send session. Those are two different strings for exactly the peer this sentence is about:
+    a device that only ever dialled out has no entry in its own inbox, so ``nameFor`` answers with the
+    「对端 <fp8>…」 fallback and the `if` never fires - the card goes on promising 已连接 after the slot has
+    been handed to a stranger. PC had it right for the reason the contract cannot see: ``on_lost`` carries the
+    fingerprint and the name is only ever used to paint the sentence. The kernel now carries both numbers, and
+    the page asks the number.
+    """
+    note = json.loads((CONTRACT / "protocol.json").read_text(encoding="utf-8-sig"))["transport"].get("note", "")
+    for needle, why in (
+        ("which also registers the loss", "the reclaim is not only a slot event: §3 says the sender also has to "
+                                         "see the session go, and that half was the one missing on the phone"),
+        ("by fingerprint, never by a display string", "the key of that registration - the display string is two "
+                                                     "different texts depending on which side of the dial you are on"),
+        ("the name hello carried", "why the sender's own word cannot be matched against the receiver's inbox"),
+    ):
+        if needle not in note:
+            fail(f"protocol.json's transport.note no longer says {needle!r} - {why}")
+
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    section = spec.split("## 3.", 1)[1].split("\n## ", 1)[0] if "## 3." in spec else ""
+    prose = "\n".join(p for p in section.split("\n\n") if not p.lstrip().startswith("（20"))
+    flat = re.sub(r"\s+", "", prose)
+    for needle, why in (
+        ("本机拨出去的那台由发起方自己计时，超时同样登记为已断开", "the sentence this round measured - the clock is "
+                                                              "the sender's own, and its expiry is a registration, "
+                                                              "not only a release"),
+        ("登记这一步认的还是那个", "the clause that says what the registration is keyed by; without it the next "
+                                "implementation is free to compare display strings again"),
+        ("两边从来不是同一串字", "the reason the two names cannot be the key: one came from hello, the other from "
+                              "the receiver's own pin entry"),
+    ):
+        if re.sub(r"\s+", "", needle) not in flat:
+            fail(f"§3 no longer says {needle!r} - {why}")
+    timed, keyed = flat.find("超时同样登记为已断开"), flat.find("登记这一步认的还是那个")
+    if not (-1 < timed < keyed):
+        fail("§3's keying clause no longer follows the sentence it qualifies - read on its own it is a promise "
+             "about some other registration, and the sentence above it stays ambiguous")
+
+    root = HERE.parent
+    sdk = HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk"
+    kernel = (sdk / "cs-receive.uts").read_text(encoding="utf-8")
+    harness = (sdk / "web" / "index.uts").read_text(encoding="utf-8")
+    store = (HERE / "chuanshu" / "store" / "session.uts").read_text(encoding="utf-8")
+    recv_py = (root / "app" / "net" / "receive.py").read_text(encoding="utf-8")
+    ui = (root / "app" / "ui" / "transfer.py").read_text(encoding="utf-8")
+
+    if kernel.count("lostFp: string") != 2:
+        fail("the kernel no longer declares lostFp in both places (the inbox and the snapshot) - a page can only "
+             "register by fingerprint if the snapshot carries one")
+    if kernel.count("inbox.lostFp =") != kernel.count("inbox.lostName ="):
+        fail(f"lostFp is written or cleared in {kernel.count('inbox.lostFp =')} places against lostName's "
+             f"{kernel.count('inbox.lostName =')} - the two are one fact about the same peer, and a stale number "
+             f"next to a fresh name is how a card ends up disconnecting the wrong session")
+    swept = kernel.split("export function sweep(", 1)[1].split("\n\tfor (let i = inbox.offers.length - 1", 1)[0] \
+        if "export function sweep(" in kernel else ""
+    for literal, why in (
+        ("inbox.lostFp = entry.fingerprint", "the inbound half of the reclaim says who left, by number"),
+        ("inbox.lostFp = stalled", "and the half this device took by dialling out - the one this sentence is about"),
+    ):
+        if literal not in swept:
+            fail(f"cs-receive.uts's sweep() no longer contains {literal!r} - {why}")
+    if "out.lostFp = inbox.lostFp" not in kernel:
+        fail("snapshot() no longer copies the reclaimed peer's fingerprint out of the inbox - the page never sees "
+             "the number, which is the state this round found the phone in")
+
+    if re.search(r"snap\.lostName\s*==\s*s\.peerName", store):
+        fail("session.uts registers the idle reclaim by comparing the kernel's display name to the send session's "
+             "peerName - that is the shape #194 measured dead: the peer this phone only dialled out to has no "
+             "name in the inbox, so the two strings never match and the card keeps saying 已连接")
+    register = store.split("if (s.connected && snap.lostFp", 1)[1].split("\n\t}", 1)[0] \
+        if "if (s.connected && snap.lostFp" in store else ""
+    if "snap.lostFp == held!.peerFingerprint" not in register or "onDisconnect()" not in register:
+        fail("the phone's registration no longer runs the session down by fingerprint inside the same branch "
+             "that calls onDisconnect() - the reclaim would go back to being a slot event nobody reports")
+    if "const held = activeSession" not in store:
+        fail("the phone reads the live session out of `activeSession` before comparing it, and that line is gone - "
+             "a store field copied from hello is the display-string path this round removed")
+
+    if "on_lost=self._peer_lost.emit" not in ui:
+        fail("the PC panel no longer wires the receiver's on_lost into its roster - §3's 「超时同样登记为已断开」 "
+             "on this end is that one signal")
+    lost_body = ui.split("def _on_peer_lost", 1)[1].split("\n    def ", 1)[0] if "def _on_peer_lost" in ui else ""
+    if "peer.fingerprint == fingerprint" not in lost_body or "self.forget(fingerprint)" not in lost_body:
+        fail("_on_peer_lost no longer finds the roster row by fingerprint and drops it - the name is for the "
+             "status line only, which is the shape the phone was moved to this round")
+    seen_py = recv_py.split("def sweep(self)", 1)[1].split("\n    def ", 1)[0] if "def sweep(self)" in recv_py else ""
+    if "self.on_lost(fingerprint)" not in seen_py:
+        fail("ReceiveService.sweep() no longer reports each reclaimed session to the UI - the slot goes back "
+             "silently and the screen keeps promising a connection nobody is holding")
+
+    selftest = (root / "scripts" / "protocol_selftest.py").read_text(encoding="utf-8")
+    phase = selftest.split("def phase_session_release", 1)[1].split("\ndef ", 1)[0]
+    for literal, why in (
+        ("service.on_lost = lost.append", "the gate's PC leg has to watch the registration, not just the release"),
+        ("swept == [fp_of(dialled)] and lost == [fp_of(dialled)]", "and it has to expect a fingerprint there, "
+                                                                  "because that is all the receiver has"),
+        ("service.sweep() == [] and lost == [fp_of(dialled)]", "the registration is one-shot; a second sweep may "
+                                                              "not report the same peer again"),
+    ):
+        if literal not in phase:
+            fail(f"phase_session_release() no longer contains {literal!r} - {why}")
+
+    new_legs = len(re.findall(r"check\('§3 (只拨出去过的那台也算占着名额|发起方自己的心跳就是这一格的动静|"
+                              r"沉默满窗口后收回这一格|同一趟的名字量不出这件事|下一次拨出把这一格清干净)", harness))
+    if new_legs < 5:
+        fail(f"the H5 receiver self-check holds {new_legs} of the five idle-registration legs - the kernel is the "
+             f"only body for this clause on the phone, and this is the tier that runs the kernel")
+
+
 def main() -> int:
     stamp_path = CONTRACT / "SOURCE.json"
     for name in ("protocol.json", "spec.md", "SOURCE.json"):
@@ -1840,6 +1955,7 @@ def main() -> int:
     check_chunk_reply()
     check_finalize_replay()
     check_session_release()
+    check_lost_registration()
 
     print(f"OK  protocol v{body['protocol_version']} from {stamp['source_repo']}@{stamp['source_commit'][:8]}")
     print(f"OK  {len(body['error_codes'])} error codes, {len(body['endpoints'])} endpoints, chunk {chunk // 1024} KiB")
@@ -1856,6 +1972,8 @@ def main() -> int:
           "the code alone, an empty string is a wrong guess, and neither sender writes a blank secret to the wire")
     print("OK  §3's one-session slot is given back by all three roads on every end: 断开 takes both halves by "
           "name, 不再监听 clears the sessions that outlived the port, and the idle window still sweeps alone")
+    print("OK  §3's idle reclaim registers the loss by fingerprint on both ends: the kernel carries the number "
+          "beside the caption, and the phone's card stops saying 已连接 when its own slot went quiet")
     print("OK  vendored copies match their stamps")
     print("OK  cs-protocol.uts mirrors the contract")
     print("OK  §5 names every limit a receiver refuses a transfer on")

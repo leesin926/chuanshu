@@ -837,8 +837,13 @@ export function refreshReceive() {
 		+ (goneFiles > 0 ? '（' + goneFiles.toString() + ' 个已经不在了）' : '')
 		+ ' · 没通过 ' + snap.rejectedFiles.toString() + ' 个 · 固定对端 ' + snap.peers.toString() + ' 台'
 	/* 接收内核收回的是本机拨出去那条会话的名额，而发送那一头的连接还挂在页面上。不跟着断一次，
-	   两张卡片就会一件说没对端、一件说已连接；断了也不算丢人——密钥还在，点一次连接就自己配回来。 */
-	if (s.connected && snap.lostName != '' && snap.lostName == s.peerName) {
+	   两张卡片就会一件说没对端、一件说已连接；断了也不算丢人——密钥还在，点一次连接就自己配回来。
+	   这一句原来比的是名字，而名字在这一格问不出任何事（第二十八轮）：内核那个名字读的是收件箱里的
+	   固定项，本机只拨出去过的对端在那一格根本没有名字，`nameFor` 只能回「对端 <fp8>…」；页面上那个
+	   名字是 hello 里对端自报的。两串字永远对不上，名额早收走了、这张卡还挂着「已连接」，第三方也就
+	   可以紧跟着拨进来。认的是指纹——PC 那端 `on_lost` 递给界面的本来就是 fingerprint。 */
+	const held = activeSession
+	if (s.connected && snap.lostFp != '' && held != null && snap.lostFp == held!.peerFingerprint) {
 		// #ifdef WEB
 		demoPcDisconnect()
 		// #endif

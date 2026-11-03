@@ -2802,6 +2802,38 @@ export function receiveSelfReport(): string {
 		&& relNextObj != null && relNextObj!.getString('token', '') != '',
 		relTakenAll.toString() + '|' + relNext.body)
 
+	// 24. 第二十八轮巡检（#194）：§3 末尾那句「本机拨出去的那台由发起方自己计时，超时同样登记为已断开」。
+	// 计时这一半本来就打得动（`seenNow` 也刷拨出去那一格），本轮量的是「登记」：内核原来只往快照里写一个
+	// 名字，而本机只拨出去过的对端在收件箱里压根没有固定项，`nameFor` 只能回「对端 <fp8>…」；页面那句
+	// 比的是 hello 里对端自报的名字。两串字对不上，名额早收走了、发送那张卡还挂着「已连接」。
+	// 所以内核现在把收回的那一台的指纹也写进快照，登记按指纹问。
+	const outBox = newInbox(harnessRand)
+	const outAt = nowSeconds()
+	const outFp = recvKeyFp(b64(randomBytes(32)))
+	holdSlotFor(outBox, outFp, outAt)
+	const outBusy = askPairAt(outBox, '203.0.113.80', currentPairCode(outBox, outAt), passphraseOf(outBox, outAt), b64(randomBytes(32)), outAt)
+	check('§3 只拨出去过的那台也算占着名额：第三方拨进来只吃到 PEER_BUSY，而这一格没有 token',
+		activePeers(outBox).length == 1 && activePeers(outBox)[0] == outFp && outBox.tokens.length == 0
+		&& codeOfReply(outBusy) == 'PEER_BUSY',
+		activePeers(outBox).join(',') + '|' + outBusy.body)
+	seenNow(outBox, outFp, outAt + SESSION_IDLE_S - 5)
+	const outEarly = sweep(outBox, outAt + SESSION_IDLE_S, recvDrop, recvDigestFile)
+	check('§3 发起方自己的心跳就是这一格的动静：窗口还差五秒时一次 sweep 不收它',
+		outEarly.length == 0 && activePeers(outBox).length == 1,
+		outEarly.join(',') + '|' + activePeers(outBox).join(','))
+	const outLate = sweep(outBox, outAt + 2 * SESSION_IDLE_S, recvDrop, recvDigestFile)
+	const outSnap = snapshot(outBox, outAt + 2 * SESSION_IDLE_S)
+	check('§3 沉默满窗口后收回这一格，并且说得出收回的是哪一台——按指纹',
+		outLate.length == 1 && outLate[0] == outFp && outSnap.lostFp == outFp,
+		outLate.join(',') + '|' + outSnap.lostFp)
+	check('§3 同一趟的名字量不出这件事：这台对端在收件箱里没有固定项，名字只能是「对端 <fp8>…」那一格兜底',
+		outSnap.lostName != SIM_NAME && outSnap.lostName.indexOf('对端 ') == 0 && outBox.trusted.length == 0,
+		outSnap.lostName)
+	holdSlotFor(outBox, outFp, outAt)
+	const outAgain = snapshot(outBox, outAt)
+	check('§3 下一次拨出把这一格清干净：登记是一次性的，不替后来的会话说话',
+		outAgain.lostFp == '' && outAgain.lostName == '', outAgain.lostFp + '|' + outAgain.lostName)
+
 	out.push(fail == 0 ? '接收自检 ' + pass.toString() + ' 项全部通过' : '接收自检失败 ' + fail.toString() + ' 项，通过 ' + pass.toString() + ' 项')
 	return out.join('\n')
 }

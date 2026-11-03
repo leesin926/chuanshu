@@ -2665,6 +2665,19 @@ def phase_session_release(proto: protocol_spec.Protocol, workspace: Path) -> Non
                                port=0, root=workspace / "sesrel-received")
     check("§3 「接收服务重启」在 PC 是不需要新线上字段的：换一个新接收器，旧 token 一句也不认",
           restarted._tokens == {} and not restarted.token_valid(first[1]), len(restarted._tokens))
+
+    # 第二十八轮（#194）后半句：本机拨出去的那台「超时同样登记为已断开」。PC 登记的是 fingerprint——这台对端
+    # 在接收器里连一个名字都没有（名字只活在界面上那份名单里），所以按名字登记的写法在这一端压根写不出来。
+    lost: list[str] = []
+    service.on_lost = lost.append
+    service.hold_slot_for(fp_of(dialled))
+    service._seen[fp_of(dialled)] = time.time() - proto.session_idle_timeout_s - 1
+    swept = service.sweep()
+    check("§3 拨出去那一格的钟走完后 sweep 收回它，并把这一台的 fingerprint 交给登记",
+          swept == [fp_of(dialled)] and lost == [fp_of(dialled)] and service.active_peers() == [],
+          (swept, lost, service.active_peers()))
+    check("§3 登记是一次性的：名额已经收回的那一台，下一次 sweep 不再替它登记一遍",
+          service.sweep() == [] and lost == [fp_of(dialled)], (lost,))
     service.stop()
 
 
