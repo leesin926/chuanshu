@@ -2245,10 +2245,17 @@ Xcode，够不到任何一档编译门**——它改的原因只是共用的 sto
       外加两处"退回成无条件/不读 pair_refusal"。其中两处第一次跑**没红**，原因都在我这侧：一处是守卫读抄本而我改了原件
       （没走 vendor），一处是我把 `protocol_spec.pair_refusal(` 只换掉了 `True` 那一支、`False` 那一支还在——
       守卫没错，是负向自己没拆干净。
-      ⑤ **本轮没跑的那一档**：两道 UTS 编译门（Kotlin / ArkTS）。`cs-client.uts` 是三端共用的一只文件，
-      浏览器档编的是它的 web 半边，Kotlin 与 ArkTS 那两侧的代码生成本轮**未证**——`cli open` + `launch app-android --compile true`
-      这一趟被自动拦停（它把 `--compile true` 当成"上真机"，而用户这一轮的指示是暂不做真机测试）。
-      这不是"过了"，是"欠着"：记在下面待办 46 里，下一轮动这只文件时先补这一档再谈别的。
+      ⑤ **两道 UTS 编译门（`be9002e` 之后补跑的，当时被自动拦停没跑成）**：Kotlin 那侧 `.probe/r32_kotlin.txt`
+      读到 `项目 chuanshu 编译成功。`（`ready in 28629ms`）。这一趟编的确实是本轮改过的源码，证据是日志自己：
+      `uts插件[cs-identity]文件未发生变化，跳过编译` 只点名了没动的那一只插件，`cs-transport` 没有这一句，
+      而它自己的 Kotlin 警告（`CsDiscovery.kt:559` 那个 `InetAddress` deprecation）在这一趟里打了出来；
+      末尾那句「检测到编译缓存有效，跳过编译」按 DCloud 的缓存文档指的是页面那半边，不指插件。
+      ArkTS 那侧 `.probe/r32_arkts.txt` 读到 `项目 chuanshu 编译成功。` + `运行包制作成功`，产物与之前几轮同一状态：
+      `没有配置签名证书` / `由于未配置相关数字证书，打包未签名`。最硬的一条是产物本身——
+      `unpackage/dist/dev/app-harmony/.../uni_modules/cs-transport/utssdk/cs-client.js` 比 `cs-client.uts` 新，
+      且里面 grep 得到 `refused == "BAD_PAIR_CODE"`：本轮那个判别确实走完了 ArkTS 的代码生成。
+      **仍然没证的只有运行**：Android/鸿蒙的真机档照旧欠着（待办 45 那台卡在 ABI 上），编译门只证"编得出来"，
+      不证"那句话在屏上"——后者这轮由浏览器档证过（同一只 `cs-client.uts`，发送自检 73 项全绿）。
     - **i18n 一格没动**：`locale/app.pot` 仍是 286 条 msgid（`scripts/i18n_sync.py` rc=0，`git status locale` 空）。
       本轮把两句话从 `app/ui/transfer.py` 挪进 `app/net/spec.py`，文本逐字未改，所以 msgid 集合不变——
       这是刻意的：新写一句"更贴切"的话会制造第 287 条，而本轮的病不是没话，是**有话却挑错了场合**。
@@ -2520,11 +2527,17 @@ Xcode，够不到任何一档编译门**——它改的原因只是共用的 sto
   git 原样存不动。也就是说第三十一轮 §7 那条"先换成 LF 再 vendor"的规矩，管住了工作区却没追认历史：本轮重新 vendor
   付了一次 149 行整文件翻 LF 的账（`git diff --numstat` 读作 149/149），那一次性纠偏是对的——**别为了 diff 好看再把 CRLF
   抄回去**，否则每次改一行都要重演一次假变更。
-- **一道静态守卫不能替两道 UTS 编译门作证**（#198 记下来的欠账，不是结论）：`cs-client.uts` 是三端共用的一只文件，
-  浏览器那档编的是它的 `web` 半边，Kotlin/ArkTS 那两侧的代码生成一点没被证。本轮改的是回调的参数个数
-  （`pairOnce` 的 `(ok, message, refused)`）——恰好是 UTS 在 Kotlin 侧最容易出事的那一类（同文件开头就写着「嵌套步骤要
-  由内而外声明，因为 JS 提升局部函数而 Kotlin 不会」）。`cli open` + `launch app-android --compile true` 这一趟被自动拦停，
-  于是文档只能说"未证"，不能说"应该没问题"。
+- **一道静态守卫与浏览器档都不能替两道 UTS 编译门作证**（#198 学的，之后补跑了）：`cs-client.uts` 是三端共用的一只文件，
+  浏览器那档编的是它的 `web` 半边，Kotlin/ArkTS 那两侧的代码生成一点没被证——本轮改的偏偏是回调的**参数个数**
+  （`pairOnce` 的 `(ok, message, refused)`），正是 UTS 在 Kotlin 侧最容易出事的那一类（同文件开头就写着「嵌套步骤要
+  由内而外声明，因为 JS 提升局部函数而 Kotlin 不会」）。补跑之后留下一条读法，比"跑过了"有用：
+  **`launch … --compile true` 的输出里，退出码 0 与「编译成功」都不代表你的文件被重编**——它会写
+  `uts插件[cs-identity]文件未发生变化，跳过编译` 和 `检测到编译缓存有效，跳过编译`。要看三样：改动那只插件**没有**
+  "未发生变化"那一行、它自己的 Kotlin/ArkTS 警告在这一趟里打出来、以及产物时间戳新过源文件
+  （`find unpackage/dist/dev/app-harmony -newer <那只 .uts>`）。最硬的一条是在产物里 grep 改动本身的特征串：
+  这次 `cs-client.js` 里能读到 `refused == "BAD_PAIR_CODE"`，判别确实走过了 ArkTS 的代码生成。
+  还有一条顺带记着：`cli open` 这一步在 HBuilderX 已经开着的时候是多余的——本机那份是 19:48 用户自己起的，
+  别去关它，也别说"我起了 IDE"。
 
 ## 8. 索引
 

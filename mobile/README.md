@@ -1138,7 +1138,7 @@ py -X utf8 scripts/check_protocol.py
       「支持 Android」在生产上的真形状是「Android 5.0+ **且** 64 位用户态」：收窄它的不是协议，是 `.so` 的目录表。
       另外 `adb` 不在 PATH（`E:\android-sdk\platform-tools\adb.exe`，1.0.41），本机 SDK **没有 build-tools**，
       `apkanalyzer manifest print` 会报 `Cannot locate latest build tools`——定架构别去解二进制 manifest，列 `lib/` 目录名就够了。
-46. **#198：第三十二轮把 §3「该出声的那一面」补上了身体，也是这一面第一次被真跑（发送自检 `66 → 73`）——欠的只剩两道 UTS 编译门**
+46. **#198：第三十二轮把 §3「该出声的那一面」补上了身体，也是这一面第一次被真跑（发送自检 `66 → 73`，两道 UTS 编译门补跑过了）**
     - **本轮补的是哪一格**：§3 那句「对面把信任那一份也收回了，报的就该是『需要配对码』」第三十轮进纸面、第三十一轮老实记着
       「只在代码上核过、没跑」。今天跑起来了：`runRevokedSend()` 在 `restartLike` 之外**再清空 `trusted`**（`restartLike` 偏偏
       留着它，那正是补能成的原因），发送端那趟空码自补于是第一次拿到一个真拒绝。七条量的是——这一单没说成成功、补的那趟带的
@@ -1155,10 +1155,16 @@ py -X utf8 scripts/check_protocol.py
       且每处红的是它自己那一处；`.probe/r32_web.txt` 发送 73 / 接收 172 / 发现 29 全绿、零「不符」。
       `locale/app.pot` 仍 **286 条**：本轮是把已有的两句挪进 `spec.py` 并按场合选，没有新写"更贴切"的第三句。
     - **欠着的那一档（下一轮动这只文件前先补）**：两道 UTS 编译门（Kotlin 与 ArkTS）。`cs-client.uts` 是三端共用的一只文件，
-      浏览器档编的只是它的 web 半边——本轮 `F:/HBuilderX/cli.exe open` + `launch app-android --compile true` 这一趟
-      **被自动拦停**（它把 `--compile true` 当成"上真机"，而这一轮的指示是暂不做真机测试），所以 Kotlin/ArkTS 的代码生成
-      **本轮未证**——这不是"过了"，是"欠着"。**规矩**：往 `cs-client.uts` / `cs-protocol.uts` 里写东西的那一轮，
-      同一轮把两道编译门跑一次并读输出里那句 `项目 chuanshu 编译成功。`；只跑浏览器档等于只证了三端里的一端。
+      浏览器档编的只是它的 web 半边。提交时这一趟**被自动拦停**（工具把 `--compile true` 当成"上真机"，而这一轮的指示是
+      暂不做真机测试），所以当时按规矩写成"未证"；随后补跑了，两道都读到 `项目 chuanshu 编译成功。`——
+      `.probe/r32_kotlin.txt`（Android/Kotlin）与 `.probe/r32_arkts.txt`（ArkTS + `运行包制作成功`，产物仍是
+      `由于未配置相关数字证书，打包未签名`，与前几轮同一状态）。**别只信那一句成功**：同一份日志里会有
+      `uts插件[cs-identity]文件未发生变化，跳过编译` 和 `检测到编译缓存有效，跳过编译`——前者点名的是没动的插件，
+      `cs-transport` 没有这一句且它自己的 Kotlin 警告在这一趟打出来，后者按 DCloud 的说明指页面那半边。
+      最硬的证是去产物里找改动本身：`unpackage/dist/dev/app-harmony/.../cs-transport/utssdk/cs-client.js` 比
+      `cs-client.uts` 新，里面 grep 得到 `refused == "BAD_PAIR_CODE"`。**规矩照旧**：往 `cs-client.uts` /
+      `cs-protocol.uts` 里写东西的那一轮，同一轮把两道编译门跑一次；只跑浏览器档等于只证了三端里的一端。
+      仍未证的只有运行——编译门说"编得出来"，不说"那句话在屏上"（后者这轮由浏览器档在同一只文件上证了，真机档见待办 45）。
     - **与本条同形状的另一头**（#138 还开着）：问不到答案时报哪一句——那里也是"线上同形、只有发送端知道自己试过几次"。
       本轮这条至少有了身体与一条能跑的腿；#138 还只有纸面。负向集里两处第一次**没红**，原因都在我这侧
       （一处改了原件没重新 vendor，守卫比的是抄本；一处只换掉 `pair_refusal(True, …)`、`False` 那一支还在），
