@@ -14,7 +14,7 @@ const NOTIFY_PERMISSION = 'android.permission.POST_NOTIFICATIONS'
 
 import {
 	Roster, newRoster, candidatesOf, applyAnnounce, applyTxt, forgetMdns, sweepPeers,
-	channelNote, buildAnnounce, buildTxt, prefixOf, markVerified, VIA_UDP, selfReport
+	channelNote, buildAnnounce, buildTxt, prefixOf, markVerified, VIA_UDP, livePort, selfReport
 } from '../cs-discovery.uts'
 import {
 	HexFn, KeyFpFn, VerifyFn, PrepareFn, WriteFn, DigestFileFn, DropFn, ExistsFn,
@@ -929,13 +929,15 @@ let discOpen = false
 
 /** Asked for on the discovery thread every interval rather than pushed by a page timer: a timer stops
  *  with the screen that made it, and a phone lying face-down still has to be findable. `port` is read
- *  live because the TLS listener may have had to take another one - the announcement carries the port
- *  that is actually open. `ts` stays at the moment discovery started, which is the PC's `started_at`. */
+ *  live because the TLS listener may have had to take another one - and because spec §2 makes this beat
+ *  a claim about a socket that is open *now*: whoever hears it dials that number. A phone that stopped
+ *  receiving therefore says nothing at all (`livePort` answers 0, this returns ''), which is the honest
+ *  half of 「监听常驻」. `ts` stays at the moment discovery started, which is the PC's `started_at`. */
 const discProvider: () => string = (): string => {
-	if (discPrefix == '') {
+	const port = livePort(CsServe.isRunning(), CsServe.port())
+	if (discPrefix == '' || port == 0) {
 		return ''
 	}
-	const port = CsServe.isRunning() ? CsServe.port() : TRANSPORT_PORT
 	const out = new UTSJSONObject()
 	out['announce'] = buildAnnounce(discId, port, discName, discPrefix, discSince)
 	out['service'] = 'chuanshu-' + discId.substring(0, 8)

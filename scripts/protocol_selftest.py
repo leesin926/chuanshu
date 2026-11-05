@@ -22,6 +22,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
@@ -1950,6 +1951,75 @@ def phase_discovery(proto: protocol_spec.Protocol, workspace: Path) -> None:
         expect_error("qr with a truncated fingerprint is refused", "UNSUPPORTED_PROTOCOL", lambda: protocol_spec.parse_qr(truncated))
         junk_fp = protocol_spec.qr_url(h="127.0.0.1", p=str(b_svc.port), v=str(proto.version), f="z" * 64, c=code)
         expect_error("qr with a non-hex fingerprint is refused", "UNSUPPORTED_PROTOCOL", lambda: protocol_spec.parse_qr(junk_fp))
+
+        # 第三十四轮（#200）：§2 那句「每 3s 发一次 `{…port…}`，监听常驻」里，`port` 是一句关于套接字的话——
+        # 听见的一方照着它拨。所以"这一端没在收"必须说不出口，而不是继续播合同那个默认口。量的就是发的那一步：
+        # 把发送套接字换成一个记录本，看这一拍到底有没有字节出去。
+        packets: list[tuple[str, dict]] = []
+
+        class _CapturingSocket:
+            def sendto(self, data, addr):  # noqa: ANN001 - the shape socket.sendto takes
+                packets.append((addr[0], json.loads(data.decode("utf-8"))))
+
+        silent = DiscoveryService(a_id, "PC-没在监听", None)
+        silent._udp_socket = _CapturingSocket()
+        silent.announce()
+        check("§2 没在监听的一端一条公告也不发", packets == [], packets)
+        listening = DiscoveryService(a_id, "PC-在监听", b_svc.port)
+        listening._udp_socket = _CapturingSocket()
+        listening.announce()
+        check("§2 在监听的一端播的是它真绑上的那个端口",
+              len(packets) == 1 and packets[0][1]["port"] == b_svc.port, packets)
+        try:
+            silent.pairing_qr(code, host="127.0.0.1")
+            check("§2 没监听时那一格 QR 不画一个拨不通的端口", False, "pairing_qr answered")
+        except ValueError as error:
+            check("§2 没监听时那一格 QR 不画一个拨不通的端口", "没有在接收" in str(error), str(error))
+
+        # 注册那一支用同一个判别：公告不发的这一端也不该在 DNS-SD 里留一个端口。`_start_mdns` 里那句
+        # `from zeroconf import ...` 换成一个记账的假货，量的就是"注册有没有被叫到"这一件事。
+        registered: list[int] = []
+        browsed: list[str] = []
+
+        class _FakeZeroconf:
+            def register_service(self, info):  # noqa: ANN001 - zeroconf's own shape
+                registered.append(info.port)
+
+            def unregister_service(self, info):  # noqa: ANN001
+                pass
+
+            def close(self) -> None:
+                pass
+
+        class _FakeServiceInfo:
+            def __init__(self, *args, **kwargs) -> None:  # noqa: ANN003 - the stub records what it is handed
+                self.port = kwargs.get("port")
+
+        class _FakeBrowser:
+            def __init__(self, zc, service_type, listener) -> None:  # noqa: ANN001
+                browsed.append(service_type)
+
+            def cancel(self) -> None:
+                pass
+
+        fake_zeroconf = types.ModuleType("zeroconf")
+        fake_zeroconf.Zeroconf = _FakeZeroconf
+        fake_zeroconf.ServiceInfo = _FakeServiceInfo
+        fake_zeroconf.ServiceBrowser = _FakeBrowser
+        real_zeroconf = sys.modules.get("zeroconf")
+        sys.modules["zeroconf"] = fake_zeroconf
+        try:
+            for name, port in (("在监听", b_svc.port), ("没在监听", None)):
+                probe = DiscoveryService(a_id, f"PC-{name}", port)
+                probe._start_mdns()
+            check("§2 没在监听的一端也不注册 mDNS 服务", registered == [b_svc.port], registered)
+            check("§2 不注册的那一趟还是在听别人的公告（浏览那一支没跟着关）",
+                  len(browsed) == 2 and browsed[0] == browsed[1], browsed)
+        finally:
+            if real_zeroconf is None:
+                sys.modules.pop("zeroconf", None)
+            else:
+                sys.modules["zeroconf"] = real_zeroconf
     finally:
         b.stop()
         a.stop()

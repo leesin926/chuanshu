@@ -258,6 +258,16 @@ export function buildAnnounce(peerId: string, port: number, name: string, prefix
 	return JSON.stringify(body)
 }
 
+/** The port an announcement is allowed to name: the receiving port this end has open right now, or 0
+ *  when it has none. Spec §2 makes every beat a claim about a live socket - whoever hears the
+ *  announcement dials exactly this number - so a machine that stopped receiving has to go quiet rather
+ *  than keep the default port on the air; a name in the list that cannot be dialled costs a person a
+ *  connect attempt to learn what this end already knew. Asked once per beat, never stored, because a
+ *  listener can stop and start again while the discovery channel runs. */
+export function livePort(listening: boolean, port: number): number {
+	return listening ? port : 0
+}
+
 export class Announce {
 	prefix: string = ''
 	port: number = 0
@@ -545,6 +555,15 @@ export function selfReport(): string {
 	down.mdns.detail = 'multicast blocked'
 	const note = channelNote(down)
 	check('通道挂了时说得出原因并给出兜底', note.indexOf('multicast blocked') >= 0 && note.indexOf('二维码') >= 0)
+
+	// 11. spec §2's second path is a claim about an open socket: whoever hears the packet dials the
+	//     number inside it. #200 measured four bodies that kept announcing 43720 with nothing behind it,
+	//     so "which port may this beat name" is answered here - the browser tier runs these three legs and
+	//     every phone shares the same one copy.
+	check('§2 公告里的端口就是此刻真开着的那一个', livePort(true, 43720) == 43720)
+	check('§2 没在监听时这一格的答案是「别说」', livePort(false, 43720) == 0)
+	check('§2 端口为 0 的那一条进不了任何人的名单', applyAnnounce(newRoster(SELF),
+		buildAnnounce('ghost', livePort(false, 43720), '停了接收的手机', PC, 1000), '192.168.1.40', 1000) == false)
 
 	out.push(fail == 0 ? '发现自检 ' + pass.toString() + ' 项全部通过' : '发现自检失败 ' + fail.toString() + ' 项，通过 ' + pass.toString() + ' 项')
 	return out.join('\n')

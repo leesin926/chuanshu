@@ -2535,6 +2535,95 @@ def check_ask_verdict() -> None:
              "and `muteState` alone only ever measures the silence half")
 
 
+def check_announce_port() -> None:
+    """§2's announcement names a socket, so "no listener, no announcement" has to be one answer per body.
+
+    Round thirty-four (#200) measured four bodies that kept broadcasting the contract's default port with
+    nothing behind it - `ChuanShu-cli peers`, a command that never binds a listener at all, and the three
+    phone hosts' `isRunning() ? port : TRANSPORT_PORT` - while their own comments claimed the packet
+    carried "the port that is actually open". Whoever hears the packet dials that number, so a name nobody
+    can reach is worse to a person than a name that is simply absent.
+    """
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    section = spec.split("## 2.", 1)[1].split("\n## ", 1)[0] if "## 2." in spec else ""
+    flat = re.sub(r"\s+", "", section)
+    for needle, why in (
+        ("`port` 是发出去那一刻本机**真开着**的接收端口", "the announcement is a claim about a live socket"),
+        ("不发这条、也不注册 mDNS 服务", "and a machine with nothing open says nothing on either channel"),
+        ("名单里出现一台拨不通的机器", "the reason: an undialable name costs a person a connect attempt"),
+        ("今天没有任何一端读它", "`ts` is named as the field nobody reads, not a freshness source"),
+        ("各端用自己的钟", "and the 15 s is measured on the hearer's own clock"),
+    ):
+        if re.sub(r"\s+", "", needle) not in flat:
+            fail(f"§2 no longer says {needle!r} - {why}")
+
+    body = json.loads((CONTRACT / "protocol.json").read_text(encoding="utf-8-sig"))
+    note = re.sub(r"\s+", " ", body["discovery"]["note"])
+    for needle, why in (
+        ("a machine that is not listening sends nothing and registers no mDNS service",
+         "the machine-readable half of the same rule"),
+        ("no end reads it", "and `ts` described as it is used: not at all"),
+    ):
+        if needle not in note:
+            fail(f"discovery.note no longer says {needle!r} - {why}")
+
+    root = HERE.parent
+    sdk = HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk"
+    kernel = (sdk / "cs-discovery.uts").read_text(encoding="utf-8")
+    if "export function livePort(listening: boolean, port: number): number {" not in kernel:
+        fail("cs-discovery.uts no longer owns the answer to `livePort` - four hosts each inventing one is "
+             "exactly how #200 happened")
+    if "return listening ? port : 0" not in kernel:
+        fail("livePort no longer answers 0 for a machine that is not listening - the whole rule is that one value")
+    report = kernel.split("export function selfReport(", 1)[1] if "export function selfReport(" in kernel else ""
+    if "§2 没在监听时这一格的答案是「别说」" not in report:
+        fail("the kernel self-check lost the leg that runs §2's port rule - the browser tier is where this "
+             "half of discovery is actually executed")
+
+    session = (HERE / "chuanshu" / "store" / "session.uts").read_text(encoding="utf-8")
+    asked = session.split("function discServicePort()", 1)[1].split("\n}", 1)[0] if "function discServicePort()" in session else ""
+    if "TRANSPORT_PORT" in asked:
+        fail("discServicePort is back to handing out the contract's default port while nothing is listening, "
+             "which is the lie #200 measured")
+    if "livePort(serveIsRunning(), servePort())" not in asked:
+        fail("session.uts's discServicePort no longer asks the kernel - the Harmony announcement is built here")
+
+    for name in ("app-android", "app-ios"):
+        host = (sdk / name / "index.uts").read_text(encoding="utf-8")
+        provider = host.split("const discProvider", 1)[1].split("\n}", 1)[0] if "const discProvider" in host else ""
+        if "livePort(CsServe.isRunning(), CsServe.port())" not in provider:
+            fail(f"{name}/index.uts's discProvider no longer asks which port this beat may name")
+        if "isRunning() ? CsServe.port() : TRANSPORT_PORT" in provider:
+            fail(f"{name}/index.uts is back to the fallback that kept 43720 on the air after 停止接收")
+
+    harmony = (sdk / "app-harmony" / "index.uts").read_text(encoding="utf-8")
+    port_of = harmony.split("function discPortOf()", 1)[1].split("\n}", 1)[0] if "function discPortOf()" in harmony else ""
+    if "return TRANSPORT_PORT" in port_of:
+        fail("harmony's discPortOf falls back to the default port again - this file mirrors the constant, so "
+             "the fallback reads like a fact and is a guess")
+    publish = harmony.split("function discPublish()", 1)[1].split("\n}", 1)[0] if "function discPublish()" in harmony else ""
+    if "if (discPortOf() == 0) {" not in publish:
+        fail("discPublish no longer asks whether anything is open before registering the mDNS service")
+
+    kotlin = (sdk / "app-android" / "CsDiscovery.kt").read_text(encoding="utf-8")
+    register = kotlin.split("private fun register(", 1)[1].split("\n    }", 1)[0] if "private fun register(" in kotlin else ""
+    if 'if (text == "") {' not in register:
+        fail("CsDiscovery.kt's register() has no quiet answer for a machine that is not receiving - an empty "
+             "provider used to be reported as 「本机公告不是 JSON」, which blames the packet for a stopped listener")
+
+    discovery_py = (root / "app" / "net" / "discovery.py").read_text(encoding="utf-8")
+    cli_py = (root / "app" / "cli.py").read_text(encoding="utf-8")
+    gate = (root / "scripts" / "protocol_selftest.py").read_text(encoding="utf-8")
+    if "port: int | None," not in discovery_py:
+        fail("DiscoveryService no longer takes 'no port', so the CLI has no way to say it is only listening")
+    if "DiscoveryService(identity, device_name(settings), None)" not in cli_py:
+        fail("`ChuanShu-cli peers` is back to announcing a port it never bound")
+    if "if sock is None or self.port is None:" not in discovery_py:
+        fail("announce() is back to sending bytes for a listener that does not exist")
+    if "§2 没在监听的一端一条公告也不发" not in gate or "§2 没在监听的一端也不注册 mDNS 服务" not in gate:
+        fail("the PC gate lost the legs that measure a listener-less announcement staying unsent")
+
+
 def main() -> int:
     stamp_path = CONTRACT / "SOURCE.json"
     for name in ("protocol.json", "spec.md", "SOURCE.json"):
@@ -2613,6 +2702,7 @@ def main() -> int:
     check_second_layer()
     check_pair_refusal()
     check_ask_verdict()
+    check_announce_port()
 
     print(f"OK  protocol v{body['protocol_version']} from {stamp['source_repo']}@{stamp['source_commit'][:8]}")
     print(f"OK  {len(body['error_codes'])} error codes, {len(body['endpoints'])} endpoints, chunk {chunk // 1024} KiB")
@@ -2659,6 +2749,8 @@ def main() -> int:
           "for a new code, the typed face asks to re-enter, and both still cost one record in the peer's bucket")
     print("OK  §4's third shape is two shapes: an answered refusal reports what the peer said, an unanswered "
           "question reports the write's own error, on both senders")
+    print("OK  §2's announcement names the socket that is open right now: nothing is broadcast and nothing is "
+          "registered while a end is not receiving, on the PC's two entry points and all three phone hosts")
     return 0
 
 

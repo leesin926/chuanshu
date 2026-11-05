@@ -1201,6 +1201,38 @@ py -X utf8 scripts/check_protocol.py
       调了 `check_ask_verdict()` 里 ban 与字面量循环的先后；一处那条腿有三个分支、同一个标签出现三次，负向自己没换干净（`all=True`）。
       规矩照旧：**"没红"先怀疑负向，再怀疑守卫**。
 
+48. **#200：第三十四轮把 §2 那句「监听常驻」补成了身体——公告里那个 `port` 必须是此刻真开着的接收端口（发现自检 `29 → 32`，两道 UTS 编译门同轮跑过）**
+    - **本轮补的是哪一格**：§2 第 2 条「UDP 广播 43721：每 3s 发一次 `{peer_id, port, v, name, fp, ts}`，监听常驻」。
+      纸上画了记录里有哪些键，没画那个 `port` 由谁在什么时候有权填。今天只有 PC 图形端把公告和套接字绑在一起
+      （`transfer.py:1484` 用真绑上的 `service.port` 起发现，`stop_listening()` 先停公告）；另外四具都在替一个不存在的监听说话：
+      命令行 `peers` 用合同默认口起发现却根本不监听（`app/cli.py:543`）、`store/session.uts:1947` 与安卓/苹果宿主的 provider
+      都是 `isRunning() ? port : TRANSPORT_PORT`（注释还自称「carries the port that is actually open」）、鸿蒙 `discPortOf()`
+      两处回落到默认口且 `discPublish()` 无条件注册、安卓 Kotlin 遇到空 provider 报的是「本机公告不是 JSON」。
+    - **判别只有一个函数**：共用内核 `cs-discovery.uts::livePort(listening, port)`——在听就答那个真端口，没在听就答 0，
+      而 0 的意思是"这一拍什么都不发、这个服务不注册"。四具身体各自去问它，规则不复制四遍。手机端停掉接收以后，
+      下一拍（3 s 内）名单上就没有这台机器了——这是合同的「监听常驻」今天唯一护得住的说法。
+    - **另一格是 `ts`**：三端都写、**没有任何一端读**（PC 的 `_learn` 不收，内核 `parseAnnounce` 放进 `Announce.ts` 后 `learn` 也不收）。
+      它写的是"本机开始监听的那一刻"，不是这一包的发送时刻。按第十七轮收 `X-File-Size` 那条思路，本轮**没有**把这个键从线上删掉
+      （它确实在场），而是把"它是什么、谁都不读它、15 s 是按收件方自己的钟量的"写进纸面。
+    - **今天清掉的账**：`.probe/r34_gate.txt` 门禁 `290 → 295 条全绿`（新五条量的是发的那一步：一条也不发 / 发的是真端口 /
+      不注册服务 / 浏览那一支没跟着关 / 二维码不许画拨不通的端口）；`.probe/r34_guard.txt` 守卫 **33 行 OK**（新增
+      `check_announce_port()`，含三条 ban）；`.probe/r34_web.txt` **发现自检 32 项全部通过**、发送 77、接收 172、`不符` 零行；
+      `.probe/r34_negatives.txt` **14 处各红一次**；两道编译门 `.probe/r34_kotlin.txt`/`.probe/r34_arkts.txt` 都读到
+      `项目 chuanshu 编译成功。`，产物里 grep 得到 `fun livePort(listening: Boolean, port: Number)` 与那三条中文标签
+      （Kotlin 日志里有 `检测到编译缓存有效，跳过编译` 那一句，所以看的是产物时间戳与内容，不是那一句成功）。
+      `locale/app.pot` 仍 **286 条**：命令行那句不进 msgid 表，宿主那句「本机没在接收，所以这一趟没播 mDNS」是 UTS/Kotlin 侧的字。
+    - **仍然欠的两格**（都写进了纸面与 §6 第 51 条⑥，不在本轮"改完"之列）：
+      ① **设备档**——「停止接收 → 下一拍就不播」这条在活手机上没有读数，宿主把 `livePort` 接到自己套接字那一段只由编译门证过
+      （待办 45 那条 ABI 边界还卡着）；② **mDNS 那一支的生命周期**——注册只在发现通道起来那一刻问一次端口，所以
+      "先开监听、关掉、再开"的这一端今天只回到 UDP 名单，DNS-SD 要等通道重开。补它要的是各平台的注销/重注册路径
+      （`NsdManager.unregisterService` + 鸿蒙 `removeLocalService` + 监听状态变化时回调一次），这一格需要设备档才能证明，
+      所以顺序上仍是待办 45 在前。
+    - **两个档口的坑，记下来免得再付一次账**：① 浏览器穿透模块缓存要把 `?fresh=` 打在 **search 段**
+      （`http://localhost:5173/?fresh=r34b#/pages/me/me`）——打在 hash 里读到的还是上一版（本轮第一次就量到 29 项那版）；
+      ② 编译门还在跑的时候往 `protocol/spec.md` 这类文件里写会撞 `OSError 22`，负向集的写回因此加了重试；
+      上一趟崩溃会把**抄本**留在改过的状态（原件修好了而守卫比的是 `mobile/shared/protocol/`），于是下一趟一上来就
+      `起点：守卫 rc=1`——先重新 vendor 再看红。
+
 M2a 的最小切口是"手机发、PC 收"：扫（或粘贴）PC 的二维码拿到地址与完整指纹，用户只核对同屏的
 一次性配对码——PC 侧接收端已经跑绿，手机只要把
 `/v1/pair`、`/v1/offer`、`PUT chunk`、`/v1/finalize` 四条打出去就能有结论，发现层可以先不做。

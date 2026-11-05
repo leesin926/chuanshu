@@ -474,6 +474,14 @@ object CsDiscovery {
             mdnsDetail = "本机公告造不出来：$e"
             return
         }
+        if (text == "") {
+            // Spec §2: publishing is the same claim as announcing - a browser resolves this name and
+            // dials the port inside it. Nothing is registered while this end has no open receiving
+            // port, and the reason is named rather than left as a channel that looks broken.
+            mdnsState = "stopped"
+            mdnsDetail = "本机没在接收，所以这一趟没注册 mDNS 服务"
+            return
+        }
         val made = try {
             JSONObject(text)
         } catch (e: Throwable) {

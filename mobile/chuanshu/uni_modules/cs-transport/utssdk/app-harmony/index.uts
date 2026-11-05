@@ -3132,15 +3132,19 @@ function discServiceLabel(): string {
 	}
 }
 
+/** The port this end may name in an announcement, or 0 for "nothing is open here". The store hands the
+ *  number through `discTlsPort` and that side already asks the kernel (`livePort`), so a missing or
+ *  throwing maker here means the same thing as no listener: this file has no port of its own to fall
+ *  back on, and inventing 43720 would put a machine in someone's list that nobody can dial (spec §2). */
 function discPortOf(): number {
 	const maker = discTlsPort
 	if (maker == null) {
-		return TRANSPORT_PORT
+		return 0
 	}
 	try {
 		return maker()
 	} catch (e) {
-		return TRANSPORT_PORT
+		return 0
 	}
 }
 
@@ -3164,6 +3168,18 @@ function discLocalInfo(): mdns.LocalServiceInfo {
 }
 
 function discPublish(): void {
+	/* Spec §2's announcement is a claim about an open socket, and a published mDNS service is the same
+	 *  claim in the other channel: a browser resolves it and dials the port inside. So nothing goes on
+	 *  the air while this end has no listener. Registered once per discovery session, which is also why
+	 *  a phone that starts receiving after the channel opened is heard on the broadcast (the beat re-asks
+	 *  the port) but not in DNS-SD until the channel is reopened - recorded as 待办 rather than papered over. */
+	if (discPortOf() == 0) {
+		discPublished = null
+		discMdnsState = 'stopped'
+		discMdnsDetail = '本机没在接收，所以这一趟没播 mDNS'
+		discNote(discMdnsDetail)
+		return
+	}
 	const info = discLocalInfo()
 	discPublished = info
 	mdns.addLocalService(discContext(), info).then((): void => {

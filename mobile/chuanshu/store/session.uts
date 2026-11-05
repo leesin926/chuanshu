@@ -151,6 +151,7 @@ import {
 	applyAnnounce,
 	applyTxt,
 	channelNote,
+	livePort,
 	selfReport
 } from '@/uni_modules/cs-transport/utssdk/cs-discovery.uts'
 import {
@@ -1943,16 +1944,19 @@ let discOpen = false
 
 /** Read when a packet is due rather than pushed by a timer that dies with the screen: the port in the
  *  announcement has to be the one actually open, and `ts` the moment discovery started - the PC keeps
- *  both of those as the peer's own words rather than as this phone's guess. */
+ *  both of those as the peer's own words rather than as this phone's guess. "Actually open" is the whole
+ *  rule of spec §2's second path, so nothing is handed out when the listener is down: a name the list
+ *  cannot dial is worse to a person than a name that is not there. */
 function discServicePort(): number {
-	return serveIsRunning() ? servePort() : TRANSPORT_PORT
+	return livePort(serveIsRunning(), servePort())
 }
 
 const discAnnounceText: () => string = (): string => {
-	if (discPrefix == '') {
+	const port = discServicePort()
+	if (discPrefix == '' || port == 0) {
 		return ''
 	}
-	return buildAnnounce(discId, discServicePort(), discName, discPrefix, discSince)
+	return buildAnnounce(discId, port, discName, discPrefix, discSince)
 }
 
 const discTxtEntries: () => string[] = (): string[] => buildTxt(discName, discPrefix, discSince)

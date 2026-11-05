@@ -141,10 +141,17 @@ class DiscoveryService:
         self,
         identity: Identity,
         device_name: str,
-        port: int,
+        port: int | None,
         on_change: Callable[[], None] | None = None,
         broadcast_target: str = BROADCAST_TARGET,
     ) -> None:
+        """`port` is the receiving port this end has open, or None when it has none.
+
+        Spec §2 makes every announcement a claim about that socket - whoever hears the packet dials the
+        number inside it - so an end that is not receiving sends no packet and publishes no mDNS
+        service. `ChuanShu-cli peers` reads this way: it goes out looking for machines without offering
+        one, and the default port in its packet would put a phone in someone's list that cannot answer.
+        """
         self.proto = protocol_spec.load()
         self.identity = identity
         self.device_name = device_name
@@ -175,7 +182,8 @@ class DiscoveryService:
         self._stop.clear()
         self._start_mdns()
         self._start_udp()
-        self._spawn(self._announce_loop, "announce")
+        if self.port is not None:
+            self._spawn(self._announce_loop, "announce")
         self._spawn(self._sweep_loop, "sweep")
         log.info(
             "discovery started on %s (channels: %s)",
@@ -225,22 +233,23 @@ class DiscoveryService:
         host = local_ipv4()
         try:
             self._zeroconf = Zeroconf()
-            self._service_info = ServiceInfo(
-                service_type,
-                f"{instance}.{service_type}",
-                addresses=[socket.inet_aton(host)],
-                port=self.port,
-                properties={
-                    "ver": str(self.proto.version),
-                    "name": self.device_name,
-                    "fp": self.prefix,
-                    "ts": str(self.started_at),
-                },
-                server=f"{instance}.local.",
-            )
-            self._zeroconf.register_service(self._service_info)
+            if self.port is not None:
+                self._service_info = ServiceInfo(
+                    service_type,
+                    f"{instance}.{service_type}",
+                    addresses=[socket.inet_aton(host)],
+                    port=self.port,
+                    properties={
+                        "ver": str(self.proto.version),
+                        "name": self.device_name,
+                        "fp": self.prefix,
+                        "ts": str(self.started_at),
+                    },
+                    server=f"{instance}.local.",
+                )
+                self._zeroconf.register_service(self._service_info)
+                self._mdns_host = host
             self._browser = ServiceBrowser(self._zeroconf, service_type, listener=_MdnsListener(self))
-            self._mdns_host = host
             channel.state = "ok"
         except Exception as error:  # noqa: BLE001 - a broken multicast stack is not fatal
             channel.state, channel.detail = "unavailable", str(error)
@@ -345,9 +354,10 @@ class DiscoveryService:
 
     def announce(self, target: str | None = None) -> None:
         """Send one announcement. Unicast works too, which is how a hidden network or a
-        test can be fed without trusting broadcast to get through."""
+        test can be fed without trusting broadcast to get through. A machine with no open
+        receiving port has nothing to say - spec §2 - so this is where that stays unsaid."""
         sock = self._udp_socket
-        if sock is None:
+        if sock is None or self.port is None:
             return
         try:
             sock.sendto(self._announce_packet(), (target or self.broadcast_target, self.proto.discovery_port))
@@ -443,6 +453,14 @@ class DiscoveryService:
         self._notify()
         return peer
 
+    def _dialable_port(self) -> int:
+        """The port a scanner may be pointed at. The receiving screen paints its QR only while its own
+        socket is open, so this states the announcement's rule where a wrong answer would be
+        photographed and dialled by someone else."""
+        if self.port is None:
+            raise ValueError("这一端没有在接收，没有可扫的端口")
+        return self.port
+
     def pairing_qr(self, code: str, host: str = "", passphrase: str = "") -> str:
         """What the receiving screen paints so the other side can skip discovery.
 
@@ -453,7 +471,7 @@ class DiscoveryService:
         serves, because that is the number a scanner pins; the identity key that signs the
         pair message is a different number and goes inside that message (spec §3).
         """
-        fields = {"h": host or local_ipv4(), "p": str(self.port), "v": str(self.proto.version)}
+        fields = {"h": host or local_ipv4(), "p": str(self._dialable_port()), "v": str(self.proto.version)}
         if passphrase:
             fields["k"] = passphrase
         return protocol_spec.qr_url(f=self.identity.served_fingerprint, c=code, **fields)

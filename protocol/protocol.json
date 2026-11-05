@@ -22,7 +22,7 @@
     "announce_interval_s": 3,
     "peer_expiry_s": 15,
     "fingerprint_prefix_chars": 16,
-    "note": "Broadcast carries a fingerprint PREFIX only - of the certificate the socket actually serves. The full digest comes from GET /v1/hello's `served` and must match that prefix before pairing; a build too old to answer `served` has no separate leaf, so its `fingerprint` is the same number. Presence is not trust."
+    "note": "Broadcast carries a fingerprint PREFIX only - of the certificate the socket actually serves. The full digest comes from GET /v1/hello's `served` and must match that prefix before pairing; a build too old to answer `served` has no separate leaf, so its `fingerprint` is the same number. Presence is not trust. The `port` of an announcement is the receiving port this end has open at the moment it sends: a machine that is not listening sends nothing and registers no mDNS service, because that number is what the listener gets dialled by. `ts` is when this end started listening, not when this packet left it, and no end reads it - each end measures the 15 s freshness on its own clock, against when it last heard that peer."
   },
   "transport": {
     "chunk_size": 4194304,

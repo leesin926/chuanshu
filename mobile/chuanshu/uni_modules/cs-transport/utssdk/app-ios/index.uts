@@ -18,7 +18,7 @@
 import { TRANSPORT_PORT, DISCOVERY_PORT, ANNOUNCE_INTERVAL_S, MDNS_SERVICE_SHORT, RandFn } from '../cs-protocol.uts'
 import {
 	Roster, newRoster, candidatesOf, applyAnnounce, applyTxt, forgetMdns, sweepPeers,
-	channelNote, buildAnnounce, buildTxt, prefixOf, markVerified, VIA_UDP, selfReport
+	channelNote, buildAnnounce, buildTxt, prefixOf, markVerified, VIA_UDP, livePort, selfReport
 } from '../cs-discovery.uts'
 import {
 	HexFn, KeyFpFn, VerifyFn, PrepareFn, WriteFn, DigestFileFn, DropFn,
@@ -770,13 +770,15 @@ let discOpen = false
 
 /** Asked for on the discovery queue every interval rather than pushed by a page timer: a timer stops with
  *  the screen that made it, and a phone lying face-down still has to be findable. `port` is read live
- *  because the TLS listener may have had to take another one - the announcement carries the port that is
- *  actually open. `ts` stays at the moment discovery started, which is the PC's `started_at`. */
+ *  because the TLS listener may have had to take another one - and because spec §2 makes this beat a
+ *  claim about a socket open *now*: whoever hears it dials that number, so a phone that stopped
+ *  receiving says nothing (`livePort` answers 0 and this returns ''). `ts` stays at the moment discovery
+ *  started, which is the PC's `started_at`. */
 const discProvider: () => string = (): string => {
-	if (discPrefix == '') {
+	const port = livePort(CsServe.isRunning(), CsServe.port())
+	if (discPrefix == '' || port == 0) {
 		return ''
 	}
-	const port = CsServe.isRunning() ? CsServe.port() : TRANSPORT_PORT
 	const out = new UTSJSONObject()
 	out['announce'] = buildAnnounce(discId, port, discName, discPrefix, discSince)
 	out['service'] = 'chuanshu-' + discId.substring(0, 8)

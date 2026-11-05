@@ -540,9 +540,13 @@ def cmd_send(args: argparse.Namespace, out: Terminal) -> int:
 def cmd_peers(args: argparse.Namespace, out: Terminal) -> int:
     settings = Settings()
     identity = _identity()
-    service = DiscoveryService(identity, device_name(settings), proto_port())
+    # None, not the contract's default port: this command has no listening socket, and spec §2 makes an
+    # announcement a claim about one. Broadcasting 43720 here used to put a machine that cannot answer
+    # into everyone else's list, and the number printed below used to be the identity digest rather
+    # than the leaf prefix the announcement really carries.
+    service = DiscoveryService(identity, device_name(settings), None)
     service.start()
-    out.say(f"本机广播自己是 {identity.fingerprint[: protocol_spec.load().prefix_chars]}，听 {args.seconds:.0f} 秒…")
+    out.say(f"这一趟只找别的机器：本机没在接收，所以不广播自己、也不注册服务。听 {args.seconds:.0f} 秒…")
     try:
         time.sleep(args.seconds)
     except KeyboardInterrupt:
