@@ -373,9 +373,17 @@ export function sendFiles(
 	 *  only case, besides a spent budget, where the spec lets the original error stand. */
 	function chunkHeld(offerId: string, fileId: string, index: number, fallback: string, cb: (known: boolean, hasIt: boolean, why: string) => void) {
 		authed('GET', '/v1/offer/' + offerId + '/state', '', new ArrayBuffer(0), '', '', false, function (status: number, body: string) {
+			if (status == 0) {
+				/** Nobody answered the question either. Spec §4 keeps the *write's* error for this shape -
+				 *  `fallback` is that reply text, carried in by the caller - because two silences add up to
+				 *  no new fact, only to a peer that is not there. Reporting this request's own transport
+				 *  error instead was #138's half of the mismatch. */
+				cb(false, false, fallback)
+				return
+			}
 			if (status != 200) {
-				// The question died too. Report the answer to it, not the original PUT error: that one
-				// says nothing about whether this end could even ask.
+				// The question was answered, and the answer is a fact the write never carried: this session
+				// is gone, or this offer is. That one is the verdict, and the write's error stays in the log.
 				cb(false, false, body)
 				return
 			}

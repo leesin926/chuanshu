@@ -2872,6 +2872,9 @@ class ChunkSwallow {
 	/** How many `GET /state` questions this peer refuses to answer. Spec §4's third rule is about this
 	 *  shape - 问不到答案 - and it is the one leg the phones have evidence for and the browser did not. */
 	muteState: number = 0
+	/** #198: the other half of "the question came back" - an answer that is a refusal. The peer is
+	 *  reachable and says this offer is gone, which is a fact the eaten reply never carried. */
+	refuseState: number = 0
 	/** How many answers to the *manifest* this peer takes back after registering it. Spec §4 ends the
 	 *  offer poll on 答案出现 or 等满 `offer_wait_timeout_s`, and a reply that never arrived is neither -
 	 *  this end was not refused, it was not heard from. */
@@ -2989,6 +2992,14 @@ function swallowCaller(probe: ChunkSwallow): Caller {
 			if (probe.muteState > 0) {
 				probe.muteState = probe.muteState - 1
 				cb(0, swallowed('自检注入：发送方来问这一块的账，这一问本机也不答'))
+				return
+			}
+			if (probe.refuseState > 0) {
+				probe.refuseState = probe.refuseState - 1
+				// A refusal, not a silence: the peer is there and tells the sender this offer is over.
+				// OFFER_UNKNOWN keeps `authed` out of it (that path only answers a 403 NOT_PAIRED), so
+				// what the sender's `chunkHeld` sees is exactly an answer that is an error.
+				cb(404, '{"code":"OFFER_UNKNOWN","detail":{"reason":"自检注入：这一问对面答的是拒绝"}}')
 				return
 			}
 		}
@@ -3266,7 +3277,9 @@ export function senderSelfReport(): string {
 	check('报出去的是那次的真实原因', rc.summary.indexOf('CONN_RESET') >= 0 || rc.summary.indexOf('自检注入') >= 0, rc.summary)
 
 	// D. the body dies *and* the question about it dies too: 问不到答案 is spec §4's third shape, and the
-	// honest reading of it is one write and that question's own error - not a rewrite, not the PUT's error.
+	// sentence the person gets is §4's own words - 原来的错误 - because two silences add up to no new fact.
+	// #198 flipped this leg: the kernel used to report the *question's* transport error here, which is what
+	// the PC did not do, and the two halves of "the question came back badly" had been merged into one.
 	const d = new ChunkSwallow()
 	d.nth = 1
 	d.peerBlind = true
@@ -3276,7 +3289,23 @@ export function senderSelfReport(): string {
 	check('那一问也没人答时这单判死', rd.done && !rd.ok, rd.summary)
 	check('判死前只问过对方一次', d.stateAsks == 1, d.stateAsks.toString())
 	check('问不到答案就不重写：对端只收到一次写块', d.chunksSeen == 1, d.chunksSeen.toString())
-	check('报出去的是那一问的错，不是写块自己的错', rd.summary.indexOf('这一问') >= 0, rd.summary)
+	check('那一问也没人答时报的是那一次写自己的错（§4：原来的错误）',
+		rd.summary.indexOf('这一块没到对端') >= 0 && rd.summary.indexOf('这一问') < 0, rd.summary)
+	// P. 那一问答了、答的是一个拒绝：对面在，而且它刚说了一件那次写永远说不出来的事（这一单已经结束了）。
+	// 这一半的正文该是那一问的答复，而那一次写的断管只留在一列日志里——#138 的另一半，PC 改前把两半压成了一句。
+	const p = new ChunkSwallow()
+	p.nth = 1
+	p.peerBlind = true
+	p.refuseState = 1
+	const rp = new SenderRun()
+	runSender(p, big, rp, '')
+	check('那一问答的是一个拒绝时这单同样判死，且只问过对方一次', p.stateAsks == 1 && rp.done && !rp.ok,
+		p.stateAsks.toString() + ' ' + rp.summary)
+	check('它也没重写那一块', p.chunksSeen == 1, p.chunksSeen.toString())
+	check('报出去的是对面那句拒绝，不是本机那次断管',
+		rp.summary.indexOf('传输请求不存在或已结束') >= 0 && rp.summary.indexOf('这一块没到对端') < 0, rp.summary)
+	check('那一问的答复里的 reason 也留得下来（各端的 detail 是一句人话，不是裸码）',
+		rp.summary.indexOf('这一问对面答的是拒绝') >= 0, rp.summary)
 
 	// E. spec §2's order and its place: 收到候选后必须先核对前缀再进入 §3 配对, and the 核对 happens on the
 	// connection. `pinnedCaller` is this harness's stand-in for the phone's TLS trust manager, so

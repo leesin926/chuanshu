@@ -1028,6 +1028,41 @@ def phase_chunk_reply_lost(proto: protocol_spec.Protocol, workspace: Path) -> No
             check("报出去的还是那一次写自己的错", "nobody is left" in str(exc), str(exc))
         finally:
             mute._once = mute_real
+
+        # And the half #138 was about: the question came back, and what came back was a refusal. The peer
+        # is reachable and just told us this offer is over - a fact the eaten reply never carried - so the
+        # verdict the person reads has to be *that*, while the write's own broken pipe stays in the log.
+        refused = dial("PC-Ask-Refused")
+        refused.offer(files)
+        refused_real = refused._once
+        refused_put = f"/v1/offer/{refused.offer_id}/chunk/{first_file.id}/0"
+        refused_puts = [0]
+        refused_asks = [0]
+
+        def answering(method, path, body, headers, pace_ms=0):
+            if method == "PUT" and path == refused_put:
+                refused_puts[0] += 1
+                raise ConnectionResetError("the body died on the way in, and the answer to that is the point")
+            if path.endswith("/state") and refused_puts[0]:
+                refused_asks[0] += 1
+                return 404, {"code": "OFFER_UNKNOWN",
+                             "detail": {"reason": "injected: that offer is over down here"}}, b""
+            return refused_real(method, path, body, headers, pace_ms)
+
+        refused.pace_ms = PACE_MS_LADDER[-1]
+        refused._once = answering
+        try:
+            refused.send(files)
+            check("那一问答的是拒绝时这一单也判死", False, "send returned")
+        except protocol_spec.ProtocolError as exc:
+            check("那一问答的是拒绝时这一单也判死",
+                  refused_puts[0] == 1 and refused_asks[0] == 1, [refused_puts[0], refused_asks[0]])
+            check("报出去的是对面那句拒绝，不是本机那次断管",
+                  exc.code == "OFFER_UNKNOWN" and "断管" not in str(exc), f"{exc.code} {exc.detail}")
+        except ConnectionResetError as exc:
+            check("那一问答的是拒绝时这一单也判死", False, f"报的还是写自己的错：{exc}")
+        finally:
+            refused._once = refused_real
     finally:
         service.stop()
 

@@ -2465,6 +2465,76 @@ def check_pair_refusal() -> None:
              "makes the repair succeed)")
 
 
+def check_ask_verdict() -> None:
+    """§4's third shape splits in two, and the verdict follows which half it is - not which end you are on.
+
+    Round thirty-three (#199, closing #138) read the one sentence 「只有问不到答案、或尝试次数用尽才把原来的错误
+    抛出去」 as if "the question failed" were one fact. It is two: the peer answered with a refusal (it is there,
+    and it says this offer is over - information the eaten reply never carried) or the peer answered nothing
+    (two silences, no new fact, and the only nameable thing is the pipe that broke). Neither end had both halves:
+    PC caught `ProtocolError` and `OSError` into the same `None`, so a refusal got buried under "Broken pipe";
+    the kernel answered both with the question's own text, so an unanswered question reported a transport error
+    as if it were a verdict (`.probe/a_133_mute.txt` is that reading on an AVD, and it now needs a re-run).
+    """
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    section = spec.split("## 4.", 1)[1].split("\n## ", 1)[0] if "## 4." in spec else ""
+    prose = "\n".join(p for p in section.split("\n\n") if not p.lstrip().startswith("（20"))
+    flat = re.sub(r"\s+", "", prose)
+    for needle, why in (
+        ("那一问得到了答复、答复是一个拒绝", "the first half, which the paper used to fold into one sentence"),
+        ("抛出去的是**那一问的答复**", "and its verdict: what the peer just said, not what our socket did"),
+        ("连那一问都没人答", "the second half"),
+        ("抛出去的是**那一次写自己的错误**", "and its verdict, which is the sentence §4 always had"),
+        ("分开它们的只有「那一问到没问到答复」这一件事", "the discriminator, stated as the only thing that can do it"),
+    ):
+        if re.sub(r"\s+", "", needle) not in flat:
+            fail(f"§4 no longer says {needle!r} - {why}")
+
+    root = HERE.parent
+    sdk = HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk"
+    send_py = (root / "app" / "net" / "send.py").read_text(encoding="utf-8")
+    client = (sdk / "cs-client.uts").read_text(encoding="utf-8")
+    gate = (root / "scripts" / "protocol_selftest.py").read_text(encoding="utf-8")
+    harness = (sdk / "web" / "index.uts").read_text(encoding="utf-8")
+
+    held = client.split("function chunkHeld(", 1)[1].split("\n\t}", 1)[0] if "function chunkHeld(" in client else ""
+    for literal, why in (
+        ("if (status == 0) {", "the no-answer half has to be tested before `status != 200`, or the two merge again"),
+        ("cb(false, false, fallback)", "and that half's verdict is the write's own reply text, carried in by the caller"),
+    ):
+        if literal not in held:
+            fail(f"chunkHeld() no longer contains {literal!r} - {why}")
+    if "The question died too" in held:
+        fail("chunkHeld() is back to reporting the question's own failure for both halves - that is the reading "
+             "#138 was opened for, and it turns a silence into a conclusion")
+
+    landed = send_py.split("def _chunk_landed(", 1)[1].split("\n    def ", 1)[0] if "def _chunk_landed(" in send_py else ""
+    if "except (http.client.HTTPException, OSError, protocol_spec.ProtocolError)" in landed:
+        fail("_chunk_landed() is back to catching the peer's refusal and the dead socket into one None - the PC "
+             "half of the merge #199 undid, and the reason a person could never learn 这一单已经结束了. "
+             "(`_withdraw` catches all three together on purpose: a failed best-effort abort is one log line.)")
+    for literal, why in (
+        ("except protocol_spec.ProtocolError as exc:", "a refusal is caught apart from a silence, not merged into it"),
+        ("except (http.client.HTTPException, OSError) as exc:", "and the silence keeps its own branch"),
+    ):
+        if literal not in landed:
+            fail(f"_chunk_landed() no longer contains {literal!r} - {why}")
+    if "answered, has_it, answer = self._chunk_landed(file, index)" not in send_py:
+        fail("_put_chunk no longer reads the three-way answer, so the refusal branch cannot exist")
+
+    if "那一问答的是拒绝时这一单也判死" not in gate or "报出去的是对面那句拒绝" not in gate:
+        fail("the gate lost the refusal-answer legs - without them both ends can silently re-merge the two halves")
+    p_legs = len(re.findall(r"check\('(那一问答的是一个拒绝时这单同样判死|它也没重写那一块|"
+                            r"报出去的是对面那句拒绝，不是本机那次断管|那一问的答复里的 reason 也留得下来|"
+                            r"那一问也没人答时报的是那一次写自己的错)", harness))
+    if p_legs < 5:
+        fail(f"the H5 sender self-check holds {p_legs} of the 5 legs that separate §4's third shape - the "
+             f"browser tier is where the kernel half of this rule is executed")
+    if "refuseState: number = 0" not in harness:
+        fail("web/index.uts lost the refuseState injection - an answering-with-a-refusal peer cannot be built, "
+             "and `muteState` alone only ever measures the silence half")
+
+
 def main() -> int:
     stamp_path = CONTRACT / "SOURCE.json"
     for name in ("protocol.json", "spec.md", "SOURCE.json"):
@@ -2542,6 +2612,7 @@ def main() -> int:
     check_token_repair()
     check_second_layer()
     check_pair_refusal()
+    check_ask_verdict()
 
     print(f"OK  protocol v{body['protocol_version']} from {stamp['source_repo']}@{stamp['source_commit'][:8]}")
     print(f"OK  {len(body['error_codes'])} error codes, {len(body['endpoints'])} endpoints, chunk {chunk // 1024} KiB")
@@ -2586,6 +2657,8 @@ def main() -> int:
     print("OK  §4's re-posted finalize: a second pass on both senders, and one announcement per landing on both receivers")
     print("OK  §3's two faces of one refusal are told apart by this end's own empty code: the machine's face asks "
           "for a new code, the typed face asks to re-enter, and both still cost one record in the peer's bucket")
+    print("OK  §4's third shape is two shapes: an answered refusal reports what the peer said, an unanswered "
+          "question reports the write's own error, on both senders")
     return 0
 
 

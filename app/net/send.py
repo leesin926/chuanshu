@@ -606,12 +606,17 @@ class PeerConnection:
                 # The ladder is spent, and this attempt says nothing about the bytes: a relay can drop the
                 # socket after the body landed and before the reply was written. Ask before raising - one
                 # GET is cheap next to a transfer the person already approved.
-                landed = self._chunk_landed(file, index)
-                if landed is None:
-                    # Nobody answered. That is the one shape where writing the chunk again has no chance of
-                    # being the repair, so the question is the verdict: spec §4 sends the original error up.
+                answered, has_it, answer = self._chunk_landed(file, index)
+                if answer is not None:
+                    # The question was *answered*, and the answer is a fact the write never carried: this
+                    # session is gone, or this offer is. The write's own error is already in the log (the
+                    # `_slow_pipe` line above); raising it here would hide what the peer just said.
+                    raise answer
+                if not answered:
+                    # Nobody answered the one permitted question - the shape where writing the chunk again
+                    # has no chance of being the repair, and spec §4 keeps the original error for that one.
                     raise
-                if landed:
+                if has_it:
                     log.warning("chunk %d of %s died on the reply, not the body: the peer already has it", index, file.relpath)
                     if progress is not None:
                         progress(file.relpath, index, total)
@@ -655,19 +660,24 @@ class PeerConnection:
         log.warning("chunk rejected (%s): pacing to %d ms per TLS record for the rest of this peer", reason, self.pace_ms)
         return True
 
-    def _chunk_landed(self, file: OutgoingFile, index: int) -> bool | None:
-        """What the peer says about this chunk: True/False once it answered, None when nothing answered.
+    def _chunk_landed(self, file: OutgoingFile, index: int) -> tuple[bool, bool, protocol_spec.ProtocolError | None]:
+        """What the one permitted question came back with: (answered, has_it, answer_was_a_refusal).
 
-        Only ever asked after a body whose reply never came. Spec §4 sorts these three apart, and the third
-        is not a "no": a peer that cannot be reached tells us nothing about the bytes, and spending the rest
-        of the attempts writing into that socket is what the phones already refuse to do.
+        Only ever asked after a body whose reply never came. Spec §4 sorts three facts apart, and the third
+        has two halves a sender must not merge: a peer that *answers* with a refusal just told us something
+        the write could not (this session is gone, this offer is over), while a peer that answers nothing has
+        told us nothing about the bytes - and §4 keeps the original error for that one. Merging them is what
+        #138 was about: this end used to report "broken pipe" for both.
         """
         try:
             state = self.state()
-        except (http.client.HTTPException, OSError, protocol_spec.ProtocolError) as exc:
+        except protocol_spec.ProtocolError as exc:
+            return False, False, exc
+        except (http.client.HTTPException, OSError) as exc:
             log.warning("could not ask the peer what it holds: %s", exc)
-            return None
+            return False, False, None
         for entry in state.get("files", []):
             if str(entry.get("id")) == file.id:
-                return index not in entry.get("missing", [])
-        return False
+                return True, index not in entry.get("missing", []), None
+        # The peer answered, and its ledger does not list this file: that is a "not there", not a silence.
+        return True, False, None
