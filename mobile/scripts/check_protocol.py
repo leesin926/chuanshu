@@ -2597,6 +2597,56 @@ def check_channels_with_listener() -> None:
         fail("the gate no longer measures that a listening end has an announcement running")
 
 
+def check_mdns_needs_fp() -> None:
+    """§2.1's `fp` is the thing §2's prefix check has to have; three readers already refuse to guess it (#203).
+
+    The paper used to list `fp` as one of four TXT keys and say nothing about a record that lacks it. The
+    bodies were never ambiguous: PC's `_on_mdns_record` returns before `_learn`, the shared kernel's
+    `parseTxt` rejects the packet, and Android below API 28 - where DNS-SD cannot carry TXT at all while
+    this project's floor is 21 - reports the whole channel unavailable with that reason instead of
+    offering unverifiable names. This round wrote the sentence and pinned all three readers.
+    """
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    section = spec.split("## 2.", 1)[1].split("\n## ", 1)[0] if "## 2." in spec else ""
+    flat = re.sub(r"\s+", "", section)
+    for needle, why in (
+        ("TXT里的`fp`**不是可选字段**", "the key the prefix check needs is not decoration"),
+        ("没有东西可钉", "why an fp-less record is not a candidate"),
+        ("不拿地址或名字凑一个前缀", "and the shortcut that must never be taken"),
+        ("Android9（API28）以下的系统给不出DNS-SD的TXT属性", "the environment that loses the whole channel, named"),
+        ("那不是第二条说的\"多播被拦\"", "so it is not confused with §2.2's blocked multicast"),
+    ):
+        if re.sub(r"\s+", "", needle) not in flat:
+            fail(f"§2.1 no longer says {needle!r} - {why}")
+
+    body = json.loads((CONTRACT / "protocol.json").read_text(encoding="utf-8-sig"))
+    note = re.sub(r"\s+", " ", body["discovery"]["note"])
+    if "A record without `fp` is not a candidate on any end" not in note:
+        fail("discovery.note no longer states the fp rule machine-readably")
+
+    discovery_py = (HERE.parent / "app" / "net" / "discovery.py").read_text(encoding="utf-8")
+    handler = discovery_py.split("def _on_mdns_record", 1)[1].split("\n    def ", 1)[0] if "def _on_mdns_record" in discovery_py else ""
+    if 'properties.get("fp", "")' not in handler or "if not prefix:" not in handler:
+        fail("PC's mDNS reader no longer refuses a record with nothing to pin")
+    if "self._learn(" in handler.split("if not prefix:", 1)[0]:
+        fail("PC's mDNS reader learned a candidate before the fp check - the order is the whole rule")
+
+    kernel = (HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk" / "cs-discovery.uts").read_text(encoding="utf-8")
+    if "广播里没有指纹前缀" not in kernel:
+        fail("cs-discovery.uts no longer rejects an announcement/TXT without a prefix - the shared half of this rule")
+
+    kotlin = (HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk" / "app-android" / "CsDiscovery.kt").read_text(encoding="utf-8")
+    mdns = kotlin.split("private fun startMdns(", 1)[1].split("\n    }", 1)[0] if "private fun startMdns(" in kotlin else ""
+    if "Build.VERSION.SDK_INT < 28" not in mdns:
+        fail("CsDiscovery.kt no longer names the API 28 wall - below it DNS-SD has no TXT, so the channel must be reported, not guessed")
+    if "带不出指纹前缀" not in mdns:
+        fail("the Android mDNS channel no longer says why it is unavailable - §2 asks for a named reason, not a silent row")
+
+    gate = (HERE.parent / "scripts" / "protocol_selftest.py").read_text(encoding="utf-8")
+    if "§2.1 没有 fp 的 mDNS 记录进不了名单" not in gate:
+        fail("the gate no longer executes PC's mDNS reader against an fp-less record")
+
+
 def check_announce_port() -> None:
     """§2's announcement names a socket, so "no listener, no announcement" has to be one answer per body.
 
@@ -2766,6 +2816,7 @@ def main() -> int:
     check_ask_verdict()
     check_announce_port()
     check_channels_with_listener()
+    check_mdns_needs_fp()
 
     print(f"OK  protocol v{body['protocol_version']} from {stamp['source_repo']}@{stamp['source_commit'][:8]}")
     print(f"OK  {len(body['error_codes'])} error codes, {len(body['endpoints'])} endpoints, chunk {chunk // 1024} KiB")
@@ -2816,6 +2867,8 @@ def main() -> int:
           "registered while a end is not receiving, on the PC's two entry points and all three phone hosts")
     print("OK  §2's channels ride with the listener, not with a screen: they come up when the port opens, a hand "
           "that stops them is honoured for the run, and a channel that cannot start names why and offers the QR")
+    print("OK  §2.1's `fp` is not optional: an mDNS record without it is no candidate on any end, and Android "
+          "below API 28 reports the whole channel unavailable instead of offering names nothing can pin")
     return 0
 
 

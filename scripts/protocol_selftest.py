@@ -2026,6 +2026,30 @@ def phase_discovery(proto: protocol_spec.Protocol, workspace: Path) -> None:
                 sys.modules.pop("zeroconf", None)
             else:
                 sys.modules["zeroconf"] = real_zeroconf
+
+        # 第三十六轮（#203）：§2.1 那条 mDNS 路径上 `fp` 不是可选字段——没有它，一个解析到的服务只是
+        # 一个名字加一个地址，"没有东西可钉"，而 §2 明写 Presence is not trust。安卓那侧的写法是把整条
+        # 通道判不可用（CsDiscovery.kt: SDK_INT < 28 时 TXT 带不出 fp），内核与 iOS 的读者则丢弃无摘要的记录；
+        # 这两条腿第一次把 **PC 这一端的读者**执行一遍：同一台服务，带 fp 的进名单，不带的连名单都不该看见。
+        class _Record:
+            def __init__(self, props: dict, port: int, name: str) -> None:
+                self.properties = props
+                self.port = port
+                self.name = name
+
+            def parsed_addresses(self) -> list[str]:
+                return ["192.168.1.77"]
+
+        before = len(b.candidates())
+        b._on_mdns_record(_Record({"ver": "1", "name": "书房-PC"}, 43720, "没带摘要那台._chuanshu._tcp.local."))
+        check("§2.1 没有 fp 的 mDNS 记录进不了名单（PC 的读者第一次被执行）", len(b.candidates()) == before,
+              [(p.prefix, p.host) for p in b.candidates()])
+        b._on_mdns_record(_Record({"ver": "1", "name": "书房-PC", "fp": "1111222233334444"}, 43720,
+                                  "带摘要那台._chuanshu._tcp.local."))
+        after = b.candidates()
+        check("§2.1 带 fp 的那一条照常进名单，端口与地址取自记录本身",
+              len(after) == before + 1 and any(p.prefix == "1111222233334444" and p.port == 43720 for p in after),
+              [(p.prefix, p.host, p.port) for p in after])
     finally:
         b.stop()
         a.stop()
