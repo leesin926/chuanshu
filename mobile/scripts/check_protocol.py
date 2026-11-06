@@ -2714,8 +2714,9 @@ def check_announce_port() -> None:
         fail("harmony's discPortOf falls back to the default port again - this file mirrors the constant, so "
              "the fallback reads like a fact and is a guess")
     publish = harmony.split("function discPublish()", 1)[1].split("\n}", 1)[0] if "function discPublish()" in harmony else ""
-    if "if (discPortOf() == 0) {" not in publish:
-        fail("discPublish no longer asks whether anything is open before registering the mDNS service")
+    if "if (want == '') {" not in publish:
+        fail("discPublish no longer asks whether anything is open before registering the mDNS service "
+             "(#204 moved the question into the announcement text itself)")
 
     kotlin = (sdk / "app-android" / "CsDiscovery.kt").read_text(encoding="utf-8")
     register = kotlin.split("private fun register(", 1)[1].split("\n    }", 1)[0] if "private fun register(" in kotlin else ""
@@ -2734,6 +2735,95 @@ def check_announce_port() -> None:
         fail("announce() is back to sending bytes for a listener that does not exist")
     if "§2 没在监听的一端一条公告也不发" not in gate or "§2 没在监听的一端也不注册 mDNS 服务" not in gate:
         fail("the PC gate lost the legs that measure a listener-less announcement staying unsent")
+
+
+def check_record_follows_beat() -> None:
+    """§2.1's published record is §2.2's packet in the other channel, so it is re-asked on the same beat (#204).
+
+    Round thirty-four wrote 「不发这条、也不注册 mDNS 服务」 and thirty-five wrote 「端口换了就播新那个」; both
+    verbs share one subject, and the bodies kept two different clocks. The broadcast re-reads the port every
+    3 s, while DNS-SD registration was asked once - `register()`'s only caller was `startMdns()`, `discPublish()`'s
+    was `lanOpen()` - so a phone that pressed 停止接收 went silent on the air and stayed in everyone's roster
+    answering a closed port, and one that restarted its listener answered the same question with two numbers.
+    Harmony said so in a comment and deferred it (待办 48②); the PC never had it, because the whole
+    DiscoveryService is built and torn down with the listener. iOS's `publish()` has the same shape and is left
+    alone: that platform was terminated on 2026-10-24 and has no compile gate to believe.
+    """
+    sdk = HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk"
+    kotlin = (sdk / "app-android" / "CsDiscovery.kt").read_text(encoding="utf-8")
+    announce_loop = kotlin.split("}, \"chuanshu-announce\")", 1)[0] if "}, \"chuanshu-announce\")" in kotlin else ""
+    if "reconcileMdns(provider)" not in announce_loop:
+        fail("the Android announce beat is back to re-asking only the packet - the record then keeps a port "
+             "this end closed, which is the §2.1 half of #204")
+
+    harmony = (sdk / "app-harmony" / "index.uts").read_text(encoding="utf-8")
+    beat = harmony.split("function discBeat()", 1)[1].split("\n}", 1)[0] if "function discBeat()" in harmony else ""
+    if "discPublish()" not in beat:
+        fail("harmony's beat no longer re-asks the record - the packet goes quiet, the name stays")
+    if "discAnnounceOnce()" not in beat:
+        fail("discBeat is no longer the one beat both announcements ride")
+
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    section = spec.split("## 2.", 1)[1].split("\n## ", 1)[0] if "## 2." in spec else ""
+    flat = re.sub(r"\s+", "", section)
+    for needle, why in (
+        ("同一个断言的两个副本", "a record and a packet are one claim about one socket"),
+        ("接收停了这条记录要**撤掉**", "so a closed listener takes it down"),
+        ("端口换了要**撤了重注册**", "and a moved port re-announces it"),
+        ("广播念新号、记录念旧号", "the failure this prevents: two answers from one machine"),
+        ("NsdManager在同一个名字还挂着注册时不接受第二次", "the platform that forces withdraw-then-register"),
+    ):
+        if re.sub(r"\s+", "", needle) not in flat:
+            fail(f"§2.1 no longer says {needle!r} - {why}")
+
+    body = json.loads((CONTRACT / "protocol.json").read_text(encoding="utf-8-sig"))
+    note = re.sub(r"\s+", " ", body["discovery"]["note"])
+    if "re-asked on that beat rather than once when the discovery channel opens" not in note:
+        fail("discovery.note no longer states the record's lifetime machine-readably")
+
+    kernel = (sdk / "cs-discovery.uts").read_text(encoding="utf-8")
+    decide = kernel.split("export function publishAction(", 1)[1].split("\n}", 1)[0] if "export function publishAction(" in kernel else ""
+    if "export function publishAction(" not in kernel:
+        fail("cs-discovery.uts no longer owns the answer to `publishAction` - four hosts inventing one is how "
+             "#204 happened")
+    for const, why in (("PUBLISH_KEEP", "an unchanged beat leaves the record alone"),
+                       ("PUBLISH_WITHDRAW", "a closed listener takes it down"),
+                       ("PUBLISH_FIRST", "nothing held yet is a plain registration"),
+                       ("PUBLISH_REPLACE", "a moved port is withdrawn and registered again")):
+        if f"return {const}" not in decide:
+            fail(f"publishAction lost its {const} answer - {why}")
+    report = kernel.split("export function selfReport(", 1)[1] if "export function selfReport(" in kernel else ""
+    if "§2.1 接收停了，DNS-SD 那一条要撤掉" not in report:
+        fail("the kernel self-check lost the leg that runs §2.1's withdraw - the browser tier is where this "
+             "rule is actually executed")
+
+    android = kotlin.split("private fun reconcileMdns(", 1)[1].split("\n    }", 1)[0] if "private fun reconcileMdns(" in kotlin else ""
+    if "unregisterService(held)" not in android:
+        fail("Android's reconcile no longer takes the old record down before anything else - NsdManager "
+             "refuses a second registerService while the first is held")
+    if android.find("unregisterService(held)") < 0 or "register(mdnsServiceType" not in android:
+        fail("Android's reconcile lost one of its two acts")
+    if "pendingText != null" not in android:
+        fail("Android will now stack a second unregister while the first is still awaiting its goodbye - "
+             "the list blinks and the platform errors")
+    goodbye = kotlin.split("override fun onServiceUnregistered", 1)[1].split("\n            }", 1)[0] if "override fun onServiceUnregistered" in kotlin else ""
+    if "register(mdnsServiceType" not in goodbye:
+        fail("Android's registration is never put back after the goodbye, so a port change withdraws the "
+             "record and leaves this end invisible")
+
+    root = HERE.parent
+    transfer_py = (root / "app" / "ui" / "transfer.py").read_text(encoding="utf-8")
+    discovery_py = (root / "app" / "net" / "discovery.py").read_text(encoding="utf-8")
+    gate = (root / "scripts" / "protocol_selftest.py").read_text(encoding="utf-8")
+    if "self._zeroconf.unregister_service(self._service_info)" not in discovery_py:
+        fail("PC's DiscoveryService.stop() no longer withdraws the record it registered - the shape the "
+             "phones are measured against")
+    if "self._discovery.stop()" not in transfer_py:
+        fail("the PC window no longer takes discovery down with the listener")
+    if "§2.1 关掉发现通道时那条 DNS-SD 记录一起撤了" not in gate:
+        fail("the gate lost the leg that measures PC withdrawing the record")
+    if "§2.1 重开监听时注册的是这一次真绑上的端口" not in gate:
+        fail("the gate lost the leg that measures PC re-registering the port it actually bound")
 
 
 def main() -> int:
@@ -2817,6 +2907,7 @@ def main() -> int:
     check_announce_port()
     check_channels_with_listener()
     check_mdns_needs_fp()
+    check_record_follows_beat()
 
     print(f"OK  protocol v{body['protocol_version']} from {stamp['source_repo']}@{stamp['source_commit'][:8]}")
     print(f"OK  {len(body['error_codes'])} error codes, {len(body['endpoints'])} endpoints, chunk {chunk // 1024} KiB")
@@ -2869,6 +2960,8 @@ def main() -> int:
           "that stops them is honoured for the run, and a channel that cannot start names why and offers the QR")
     print("OK  §2.1's `fp` is not optional: an mDNS record without it is no candidate on any end, and Android "
           "below API 28 reports the whole channel unavailable instead of offering names nothing can pin")
+    print("OK  §2.1's record is re-asked on §2.2's beat: a closed listener takes it down, a moved port withdraws "
+          "it before registering again, and the PC's build-with-the-listener shape is measured by two gate legs")
     return 0
 
 

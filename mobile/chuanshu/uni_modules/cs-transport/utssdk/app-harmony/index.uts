@@ -2885,6 +2885,13 @@ let discService: DiscService | null = null
 let discUdp: socket.UDPSocket | null = null
 let discSearch: mdns.DiscoveryService | null = null
 let discPublished: mdns.LocalServiceInfo | null = null
+/** The announcement that record carries, and whether a change to it is mid-flight. Spec §2.1 makes the
+ *  record the same claim as the packet beside it, so the beat that re-reads the port re-reads this too
+ *  (#204): `discPublishedText` is what is on the air, `discInFlight` is the one act the platform has not
+ *  confirmed, and `discAsked` keeps the first beat able to say "nothing to publish" out loud. */
+let discPublishedText = ''
+let discInFlight = false
+let discAsked = false
 let discTimer = -1
 let discBeats = 0
 let discBrowseStarted = false
@@ -3023,19 +3030,25 @@ function discOpenUdp(port: number): void {
 		discUdpDetail = ''
 		discNote('广播端口 ' + port.toString() + ' 已绑上，正在收发')
 		discAnnounceOnce()
-		discTimer = setInterval((): void => {
-			discAnnounceOnce()
-			discBeats = discBeats + 1
-			if (discBeats >= BROWSE_REFRESH_BEATS) {
-				discBeats = 0
-				discRefreshBrowse()
-			}
-		}, ANNOUNCE_INTERVAL_S * 1000)
 	}).catch((e: Error): void => {
 		discUdpState = 'unavailable'
 		discUdpDetail = errText(e)
 		discNote('广播通道起不来：' + discUdpDetail)
 	})
+}
+
+/** The contract's 3 s beat, owned by the channel rather than by the broadcast socket: §2.1's record is
+ *  the same claim as §2.2's packet, so both are re-asked here. Riding the UDP socket's own promise kept
+ *  the record alive on the one device where the packet never goes out - a blocked multicast leaves the
+ *  DNS-SD path as the primary one, and a primary path that is asked once is asked too often by accident. */
+function discBeat(): void {
+	discAnnounceOnce()
+	discPublish()
+	discBeats = discBeats + 1
+	if (discBeats >= BROWSE_REFRESH_BEATS) {
+		discBeats = 0
+		discRefreshBrowse()
+	}
 }
 
 function discCloseUdp(): void {
@@ -3155,6 +3168,23 @@ function discContext(): common.UIAbilityContext {
 	return UTSHarmony.getUIAbilityContext()
 }
 
+/** The announcement as one string, which is what spec §2.1 wants compared: the record and the packet are
+ *  the same claim about the same socket, so the packet's own text is the signature - and the store answers
+ *  '' for it the moment this end has nothing open (`livePort`, #200). Reading the packet rather than
+ *  re-deriving name+port+TXT here is what keeps the two channels from drifting apart by construction. */
+function discRecordText(): string {
+	const maker = discAnnounce
+	if (maker == null) {
+		return ''
+	}
+	try {
+		return maker()
+	} catch (e) {
+		discNote('本机公告造不出来：' + errText(e))
+		return ''
+	}
+}
+
 function discLocalInfo(): mdns.LocalServiceInfo {
 	const host: mdns.NetAddress = { family: 1, port: discPortOf(), address: '0.0.0.0' }
 	const info: mdns.LocalServiceInfo = {
@@ -3167,25 +3197,96 @@ function discLocalInfo(): mdns.LocalServiceInfo {
 	return info
 }
 
+/** Re-ask the DNS-SD record on the beat the announcement goes out (spec §2.1).
+ *
+ *  Spec §2's announcement is a claim about an open socket, and a published record is the same claim in
+ *  the other channel: a browser resolves the name and dials the port inside it. So the record is asked
+ *  again every 3 s rather than once when the channel opens - before #204 `discPublish()` had exactly one
+ *  caller (`lanOpen`), which is why a phone that stopped receiving went quiet on the broadcast while its
+ *  name stayed in everyone's roster answering a closed port, and one that restarted its listener answered
+ *  the same question with two numbers. `addLocalService` refuses a name it already holds, so a change is
+ *  withdrawn and registered from the goodbye's promise. */
 function discPublish(): void {
-	/* Spec §2's announcement is a claim about an open socket, and a published mDNS service is the same
-	 *  claim in the other channel: a browser resolves it and dials the port inside. So nothing goes on
-	 *  the air while this end has no listener. Registered once per discovery session, which is also why
-	 *  a phone that starts receiving after the channel opened is heard on the broadcast (the beat re-asks
-	 *  the port) but not in DNS-SD until the channel is reopened - recorded as 待办 rather than papered over. */
-	if (discPortOf() == 0) {
-		discPublished = null
+	if (discInFlight) {
+		return
+	}
+	const want = discRecordText()
+	if (discAsked && want == discPublishedText) {
+		return
+	}
+	discAsked = true
+	if (want == '') {
+		discWithdraw()
+		return
+	}
+	if (discPublished == null) {
+		discAdd(want)
+		return
+	}
+	discTakeDown((): void => {
+		discAdd(want)
+	})
+}
+
+/** Take the record down because this end has nothing open, and say so instead of leaving a channel that
+ *  looks merely idle. */
+function discWithdraw(): void {
+	const made = discPublished
+	if (made == null) {
+		discPublishedText = ''
 		discMdnsState = 'stopped'
 		discMdnsDetail = '本机没在接收，所以这一趟没播 mDNS'
 		discNote(discMdnsDetail)
 		return
 	}
+	discInFlight = true
+	mdns.removeLocalService(discContext(), made!).then((): void => {
+		discPublished = null
+		discPublishedText = ''
+		discInFlight = false
+		discMdnsState = 'stopped'
+		discMdnsDetail = '本机没在接收，这一趟把 mDNS 记录撤了'
+		discNote(discMdnsDetail)
+	}).catch((e: Error): void => {
+		// Still on the air, so still what this end published: the next beat tries to take it down again.
+		discInFlight = false
+		discNote('mDNS 注销失败：' + errText(e))
+	})
+}
+
+function discTakeDown(after: () => void): void {
+	discInFlight = true
+	const made = discPublished
+	if (made == null) {
+		discInFlight = false
+		after()
+		return
+	}
+	mdns.removeLocalService(discContext(), made!).then((): void => {
+		discPublished = null
+		discInFlight = false
+		after()
+	}).catch((e: Error): void => {
+		discInFlight = false
+		discPublished = made
+		discNote('mDNS 注销失败：' + errText(e))
+	})
+}
+
+function discAdd(want: string): void {
 	const info = discLocalInfo()
 	discPublished = info
+	discPublishedText = want
+	discInFlight = true
 	mdns.addLocalService(discContext(), info).then((): void => {
+		discInFlight = false
 		discNote('mDNS 已发布 ' + info.serviceName)
 	}).catch((e: Error): void => {
+		// Nothing landed, so nothing may be remembered as published - the next beat asks again instead of
+		// concluding the record already carries this port.
+		discInFlight = false
 		discPublished = null
+		discPublishedText = ''
 		discMdnsState = 'unavailable'
 		discMdnsDetail = 'mDNS 注册失败：' + errText(e)
 		discNote(discMdnsDetail)
@@ -3272,6 +3373,9 @@ function discTeardownMdns(): void {
 	}
 	const made = discPublished
 	discPublished = null
+	discPublishedText = ''
+	discInFlight = false
+	discAsked = false
 	if (made != null) {
 		mdns.removeLocalService(discContext(), made!).catch((e: Error): void => {
 			discNote('mDNS 注销失败：' + errText(e))
@@ -3317,6 +3421,9 @@ export function lanOpen(): string {
 		discMdnsDetail = errText(e)
 		discNote('mDNS 这条通道本机没有：' + discMdnsDetail)
 	}
+	discTimer = setInterval((): void => {
+		discBeat()
+	}, ANNOUNCE_INTERVAL_S * 1000)
 	discNote('发现已启动（广播端口 ' + DISCOVERY_PORT.toString() + '）')
 	return lanStatusText()
 }

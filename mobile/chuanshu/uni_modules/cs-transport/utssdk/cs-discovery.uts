@@ -404,6 +404,39 @@ export function applyTxt(roster: Roster, entries: string[], host: string, port: 
 	return learn(roster, made.prefix, host, port, '', made.name, made.version, VIA_MDNS, now)
 }
 
+/** The four answers a host can act on when it re-asks, on its announcement beat, whether the DNS-SD
+ *  record it published is still the announcement it would send now.
+ *
+ *  Spec §2 makes the record and the packet the same claim about one socket, and a reader cannot tell
+ *  which of the two its platform answered first - so a record that outlives its listener is the
+ *  undialable machine §2 forbids, and a record left on the old port after the listener restarted
+ *  answers the same question twice with two numbers. Before #204 the phone hosts asked once, at
+ *  `start()`: 停止接收 quieted the broadcast (the beat re-reads `livePort`) while the name stayed in
+ *  everyone's DNS-SD roster. `registered` is the announcement text this end published, '' when nothing
+ *  is registered; `current` is what the provider answers now, '' when this end has no open port.
+ *
+ *  `replace` is not `publish`: Android's NsdManager refuses a second `registerService` while the first
+ *  registration is still held, so a change has to be withdrawn and its receipt awaited before the new
+ *  record goes up. The PC gets all four for free by building and tearing down the whole discovery
+ *  service with the listener (`app/ui/transfer.py`). */
+export const PUBLISH_KEEP: string = 'keep'
+export const PUBLISH_WITHDRAW: string = 'withdraw'
+export const PUBLISH_FIRST: string = 'publish'
+export const PUBLISH_REPLACE: string = 'replace'
+
+export function publishAction(registered: string, current: string): string {
+	if (registered == current) {
+		return PUBLISH_KEEP
+	}
+	if (current == '') {
+		return PUBLISH_WITHDRAW
+	}
+	if (registered == '') {
+		return PUBLISH_FIRST
+	}
+	return PUBLISH_REPLACE
+}
+
 /** What the panel says when a candidate list is empty: which path died and why, so a person is told
  *  to use the code instead of staring at a blank card (spec §2). */
 export function channelNote(roster: Roster): string {
@@ -564,6 +597,18 @@ export function selfReport(): string {
 	check('§2 没在监听时这一格的答案是「别说」', livePort(false, 43720) == 0)
 	check('§2 端口为 0 的那一条进不了任何人的名单', applyAnnounce(newRoster(SELF),
 		buildAnnounce('ghost', livePort(false, 43720), '停了接收的手机', PC, 1000), '192.168.1.40', 1000) == false)
+
+	// 12. §2.1's record is the same claim as the packet, asked again on the same beat rather than once when
+	//     the channel opened (#204). The four answers are what the phone hosts act on, so the discrimination
+	//     - a closed listener withdraws, a moved port replaces, nothing published and nothing to publish is
+	//     left alone - is run here and mirrored by every host that registers a service.
+	const OPEN_A = '{"port":43720,"fp":"' + PC + '"}'
+	const OPEN_B = '{"port":44100,"fp":"' + PC + '"}'
+	check('§2.1 公告没变的那一拍不动已经注册的那一条', publishAction(OPEN_A, OPEN_A) == PUBLISH_KEEP)
+	check('§2.1 接收停了，DNS-SD 那一条要撤掉', publishAction(OPEN_A, '') == PUBLISH_WITHDRAW)
+	check('§2.1 端口换了是撤了重注册，不是留着旧的那个号', publishAction(OPEN_A, OPEN_B) == PUBLISH_REPLACE)
+	check('§2.1 从没注册到该注册算第一次', publishAction('', OPEN_A) == PUBLISH_FIRST)
+	check('§2.1 撤干净了且这一拍仍不该播，就什么都不做', publishAction('', '') == PUBLISH_KEEP)
 
 	out.push(fail == 0 ? '发现自检 ' + pass.toString() + ' 项全部通过' : '发现自检失败 ' + fail.toString() + ' 项，通过 ' + pass.toString() + ' 项')
 	return out.join('\n')

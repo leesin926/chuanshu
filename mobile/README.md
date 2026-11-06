@@ -1226,7 +1226,8 @@ py -X utf8 scripts/check_protocol.py
       （待办 45 那条 ABI 边界还卡着）；② **mDNS 那一支的生命周期**——注册只在发现通道起来那一刻问一次端口，所以
       "先开监听、关掉、再开"的这一端今天只回到 UDP 名单，DNS-SD 要等通道重开。补它要的是各平台的注销/重注册路径
       （`NsdManager.unregisterService` + 鸿蒙 `removeLocalService` + 监听状态变化时回调一次），这一格需要设备档才能证明，
-      所以顺序上仍是待办 45 在前。
+      所以顺序上仍是待办 45 在前。**②已在第三十七轮（#204）把身体补齐**：注册改成跟着公告那一拍重问，四选一的判据在
+      `cs-discovery.uts::publishAction`，安卓挂在公告线程、鸿蒙挂在 `discBeat()`；**设备档那一半仍然欠着**，见待办 51。
     - **两个档口的坑，记下来免得再付一次账**：① 浏览器穿透模块缓存要把 `?fresh=` 打在 **search 段**
       （`http://localhost:5173/?fresh=r34b#/pages/me/me`）——打在 hash 里读到的还是上一版（本轮第一次就量到 29 项那版）；
       ② 编译门还在跑的时候往 `protocol/spec.md` 这类文件里写会撞 `OSError 22`，负向集的写回因此加了重试；
@@ -1277,6 +1278,40 @@ py -X utf8 scripts/check_protocol.py
       （`.probe/r36_smoke_linux.log`）——所以那是探针脚下的环境，不是产品回归；分辨的办法是先问 `getmouselocation`，
       不是重跑脚本。包内 `QtSvg.abi3.so` 与 `imageformats/libqsvg.so` 都在，CLI 四条腿全过，而**"文件在"不等于
       "屏上有二维码"**——后者只有这条腿能给，今天它给了。手机端自己的账没变：待办 45/49 那几笔设备读数仍然欠着。
+
+51. **#204：第三十七轮把 §2.1 那条注册的生命周期补成身体——DNS-SD 记录从此跟着公告那一拍重问（守卫 36 行、门禁 300、负向 18 处、发现自检 37 项、两道编译门）**
+    - **这一格跟手机端有什么关系**：改前手机"关接收"之后 UDP 名单里 3 s 内就没这台机器了（第三十四轮的
+      `livePort`），但**它注册出去的那条 mDNS 记录还挂在别人的名单里，端口是刚关掉的那一个**；"重开换了端口"
+      更糟——广播念新号、记录念旧号，而名单合并按"哪条通道先答"取地址与端口，同一个人拨到哪个看对端平台先回哪条。
+      这不是理论：安卓 `register()` 全文只有一个调用点（`startMdns()`），鸿蒙 `discPublish()` 只有一个（`lanOpen()`），
+      而鸿蒙自己的注释就写着 "registered once per discovery session … not in DNS-SD until the channel is reopened —
+      recorded as 待办 rather than papered over"（待办 48②）。**教训的一半在这里**：宿主代码里那些"记为待办/这一步
+      没在这里做"的句子，本身就是巡检的输入，比从纸面顺读更容易找到。
+    - **补法（两端各不同，是因为平台给的把手不同）**：判据在共用内核 `cs-discovery.uts::publishAction(registered,
+      current)`，四选一 keep/withdraw/publish/replace，`registered` 是"这具身体已经发出去的那条公告"、`current`
+      是提供者这一拍的答案（没监听就 `''`）。安卓 `CsDiscovery.kt`：公告线程每一拍多问一次 `reconcileMdns(provider)`，
+      文本变了就**先 `unregisterService` 再等 `onServiceUnregistered` 回执里注册新的**——NsdManager 在同一个名字还挂着
+      注册时拒绝第二次 `registerService`，所以"先撤再注册"是被平台逼出来的顺序，`pendingText` 挡住在飞时叠第二次。
+      鸿蒙 `app-harmony/index.uts`：那一拍从"广播套接字 bind 成功之后的 promise"里提出来变成 `discBeat()`，由
+      `lanOpen` 起、`discCloseUdp` 停；签名字符串直接用公告本文（`discRecordText()` 就是 `discAnnounce()` 的答案），
+      不在宿主里重算一份 name+port+TXT——两条通道从此不可能各念各的。**为什么值得动那一处结构**：多播被拦的那一档
+      （合同 §2.2 点名的卓易通）恰好是最需要 DNS-SD 的一端，让"重问记录"寄生在广播套接字成功的 promise 里，等于
+      在最需要它的时候恰好把它关掉。
+    - **iOS 那一支本轮不动，并且不是遗漏**：`CsDiscovery.swift` 的 `publish()` 同样只由 `startBonjour()` 调一次，形状
+      一模一样；但这个平台 2026-10-24 已终止（见平台口径那节），既没有编译门也没有出包，改一段本机编不了的 Swift
+      只会制造一个**不能证的"已修"**。要恢复 iOS 时，这一格与待办 45 那几笔设备读数一起补。
+    - **档位（这一轮哪些是真跑出来的）**：门禁 `298 → 300`（`.probe/r37_gate.txt`，两条新腿用记账的假 `Zeroconf`
+      读到 `注册 57873 → 撤掉 57873 → 注册 57872`，两个端口都是同一趟 `ReceiveService` 真绑上的号）；守卫 **36 行 OK**
+      （新增 `check_record_follows_beat()`，另把第三十四轮那条已经搬家的 needle 改口）；负向 **18 处各红一次**
+      （`.probe/r37_negatives.txt`，未红/错红 0）；浏览器 `发现自检 37 项全部通过`（32 → 37，新五条就是四选一那四个
+      答案加"空对空什么都不做"）；两道编译门各 `项目 chuanshu 编译成功。` 并回查产物（Kotlin 13 处 `reconcileMdns`/
+      `pendingText`、`classes.dex` 里有 `publishAction`；ArkTS `index.ets` 18 处新符号）。**编译器那一关还抓到一件
+      省事的事**：`cli launch app-android --compile true` 在 HBuilderX 没开着时不报错，只回一句 `已停止运行` 且 `rc=0`——
+      所以看的是日志里那句 `项目 chuanshu 编译成功。`，先 `cli open` 再跑（本轮第一遍就是这么"绿"过一次）。
+    - **仍然欠的那一半，只有设备能给**：以上五档证的都是"我这具身体会不会撤/换自己那条记录"；合同这句话的真正读者
+      是**对面那台机器**——需要两台设备（或一台手机 + 一台 PC 在同一 LAN），在关掉手机接收后的 3 s 内看 PC 的
+      `peers` 名单里那条 DNS-SD 行是否消失、重开换端口后名单里那个端口是否只有一个。这一笔与待办 45/49 一起排在
+      设备恢复之后；设备档今天按用户的话暂停。
 
 M2a 的最小切口是"手机发、PC 收"：扫（或粘贴）PC 的二维码拿到地址与完整指纹，用户只核对同屏的
 一次性配对码——PC 侧接收端已经跑绿，手机只要把

@@ -2027,6 +2027,49 @@ def phase_discovery(proto: protocol_spec.Protocol, workspace: Path) -> None:
             else:
                 sys.modules["zeroconf"] = real_zeroconf
 
+        # 第三十七轮（#204）：§2.1 那条记录与 §2.2 那一拍是同一个断言的两个副本，所以「接收停了就停、端口换了
+        # 就播新那个」也要落在注册上。PC 两端今天不犯，因为整 DiscoveryService 随监听建拆（`transfer.py:1484`
+        # 起、`1496` 停）；这两条腿钉的就是那个参照——一次关掉必须撤掉记录，一次重开必须注册这一次真绑上的
+        # 端口。手机那一半改的就是这两件事（CsDiscovery.kt 的 reconcileMdns、鸿蒙的 discBeat）。
+        acts: list[str] = []
+
+        class _CycleZeroconf:
+            def register_service(self, info):  # noqa: ANN001 - zeroconf's own shape
+                acts.append(f"注册 {info.port}")
+
+            def unregister_service(self, info):  # noqa: ANN001
+                acts.append(f"撤掉 {getattr(info, 'port', '?')}")
+
+            def close(self) -> None:
+                pass
+
+        class _CycleServiceInfo:
+            def __init__(self, *args, **kwargs) -> None:  # noqa: ANN003 - the stub keeps what it is handed
+                self.port = kwargs.get("port")
+
+        cycle = types.ModuleType("zeroconf")
+        cycle.Zeroconf = _CycleZeroconf
+        cycle.ServiceInfo = _CycleServiceInfo
+        cycle.ServiceBrowser = _FakeBrowser
+        real_zeroconf = sys.modules.get("zeroconf")
+        sys.modules["zeroconf"] = cycle
+        try:
+            first = DiscoveryService(a_id, "PC-第一趟监听", b_svc.port)
+            first._start_mdns()
+            first.stop()
+            check("§2.1 关掉发现通道时那条 DNS-SD 记录一起撤了",
+                  acts == [f"注册 {b_svc.port}", f"撤掉 {b_svc.port}"], acts)
+            second = DiscoveryService(a_id, "PC-换端口后重开", a_svc.port)
+            second._start_mdns()
+            check("§2.1 重开监听时注册的是这一次真绑上的端口，不是上一次那个",
+                  acts[-1] == f"注册 {a_svc.port}" and a_svc.port != b_svc.port, (acts, a_svc.port, b_svc.port))
+            second.stop()
+        finally:
+            if real_zeroconf is None:
+                sys.modules.pop("zeroconf", None)
+            else:
+                sys.modules["zeroconf"] = real_zeroconf
+
         # 第三十六轮（#203）：§2.1 那条 mDNS 路径上 `fp` 不是可选字段——没有它，一个解析到的服务只是
         # 一个名字加一个地址，"没有东西可钉"，而 §2 明写 Presence is not trust。安卓那侧的写法是把整条
         # 通道判不可用（CsDiscovery.kt: SDK_INT < 28 时 TXT 带不出 fp），内核与 iOS 的读者则丢弃无摘要的记录；

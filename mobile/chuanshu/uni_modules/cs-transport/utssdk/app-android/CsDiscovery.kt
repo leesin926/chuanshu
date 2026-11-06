@@ -62,6 +62,20 @@ object CsDiscovery {
     private var registration: NsdManager.RegistrationListener? = null
     private var discovery: NsdManager.DiscoveryListener? = null
 
+    /** The announcement this end put on the air as a DNS-SD record, and the one waiting for the platform
+     *  to confirm the previous record is gone before it goes up. Spec §2.1 makes the record the same claim
+     *  as the packet beside it, so the beat that re-reads the port has to re-read the record too - before
+     *  #204 `register()` had exactly one caller, `startMdns()`, and a phone that stopped receiving kept
+     *  announcing nothing while its name stayed in everyone's roster with a port nobody answers.
+     *  `pendingText` is not a nicety: NsdManager refuses a second `registerService` while the first
+     *  registration is still held, so a change is withdrawn first and registered from the goodbye. */
+    @Volatile
+    private var publishedText = ""
+
+    @Volatile
+    private var pendingText: String? = null
+    private var mdnsServiceType = ""
+
     /** A DNS-SD goodbye names the service, not the machine, and the roster is keyed by fingerprint
      *  prefix - so the name that resolved to which prefix is remembered here, exactly as the PC's
      *  `_mdns_names` does. Only touched on the main thread, which is where every Nsd callback runs. */
@@ -311,6 +325,7 @@ object CsDiscovery {
             // should appear on the desktop within a second, not after the first full interval.
             while (running) {
                 announceOnce(provider)
+                reconcileMdns(provider)
                 try {
                     Thread.sleep(intervalS.coerceAtLeast(1L) * 1000L)
                 } catch (e: InterruptedException) {
@@ -442,6 +457,9 @@ object CsDiscovery {
             return
         }
         nsd = manager
+        mdnsServiceType = serviceType
+        publishedText = ""
+        pendingText = null
         // NsdManager builds a Handler on the calling thread's Looper. This runs on the discovery
         // starter's thread, which has none, so the calls belong on the main one.
         main.post {
@@ -480,6 +498,7 @@ object CsDiscovery {
             // port, and the reason is named rather than left as a channel that looks broken.
             mdnsState = "stopped"
             mdnsDetail = "本机没在接收，所以这一趟没注册 mDNS 服务"
+            publishedText = ""
             return
         }
         val made = try {
@@ -524,23 +543,91 @@ object CsDiscovery {
                 mdnsState = "unavailable"
                 mdnsDetail = "mDNS 注册失败（错误码 $errorCode）"
                 note(mdnsDetail)
+                // Nothing is on the air, so nothing may be remembered as published: the next beat asks
+                // again instead of concluding the record already says this port.
+                publishedText = ""
+                registration = null
             }
 
             override fun onServiceUnregistered(info: NsdServiceInfo?) {
                 note("mDNS 已注销")
+                registration = null
+                val next = pendingText
+                pendingText = null
+                if (next == null || !running || nsd == null) {
+                    return
+                }
+                // A goodbye is the only moment this name is free to take again, which is why a changed
+                // announcement waits for it instead of calling registerService beside the old one. An
+                // empty `next` is the withdrawal §2 asks for when the listener closed - nothing follows.
+                publishedText = ""
+                if (next != "") {
+                    val text = next
+                    register(mdnsServiceType, { text })
+                } else {
+                    // The withdrawal was the answer to "this end is not receiving", so the channel says
+                    // that rather than keeping a state that describes a record no longer on the air.
+                    mdnsState = "stopped"
+                    mdnsDetail = "本机没在接收，这一趟把 mDNS 记录撤了"
+                    note(mdnsDetail)
+                }
             }
 
             override fun onUnregistrationFailed(info: NsdServiceInfo?, errorCode: Int) {
                 note("mDNS 注销失败（错误码 $errorCode）")
+                // The record is still on the air, so it is still what this end published: clearing the
+                // in-flight marker lets the next beat withdraw it again instead of leaving it forever.
+                pendingText = null
             }
         }
         registration = listener
         try {
             manager.registerService(info, NsdManager.PROTOCOL_DNS_SD, listener)
+            publishedText = text
         } catch (e: Throwable) {
             mdnsState = "unavailable"
             mdnsDetail = "$e"
             note("mDNS 注册没发出去：$e")
+            registration = null
+            publishedText = ""
+        }
+    }
+
+    /** Re-ask the DNS-SD record on the beat the announcement goes out (spec §2.1, #204).
+     *
+     *  Before this, `register()` had exactly one caller - `startMdns()` - so a phone that stopped
+     *  receiving or restarted its listener kept the record it made when the channel opened: the packet
+     *  went quiet, the name stayed, and a browser dialled the port inside a record nobody answers.
+     *  `pendingText` is the in-flight marker; two acts on one name at once is what NsdManager refuses. */
+    private fun reconcileMdns(provider: () -> String) {
+        if (!running || nsd == null || pendingText != null) {
+            return
+        }
+        val text = try {
+            provider()
+        } catch (e: Throwable) {
+            return
+        }
+        if (text == publishedText) {
+            return
+        }
+        main.post {
+            val manager = nsd
+            val held = registration
+            if (manager == null || !running) {
+                return@post
+            }
+            if (held == null) {
+                register(mdnsServiceType, provider)
+            } else {
+                pendingText = text
+                try {
+                    manager.unregisterService(held)
+                } catch (e: Throwable) {
+                    pendingText = null
+                    note("mDNS 注销没发出去：$e")
+                }
+            }
         }
     }
 
@@ -666,6 +753,8 @@ object CsDiscovery {
         discovery = null
         registration = null
         nsd = null
+        publishedText = ""
+        pendingText = null
         try {
             if (manager != null && held != null) {
                 manager.stopServiceDiscovery(held)
