@@ -2133,6 +2133,105 @@ def phase_discovery(proto: protocol_spec.Protocol, workspace: Path) -> None:
               len([p for p in b.candidates() if p.prefix == gone_prefix]) == 1
               and arrived[0].via == set() and resolver.asks == [gone_name],
               (len(resolver.asks), resolver.asks))
+
+        # 第三十九轮（#206）：§2 把"跟着监听"这一句拆成了两路。**播**（公告 + 注册）跟着端口起落，
+        # **听**（DNS-SD 浏览 + 43721 收包）不跟着——命令行的 `peers` 一直是这一形的标本，而 PC 图形端
+        # 过去把整具服务随监听建拆，于是"我只想发文件"的人关掉接收之后连设备都找不到了。这几条腿量的是
+        # `set_port()` 那一步到底动了哪两路、没动哪一路，顺带把 §1 的改名接在同一条判断上。
+        acts: list[str] = []
+        sent: list[dict] = []
+
+        class _SplitZeroconf:
+            def register_service(self, info):  # noqa: ANN001 - zeroconf's own shape
+                acts.append(f"注册 {info.port}")
+
+            def unregister_service(self, info):  # noqa: ANN001
+                acts.append(f"撤掉 {getattr(info, 'port', '?')}")
+
+            def close(self) -> None:
+                pass
+
+        class _SplitServiceInfo:
+            def __init__(self, *args, **kwargs) -> None:  # noqa: ANN003 - the stub keeps what it is handed
+                self.port = kwargs.get("port")
+                self.props = kwargs.get("properties") or {}
+
+        class _SplitBrowser:
+            def __init__(self, zc, service_type, listener) -> None:  # noqa: ANN001
+                acts.append("浏览起来")
+
+            def cancel(self) -> None:
+                acts.append("浏览被关")
+
+        class _CapturingBeacon:
+            def sendto(self, data, addr):  # noqa: ANN001 - socket.sendto's own shape
+                sent.append(json.loads(data.decode("utf-8")))
+
+            def close(self) -> None:
+                # stop() closes the socket it is handed, so the ledger needs the same goodbye.
+                pass
+
+        split = types.ModuleType("zeroconf")
+        split.Zeroconf = _SplitZeroconf
+        split.ServiceInfo = _SplitServiceInfo
+        split.ServiceBrowser = _SplitBrowser
+        real_zeroconf = sys.modules.get("zeroconf")
+        sys.modules["zeroconf"] = split
+        try:
+            quiet = DiscoveryService(a_id, "PC-只听不播", None)
+            quiet._start_mdns()
+            quiet._udp_socket = _CapturingBeacon()
+            quiet.announce()
+            check("§2 没在监听的一端：浏览与收包都留着，公告一条也不发",
+                  acts == ["浏览起来"] and sent == [] and quiet._browser is not None, (acts, sent))
+            acts.clear()
+            quiet.set_port(a_svc.port)
+            quiet.announce()
+            check("§2 报上端口之后公告与注册一起跟回来，说的就是这一个号",
+                  acts == [f"注册 {a_svc.port}"] and len(sent) == 1 and sent[0]["port"] == a_svc.port,
+                  (acts, sent))
+            acts.clear()
+            sent.clear()
+            quiet.set_port(b_svc.port)
+            check("§2 端口换了是撤了旧的再注册新的（第三十七轮那条规矩在 PC 这一端的同一形）",
+                  acts == [f"撤掉 {a_svc.port}", f"注册 {b_svc.port}"], acts)
+            acts.clear()
+            sent.clear()
+            quiet.set_port(None)
+            quiet.announce()
+            check("§2 关掉监听只撤播的那两路：记录下来了、浏览没人关",
+                  acts == [f"撤掉 {b_svc.port}"] and sent == [] and quiet._browser is not None, acts)
+            acts.clear()
+            sent.clear()
+            quiet.set_device_name("改名那台-PC")
+            quiet.announce()
+            check("§1 改名时这台没在监听：记录不该被注册回来，公告也照旧一条不发",
+                  acts == [] and sent == [], (acts, sent))
+            acts.clear()
+            quiet.set_port(a_svc.port)
+            quiet.announce()
+            check("§1 之后再开监听，注册与公告带的是同一个新名字，不是构造时那一个",
+                  acts == [f"注册 {a_svc.port}"] and bool(sent) and sent[0]["name"] == "改名那台-PC"
+                  and quiet._service_info is not None
+                  and quiet._service_info.props.get("name") == "改名那台-PC",
+                  (acts, sent[0]["name"] if sent else None,
+                   dict(quiet._service_info.props) if quiet._service_info else None))
+            acts.clear()
+            quiet.set_device_name("又改名那台-PC")
+            check("§1 开着监听再改名，是撤了旧的再注册新的",
+                  acts == [f"撤掉 {a_svc.port}", f"注册 {a_svc.port}"]
+                  and quiet._service_info is not None
+                  and quiet._service_info.props.get("name") == "又改名那台-PC",
+                  (acts, dict(quiet._service_info.props) if quiet._service_info else None))
+            acts.clear()
+            quiet.stop()
+            check("§2 关掉窗口才是把听也关掉的唯一一刻：浏览被取消、记录也撤了",
+                  "浏览被关" in acts and any(line.startswith("撤掉") for line in acts), acts)
+        finally:
+            if real_zeroconf is None:
+                sys.modules.pop("zeroconf", None)
+            else:
+                sys.modules["zeroconf"] = real_zeroconf
     finally:
         b.stop()
         a.stop()

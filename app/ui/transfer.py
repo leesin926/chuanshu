@@ -1456,6 +1456,24 @@ class TransferPanel(QWidget):
             on_withdrawn=self._offer_withdrawn.emit,
         )
 
+    def _ensure_discovery(self) -> DiscoveryService:
+        """The window's one discovery service, in hear-only form until a port is reported to it.
+
+        Spec §2 separates 播 from 听: this object starts with `port=None`, which announces nothing and
+        registers nothing (§2's no-listener end - the same shape `ChuanShu-cli peers` runs) while the mDNS
+        browse and the 43721 listener still fill 附近设备. Opening the port is then one call, not a rebuild.
+        """
+        if self._discovery is None:
+            self._discovery = DiscoveryService(
+                self.identity, self.device_name, None, on_change=self._peers_changed.emit
+            )
+            self._discovery.start()
+        elif self._discovery.device_name != self.device_name:
+            # 改名 is a settings write, and this window now keeps one service across 停止接收, so the new
+            # name has to be pushed into the beacons instead of arriving with a rebuilt object.
+            self._discovery.set_device_name(self.device_name)
+        return self._discovery
+
     def start_listening(self) -> None:
         if self._receiver is not None:
             return
@@ -1481,8 +1499,9 @@ class TransferPanel(QWidget):
         self._adopted = service.adopt_interrupted_offers()
         service.start()
         self._receiver = service
-        self._discovery = DiscoveryService(self.identity, self.device_name, service.port, on_change=self._peers_changed.emit)
-        self._discovery.start()
+        # The port came up, so this end's announcing halves follow it (§2): the beat starts naming this
+        # number and the DNS-SD record goes up. 听 was already running - it never waited for this moment.
+        self._ensure_discovery().set_port(service.port)
         self._timer.start(CODE_REFRESH_MS)
         # Announcing starts with the port: a machine that is up is a machine worth finding.
         self.qr_label.show()
@@ -1493,8 +1512,10 @@ class TransferPanel(QWidget):
     def stop_listening(self) -> None:
         self._timer.stop()
         if self._discovery is not None:
-            self._discovery.stop()
-            self._discovery = None
+            # Only the announcing halves stop: the record comes down and the beat goes quiet, while the
+            # browser and the 43721 listener stay - a person who turned receiving off may still want to
+            # find someone to send to (spec §2, and the reason 附近设备 used to empty out here).
+            self._discovery.set_port(None)
         if self._receiver is not None:
             self._receiver.stop()
             self._receiver = None
@@ -1828,7 +1849,10 @@ class TransferPanel(QWidget):
         if holder is not None:
             return _("一次只连一台，现在连着 {name}。要换设备先点「断开」。").format(name=holder.name or holder.prefix)
         if self._discovery is None:
-            return _("自动发现没有运行。点「手输地址…」填对方地址，或粘贴它的配对串。")
+            # Only reachable in the moments before the window finishes building or after it closes: the
+            # listener is up for the whole life of the page now, including while 接收 is off, so this says
+            # what the list looks like rather than blaming a mode the person could not be in.
+            return _("附近暂时没有广播出来的设备。点「手输地址…」填对方地址，或让它扫上面的码。")
         count = len(self._candidate_peers())
         if not count:
             return _("附近暂时没有广播出来的设备。点「手输地址…」填对方地址，或让它扫上面的码。")
@@ -2952,6 +2976,10 @@ class TransferPanel(QWidget):
         for holder in pending:
             holder["event"].set()
         self.stop_listening()
+        # Closing the window is the one moment 听 is allowed to stop too: the process is leaving the LAN.
+        if self._discovery is not None:
+            self._discovery.stop()
+            self._discovery = None
         for conn in self._sessions.values():
             self._close_quietly(conn)
         self._sessions.clear()

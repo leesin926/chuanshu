@@ -2550,8 +2550,8 @@ def check_channels_with_listener() -> None:
     flat = re.sub(r"\s+", "", section)
     for needle, why in (
         ("这一条**不挂在人手里**", "the channels are not a feature switch"),
-        ("接收一开，这两通道（广播与听）就跟着开", "and what they ride on instead: the listener"),
-        ("人把它关掉是一个决定", "a hand that stopped them is honoured, not overruled"),
+        ("接收一开，播的那两路（公告与注册）就跟着开", "and what they ride on instead: the listener"),
+        ("人把通道关掉是另一个决定", "a hand that stopped them is honoured, not overruled"),
         ("屏上要说得出为什么并给出 §2.3 那条出口", "a channel that cannot start is named, per §2.3"),
     ):
         if re.sub(r"\s+", "", needle) not in flat:
@@ -2586,9 +2586,9 @@ def check_channels_with_listener() -> None:
     transfer_py = (root / "app" / "ui" / "transfer.py").read_text(encoding="utf-8")
     cli_py = (root / "app" / "cli.py").read_text(encoding="utf-8")
     gate = (root / "scripts" / "protocol_selftest.py").read_text(encoding="utf-8")
-    if "DiscoveryService(self.identity, self.device_name, service.port" not in transfer_py:
-        fail("the PC window no longer starts discovery from the port it actually bound - the reference shape "
-             "the phones are measured against")
+    if "self._ensure_discovery().set_port(service.port)" not in transfer_py:
+        fail("the PC window no longer hands discovery the port it actually bound - the reference shape "
+             "the phones are measured against (it moved from a rebuild to one call, #206)")
     if "discovery = DiscoveryService(identity, device_name(settings), service.port)" not in cli_py:
         fail("`ChuanShu-cli receive` no longer announces the port it is listening on")
     if 'self._spawn(self._announce_loop, "announce")' not in discovery_py:
@@ -2919,6 +2919,91 @@ def check_mdns_goodbye_names_a_service() -> None:
              f"never executed before #205")
 
 
+def check_hearing_outlives_the_port() -> None:
+    """§2 splits 跟着监听 in two: 播 (the beat and the record) rides the port, 听 (browse and the listener) does not (#206).
+
+    Measured by walking the one route a sender-only person takes - open 传书, turn 接收 off, look for a device.
+    PC's window answered 「自动发现没有运行。点「手输地址…」」: the whole DiscoveryService was built with the
+    port and torn down with it (`transfer.py:1484`/`1495-1497`), so finding someone cost binding a receiving
+    port and a firewall rule first. `ChuanShu-cli peers` (`app/cli.py:547`) and the phones - where
+    `onRecvListenStop()` closes the port and touches neither channel - had always heard without being heard.
+    The paper's 「这两通道（广播与听）就跟着开」 described only the opening, and one body read it as a closing.
+    """
+    root = HERE.parent
+    discovery_py = (root / "app" / "net" / "discovery.py").read_text(encoding="utf-8")
+    transfer_py = (root / "app" / "ui" / "transfer.py").read_text(encoding="utf-8")
+    cli_py = (root / "app" / "cli.py").read_text(encoding="utf-8")
+    session = (HERE / "chuanshu" / "store" / "session.uts").read_text(encoding="utf-8")
+
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    section = spec.split("## 2.", 1)[1].split("\n## ", 1)[0] if "## 2." in spec else ""
+    flat = re.sub(r"\s+", "", section)
+    for needle, why in (
+        ("播的那两路（公告与注册）就跟着开", "which halves ride the listener"),
+        ('**而"看见别人"不挂在这上面**', "and which half never did"),
+        ("任何一端任何时候都可以只听不播", "hearing without being heard is a first-class mode"),
+        ("命令行的 `peers` 就是这一形的标本", "the body that already proves it"),
+        ("替一个只想发文件的人决定了他必须先开接收", "the cost the wrong split puts on a person"),
+    ):
+        if re.sub(r"\s+", "", needle) not in flat:
+            fail(f"§2 no longer says {needle!r} - {why}")
+
+    body = json.loads((CONTRACT / "protocol.json").read_text(encoding="utf-8-sig"))
+    note = re.sub(r"\s+", " ", body["discovery"]["note"])
+    for needle, why in (
+        ("Hearing is not one of those halves", "the machine-readable split"),
+        ("pay for a port they never needed", "and the reason it is a rule rather than a nicety"),
+    ):
+        if needle not in note:
+            fail(f"discovery.note no longer says {needle!r} - {why}")
+
+    if "def set_port(self, port: int | None) -> None:" not in discovery_py:
+        fail("DiscoveryService can no longer be told that the port came or went, which is the one call that "
+             "keeps 播 riding the listener without dragging 听 along")
+    if "if port is None or self._service_info is not None:" not in discovery_py:
+        fail("set_port registers a moved port over the record still held for the old one - §2.1's "
+             "撤了再注册 (#204) applies to PC too, and the gate reads exactly that pair of calls")
+    if "if self.port is not None:\n            self._spawn(self._announce_loop" in discovery_py:
+        fail("the announce thread is back to being the port's servant - `announce()` already answers that "
+             "question, and two copies of it drift")
+    withdraw = discovery_py.split("def _withdraw_mdns", 1)[1].split("\n    def ", 1)[0] if "def _withdraw_mdns" in discovery_py else ""
+    if "self._service_info = None" not in withdraw or "unregister_service" not in withdraw:
+        fail("withdrawing the record no longer leaves a clean handle, so a restart would register twice or "
+             "the stop would unregister it twice")
+    if "browser" not in discovery_py.split("def set_port", 1)[1][:900]:
+        fail("set_port no longer names the half it must not touch - the sentence a future reader needs to "
+             "keep hearing alive while the port is closed")
+
+    listen = transfer_py.split("def start_listening(self)", 1)[1].split("\n    def ", 1)[0] if "def start_listening(self)" in transfer_py else ""
+    if "self._ensure_discovery().set_port(service.port)" not in listen:
+        fail("the PC window no longer reports its bound port to a running discovery service")
+    stop = transfer_py.split("def stop_listening(self)", 1)[1].split("\n    def ", 1)[0] if "def stop_listening(self)" in transfer_py else ""
+    # The ban goes first: `stop()` in here also deletes the `set_port(None)` line, and a FAIL that only says
+    # "the announcing halves were not quieted" would blame the wrong thing for the round's own regression.
+    if "self._discovery.stop()" in stop:
+        fail("stopping 接收 is back to tearing discovery down - that is the split #206 wrote out of the paper: "
+             "a person who only wants to send loses 附近设备 with it")
+    if "self._discovery.set_port(None)" not in stop:
+        fail("stopping 接收 no longer quiets the announcing halves")
+    if "自动发现没有运行" in transfer_py:
+        fail("the screen still says 自动发现没有运行, a state the app can no longer be in outside construction")
+    if 'DiscoveryService(identity, device_name(settings), None)' not in cli_py:
+        fail("`ChuanShu-cli peers` is no longer the browse-only specimen §2 points at")
+
+    halt = session.split("export function onRecvListenStop()", 1)[1].split("\n}", 1)[0] if "export function onRecvListenStop()" in session else ""
+    if "lanClose" in halt or "toggleDiscovery" in halt or "discStop" in halt:
+        fail("the phone now closes the hearing halves with the port too - §2 puts 听 outside that coupling")
+
+    gate = (root / "scripts" / "protocol_selftest.py").read_text(encoding="utf-8")
+    legs = len(re.findall(r'check\("§2 (没在监听的一端：浏览与收包都留着|报上端口之后公告与注册一起跟回来|'
+                          r'端口换了是撤了旧的再注册新的|关掉监听只撤播的那两路|关掉窗口才是把听也关掉的唯一一刻)', gate)) + \
+        len(re.findall(r'check\("§1 (改名时这台没在监听|之后再开监听，注册与公告带的是同一个新名字|'
+                       r'开着监听再改名，是撤了旧的再注册新的)', gate))
+    if legs < 8:
+        fail(f"the gate runs {legs} of the 8 legs that measure which halves `set_port` moves - 播 riding the "
+             f"port and 听 staying are two different assertions, and only the legs tell them apart")
+
+
 def main() -> int:
 
     stamp_path = CONTRACT / "SOURCE.json"
@@ -3003,6 +3088,7 @@ def main() -> int:
     check_mdns_needs_fp()
     check_record_follows_beat()
     check_mdns_goodbye_names_a_service()
+    check_hearing_outlives_the_port()
 
     print(f"OK  protocol v{body['protocol_version']} from {stamp['source_repo']}@{stamp['source_commit'][:8]}")
     print(f"OK  {len(body['error_codes'])} error codes, {len(body['endpoints'])} endpoints, chunk {chunk // 1024} KiB")
@@ -3059,6 +3145,9 @@ def main() -> int:
           "it before registering again, and the PC's build-with-the-listener shape is measured by two gate legs")
     print("OK  §2.1's goodbye names the service, not the machine: all four readers withdraw only that channel "
           "while an unmatched goodbye is left to the 15 s window - PC's two were executed for the first time")
+    print("OK  §2 splits 跟着监听 in two: the beat and the record ride the port, the browse and the 43721 "
+          "listener do not - the PC window reports its port instead of rebuilding discovery, and the phone's "
+          "停止接收 still touches neither channel")
     return 0
 
 

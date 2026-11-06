@@ -1152,6 +1152,16 @@ def phase_firewall(app: QApplication, panel) -> None:
           panel.firewall_label.text())
     panel.stop_listening()
     check("closing the port drops the verdict with it", panel.firewall_label.text() == "", panel.firewall_label.text())
+    # 第三十九轮（#206）：同一句话里两路各去各的。**播**跟着端口下来，**听**留在窗口活着——过去这里
+    # 是整具 DiscoveryService 一起拆掉，于是关掉接收的人连"附近设备"都看不到，屏上还有一句
+    # 「自动发现没有运行」把这件事说成一个模式。现在端口关了，端口号是 None，对象还在。
+    check("§2 closing the port still quiets the announcing halves", panel._discovery.port is None,
+          panel._discovery.port)
+    check("§2 and it leaves the hearing half running", panel._discovery is not None
+          and "mdns" in panel._discovery.channels and panel._discovery.channels["udp"].state in {"ok", "unavailable"},
+          {name: channel.state for name, channel in panel._discovery.channels.items()})
+    check("§2 the device line no longer blames a mode the person cannot be in",
+          "自动发现没有运行" not in panel.nearby_label.text(), panel.nearby_label.text())
     panel.start_listening()
     app.processEvents()
 

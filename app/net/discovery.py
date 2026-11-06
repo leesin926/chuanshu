@@ -182,14 +182,36 @@ class DiscoveryService:
         self._stop.clear()
         self._start_mdns()
         self._start_udp()
-        if self.port is not None:
-            self._spawn(self._announce_loop, "announce")
+        # The beat always runs. Whether a packet leaves is decided by `announce()` looking at `self.port`,
+        # the same question §2 asks; keeping it a thread-lifecycle flag instead would put a second copy of
+        # that answer somewhere that can forget to move with `set_port()`.
+        self._spawn(self._announce_loop, "announce")
         self._spawn(self._sweep_loop, "sweep")
         log.info(
             "discovery started on %s (channels: %s)",
             self.prefix,
             {name: channel.state for name, channel in self.channels.items()},
         )
+
+    def set_port(self, port: int | None) -> None:
+        """Tell a running service that this machine's receiving socket came up or went down.
+
+        Spec §2 ties *being found* to the listener and leaves *finding others* alone, so this moves the two
+        announcing halves - the 3 s beat and the DNS-SD record - and nothing else: the browser and the 43721
+        listener keep running. That split matters to a person who only wants to send: `ChuanShu-cli peers`
+        has always been a machine that hears without being heard, and a window that tore discovery down on
+        停止接收 made finding a device cost a port bind and a firewall rule first.
+        """
+        if port == self.port:
+            return
+        self.port = port
+        if port is None or self._service_info is not None:
+            # §2.1: a moved port is withdrawn and registered again, not overwritten in place - the same
+            # rule the phone hosts act on (#204), and the gate reads it off the ledger of both calls.
+            self._withdraw_mdns()
+        if port is not None:
+            self._publish_mdns()
+        log.info("discovery announcing %s", self.port if port is not None else "nothing (no listener)")
 
     def stop(self) -> None:
         self._stop.set()
@@ -212,6 +234,18 @@ class DiscoveryService:
         for channel in self.channels.values():
             channel.state = "stopped"
 
+    def set_device_name(self, name: str) -> None:
+        """Rename what the beacons say. §1 makes the name the person's to change, and both announcing
+        halves carry it - the beat builds a packet from it every 3 s, the record keeps it in TXT - so a
+        rename that reached only one of them would put two names for one machine on the LAN, which is the
+        shape §2 already forbids for a port."""
+        if name == self.device_name:
+            return
+        self.device_name = name
+        if self.port is not None:
+            self._withdraw_mdns()
+            self._publish_mdns()
+
     def _spawn(self, target, name: str) -> None:
         thread = threading.Thread(target=target, name=f"chuanshu-{name}", daemon=True)
         self._threads.append(thread)
@@ -222,38 +256,67 @@ class DiscoveryService:
     def _start_mdns(self) -> None:
         channel = self.channels["mdns"]
         try:
-            from zeroconf import ServiceBrowser, ServiceInfo, Zeroconf
+            from zeroconf import ServiceBrowser, Zeroconf
         except ImportError:
             channel.state, channel.detail = "unavailable", "zeroconf is not installed"
             log.warning("mDNS disabled: zeroconf is not installed")
             return
 
         service_type = self.proto.mdns_service_type
-        instance = f"{self.proto.technical_name}-{self.identity.peer_id[:8]}"
-        host = local_ipv4()
         try:
             self._zeroconf = Zeroconf()
-            if self.port is not None:
-                self._service_info = ServiceInfo(
-                    service_type,
-                    f"{instance}.{service_type}",
-                    addresses=[socket.inet_aton(host)],
-                    port=self.port,
-                    properties={
-                        "ver": str(self.proto.version),
-                        "name": self.device_name,
-                        "fp": self.prefix,
-                        "ts": str(self.started_at),
-                    },
-                    server=f"{instance}.local.",
-                )
-                self._zeroconf.register_service(self._service_info)
-                self._mdns_host = host
+            self._publish_mdns()
             self._browser = ServiceBrowser(self._zeroconf, service_type, listener=_MdnsListener(self))
             channel.state = "ok"
         except Exception as error:  # noqa: BLE001 - a broken multicast stack is not fatal
             channel.state, channel.detail = "unavailable", str(error)
             log.warning("mDNS registration failed: %s", error)
+
+    def _publish_mdns(self) -> None:
+        """Put this end's own record on the air - the DNS-SD half of the claim §2 makes about a socket."""
+        if self._zeroconf is None or self.port is None:
+            return
+        from zeroconf import ServiceInfo
+
+        host = local_ipv4()
+        instance = f"{self.proto.technical_name}-{self.identity.peer_id[:8]}"
+        self._service_info = ServiceInfo(
+            self.proto.mdns_service_type,
+            f"{instance}.{self.proto.mdns_service_type}",
+            addresses=[socket.inet_aton(host)],
+            port=self.port,
+            properties={
+                "ver": str(self.proto.version),
+                "name": self.device_name,
+                "fp": self.prefix,
+                "ts": str(self.started_at),
+            },
+            server=f"{instance}.local.",
+        )
+        try:
+            self._zeroconf.register_service(self._service_info)
+        except Exception as error:  # noqa: BLE001 - the hearing half is still worth having
+            self._service_info = None
+            log.warning("mDNS register failed: %s", error)
+            return
+        self._mdns_host = host
+
+    def _withdraw_mdns(self) -> None:
+        """Take the record down, because §2 lets it say only what the port behind it is right now.
+
+        The browser stays: hearing is not the half this end is switching off. Clearing `_service_info` is
+        what keeps a later `stop()` from unregistering the same record twice, and clearing `_mdns_host`
+        makes the next `_publish_mdns` fill a fresh A record instead of trusting one from before.
+        """
+        if self._zeroconf is None or self._service_info is None:
+            return
+        try:
+            self._zeroconf.unregister_service(self._service_info)
+        except Exception as error:  # noqa: BLE001 - a stuck record is retryable, a crash is not
+            log.warning("mDNS withdraw failed: %s", error)
+            return
+        self._service_info = None
+        self._mdns_host = ""
 
     def _republish_address(self) -> None:
         """Move the published address when this machine's does, so the record says where it is.
