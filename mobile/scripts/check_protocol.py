@@ -2535,6 +2535,68 @@ def check_ask_verdict() -> None:
              "and `muteState` alone only ever measures the silence half")
 
 
+def check_channels_with_listener() -> None:
+    """§2's 监听常驻 names the listener, not a screen: the two channels come up with the port (#201).
+
+    Measured before this round: the phone's TLS listener starts by itself at `initSession`
+    (`store/session.uts`'s `initReceivePanel` → `onRecvListen`) while both discovery channels sat behind
+    the 找局域网设备 button. A receiving phone therefore did not announce at all until somebody opened that
+    page - the peer's list simply lacked it, and no card on either end explained the difference. The
+    multicast permission was never the blocker (`app-android/config.json` has had
+    CHANGE_WIFI_MULTICAST_STATE since #90); the missing piece was one call.
+    """
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    section = spec.split("## 2.", 1)[1].split("\n## ", 1)[0] if "## 2." in spec else ""
+    flat = re.sub(r"\s+", "", section)
+    for needle, why in (
+        ("这一条**不挂在人手里**", "the channels are not a feature switch"),
+        ("接收一开，这两通道（广播与听）就跟着开", "and what they ride on instead: the listener"),
+        ("人把它关掉是一个决定", "a hand that stopped them is honoured, not overruled"),
+        ("屏上要说得出为什么并给出 §2.3 那条出口", "a channel that cannot start is named, per §2.3"),
+    ):
+        if re.sub(r"\s+", "", needle) not in flat:
+            fail(f"§2 no longer says {needle!r} - {why}")
+
+    body = json.loads((CONTRACT / "protocol.json").read_text(encoding="utf-8-sig"))
+    note = re.sub(r"\s+", " ", body["discovery"]["note"])
+    for needle, why in (
+        ("The channels are not a feature switch", "the machine-readable half of the same sentence"),
+        ("keeps that decision for the rest of the run", "and the hand-stop is honoured, not reopened by the listener"),
+    ):
+        if needle not in note:
+            fail(f"discovery.note no longer says {needle!r} - {why}")
+
+    session = (HERE / "chuanshu" / "store" / "session.uts").read_text(encoding="utf-8")
+    listen = session.split("export function onRecvListen()", 1)[1].split("\n}", 1)[0] if "export function onRecvListen()" in session else ""
+    if "autoStartDiscovery()" not in listen:
+        fail("onRecvListen no longer brings the channels up with the port - that is the whole of #201")
+    auto = session.split("function autoStartDiscovery()", 1)[1].split("\n}", 1)[0] if "function autoStartDiscovery()" in session else ""
+    if "discHandStopped" not in auto:
+        fail("autoStartDiscovery no longer respects a hand that stopped the channels - the listener would "
+             "reopen a decision the person already made")
+    toggle = session.split("export function toggleDiscovery()", 1)[1].split("\n}", 1)[0] if "export function toggleDiscovery()" in session else ""
+    if "discHandStopped = true" not in toggle:
+        fail("toggleDiscovery stopped the channels without recording it as the person's own decision")
+    if "发现通道却起不来" not in auto:
+        fail("a channel that cannot start while the port is open is back to being silent - §2.3 names an "
+             "escape route, it does not log one")
+
+    root = HERE.parent
+    discovery_py = (root / "app" / "net" / "discovery.py").read_text(encoding="utf-8")
+    transfer_py = (root / "app" / "ui" / "transfer.py").read_text(encoding="utf-8")
+    cli_py = (root / "app" / "cli.py").read_text(encoding="utf-8")
+    gate = (root / "scripts" / "protocol_selftest.py").read_text(encoding="utf-8")
+    if "DiscoveryService(self.identity, self.device_name, service.port" not in transfer_py:
+        fail("the PC window no longer starts discovery from the port it actually bound - the reference shape "
+             "the phones are measured against")
+    if "discovery = DiscoveryService(identity, device_name(settings), service.port)" not in cli_py:
+        fail("`ChuanShu-cli receive` no longer announces the port it is listening on")
+    if 'self._spawn(self._announce_loop, "announce")' not in discovery_py:
+        fail("the announce thread is gone, so nothing re-announces every 3 s on the end that claims to")
+    if "§2 起了监听的那一端也在每 3 s 播自己" not in gate:
+        fail("the gate no longer measures that a listening end has an announcement running")
+
+
 def check_announce_port() -> None:
     """§2's announcement names a socket, so "no listener, no announcement" has to be one answer per body.
 
@@ -2703,6 +2765,7 @@ def main() -> int:
     check_pair_refusal()
     check_ask_verdict()
     check_announce_port()
+    check_channels_with_listener()
 
     print(f"OK  protocol v{body['protocol_version']} from {stamp['source_repo']}@{stamp['source_commit'][:8]}")
     print(f"OK  {len(body['error_codes'])} error codes, {len(body['endpoints'])} endpoints, chunk {chunk // 1024} KiB")
@@ -2751,6 +2814,8 @@ def main() -> int:
           "question reports the write's own error, on both senders")
     print("OK  §2's announcement names the socket that is open right now: nothing is broadcast and nothing is "
           "registered while a end is not receiving, on the PC's two entry points and all three phone hosts")
+    print("OK  §2's channels ride with the listener, not with a screen: they come up when the port opens, a hand "
+          "that stops them is honoured for the run, and a channel that cannot start names why and offers the QR")
     return 0
 
 

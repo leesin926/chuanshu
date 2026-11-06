@@ -1233,6 +1233,28 @@ py -X utf8 scripts/check_protocol.py
       上一趟崩溃会把**抄本**留在改过的状态（原件修好了而守卫比的是 `mobile/shared/protocol/`），于是下一趟一上来就
       `起点：守卫 rc=1`——先重新 vendor 再看红。
 
+49. **#201：第三十五轮把 §2「监听常驻」的主语补上了身体——发现通道随接收起来，不再等人点「找局域网设备」（守卫 34 行、门禁 296、两道编译门同轮跑过）**
+    - **本轮补的是哪一格**：监听是随进程起的（`initSession` → `initReceivePanel` → `onRecvListen()`，`store/session.uts:1901`），
+      两条广播通道却只在 `toggleDiscovery()` 里起来，而那颗按钮在扫码页（`pages/scan/scan.uvue:149`）。
+      结果是一台**正在收**的手机可以整程不播：别人的名单里没有它，对面只看到「没听到任何设备」，
+      而 §2.3 那条出口（扫码/手输）本来是为陌生网络准备的，不该用来兜"我在收但你看不见我"。
+      **权限一直不缺**（`CHANGE_WIFI_MULTICAST_STATE` 从 #90 起就在 `app-android/config.json:7`），缺的只是那一段调用。
+    - **身体**：`onRecvListen()` 的成功分支里加 `autoStartDiscovery()`——一次进程一次；`discHandStopped` 一被写下
+      （人在那颗按钮上关掉过），这一程就不再自动重开（**那是决定，不是没点**）；通道起不来时那一行是
+      「接收已经开着，发现通道却起不来：…可以改用扫码或手输地址。」，不留沉默。
+    - **今天清掉的账**：`.probe/r35_gate.txt` 门禁 `295 → 296 条全绿`（新那条量的是三端要对齐的参照：起了监听就得有公告线程在跑）；
+      `.probe/r35_guard.txt` 守卫 **34 行 OK**（新增 `check_channels_with_listener()`，四条钉住 store 那三行与那句出口）；
+      `.probe/r35_kotlin.txt` / `.probe/r35_arkts.txt` 两道编译门都读到 `项目 chuanshu 编译成功。`，产物比源新
+      （`classes.dex` 13:30 对 `session.uts` 13:23）且鸿蒙 `assets/store/session.js` 里两处 `autoStartDiscovery`；
+      `.probe/r35_negatives.txt` **11 处各红一次**；`.probe/r35_web.txt` 发送 77 / 接收 172 / 发现 32 无回归。
+      `locale/app.pot` 仍 **286 条**：新那句住在 `session.uts`，不在 PC 的 msgid 表里。
+    - **这一档为什么证不了它**：那颗「监听对端」开关在 `pages/me/me.uvue:187` 的 `#ifdef APP-*` 里，浏览器那侧的接收面板
+      不走 `onRecvListen()`——H5 只能证"没有回归"；自动起这一支今天由守卫 + 两道编译门说，设备档仍欠。
+      同一格上 §6 还欠着另一笔：「鸿蒙 Next：同 iOS 的后台限制口径，**按真机实测结论**写进 UI 文案」，
+      而卡片写的是「**可能**被系统冻住」——那是未量的可能性，不是结论（待办 45 那条 ABI 边界一并挡着这两笔）。
+    - **与 #36 / #90 / #93 的关系**：这三张卡一直挂在"发现层待设备"上；本轮补的是它们共同的前置事实——通道起不起、由谁起。
+      代码侧的形状现在与合同一致了，剩下的读数仍然只能在活机上取。
+
 M2a 的最小切口是"手机发、PC 收"：扫（或粘贴）PC 的二维码拿到地址与完整指纹，用户只核对同屏的
 一次性配对码——PC 侧接收端已经跑绿，手机只要把
 `/v1/pair`、`/v1/offer`、`PUT chunk`、`/v1/finalize` 四条打出去就能有结论，发现层可以先不做。

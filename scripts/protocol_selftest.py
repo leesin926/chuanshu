@@ -1976,6 +1976,12 @@ def phase_discovery(proto: protocol_spec.Protocol, workspace: Path) -> None:
         except ValueError as error:
             check("§2 没监听时那一格 QR 不画一个拨不通的端口", "没有在接收" in str(error), str(error))
 
+        # 第三十五轮（#201）：「监听常驻」的主语那一半——起了监听就得有一个在跑的公告线程。PC 两端今天都是
+        # 这一形（图形端 `transfer.py:1484`、命令行 `receive` 也一样），手机那一半过去要人点一下才补上；
+        # 这条腿钉的是三端要对齐的那个参照，名字来自 `_spawn(..., "announce")`。
+        announcing = [t.name for t in threading.enumerate() if t.name.endswith("announce")]
+        check("§2 起了监听的那一端也在每 3 s 播自己（公告线程在跑）", len(announcing) >= 2, announcing[:4])
+
         # 注册那一支用同一个判别：公告不发的这一端也不该在 DNS-SD 里留一个端口。`_start_mdns` 里那句
         # `from zeroconf import ...` 换成一个记账的假货，量的就是"注册有没有被叫到"这一件事。
         registered: list[int] = []

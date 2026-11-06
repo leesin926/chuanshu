@@ -381,6 +381,11 @@ let discRunning = false
 /** Whether this button has been pressed since the app started. Without it the card says "名单是上一次的"
  *  before there has been a first run, and a person reads that as a lost list rather than an untouched one. */
 let discRanOnce = false
+/** Spec §2's 监听常驻 puts these two channels beside the listener, not beside a button: they come up with
+ *  the port (#201). `discHandStopped` is the other half - a person who turns them off by hand is answered
+ *  for the rest of the run, because that is a decision rather than a screen nobody has opened yet. */
+let discAutoStarted = false
+let discHandStopped = false
 
 // #ifdef APP-HARMONY
 /** spec §3's random source for this end's three secrets, handed to the inbox the state machine below
@@ -1019,6 +1024,7 @@ export function onRecvListen() {
 		applyListen(receiveStatus())
 		if (ok) {
 			armHold(message)
+			autoStartDiscovery()
 		}
 	})
 }
@@ -1036,6 +1042,31 @@ export function onRecvListenStop() {
 	disarmHold()
 	applyListen(receiveStatus())
 }
+
+/** Spec §2's 「监听常驻」 puts the two broadcast channels beside the listener rather than beside a screen:
+ *  a machine that is receiving is a machine worth finding, and until #201 this phone only joined the LAN
+ *  after somebody had pressed 找局域网设备 - the peer's list then simply lacked it, with nothing on either
+ *  card explaining why. Once per run, and never against a hand that said stop. */
+function autoStartDiscovery(): void {
+	if (discAutoStarted || discHandStopped || discRunning) {
+		return
+	}
+	discAutoStarted = true
+	discStartChannels(function (ok: boolean, message: string): void {
+		discRunning = ok
+		if (ok) {
+			discRanOnce = true
+		}
+		s.discButton = ok ? '停止找设备' : '找局域网设备'
+		if (!ok) {
+			// §2.3 asks for a named escape route, not a silent channel: the port is open, so the person
+			// reading this card is receiving while nobody can find them.
+			log('接收已经开着，发现通道却起不来：' + message + '。可以改用扫码或手输地址。')
+		}
+		refreshDiscovery()
+	})
+}
+
 
 /** §6 is a promise the card makes while 监听对端 is on, and a phone cannot make it alone.
  *
@@ -2274,6 +2305,10 @@ export function refreshDiscovery(): void {
  *  browser - so the labels are written in the callback rather than after the call. */
 export function toggleDiscovery(): void {
 	if (discRunning) {
+		// A hand that stopped the channels owns that choice for the rest of the run: the listener's
+		// restart must not quietly reopen them (§2's 「监听常驻」 is about the announcement lying, not
+		// about overruling the person holding the phone).
+		discHandStopped = true
 		discStopChannels(function (ok: boolean, message: string): void {
 			discRunning = false
 			s.discButton = '找局域网设备'
