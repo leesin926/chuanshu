@@ -1273,8 +1273,10 @@ py -X utf8 scripts/check_protocol.py
     - **顺带量到的一笔探针账**（出包 #202）：Linux 冻结包那条"点导轨换页看 QR"的腿今天跑不动——两次运行、每次两次点击
       都是 0 行 finder，而截图里指针根本不在要指的点上；直接问 WSLg：`xdotool mousemove 300 300` 之后
       `getmouselocation` 仍是 `320,240`。同一台机器 10-26 那次（`.probe/linux-smoke-118d.log`）窗口几何、点击点、
-      坐标算法完全相同而拿到 28 行。**结论：是探针脚下的输入层塌了，不是产品回归**；包内 `QtSvg.abi3.so` 与
-      `imageformats/libqsvg.so` 都在，CLI 四条腿全过。这条腿要在下一次 WSLg 会话里补，不能拿"文件在"当"屏上有 QR"。
+      坐标算法完全相同而拿到 28 行。**换一个会话重跑就回来了**：`press 1 → 0`、`press 2 → 28`，10 条腿 `ALL PASS`
+      （`.probe/r36_smoke_linux.log`）——所以那是探针脚下的环境，不是产品回归；分辨的办法是先问 `getmouselocation`，
+      不是重跑脚本。包内 `QtSvg.abi3.so` 与 `imageformats/libqsvg.so` 都在，CLI 四条腿全过，而**"文件在"不等于
+      "屏上有二维码"**——后者只有这条腿能给，今天它给了。手机端自己的账没变：待办 45/49 那几笔设备读数仍然欠着。
 
 M2a 的最小切口是"手机发、PC 收"：扫（或粘贴）PC 的二维码拿到地址与完整指纹，用户只核对同屏的
 一次性配对码——PC 侧接收端已经跑绿，手机只要把
