@@ -2826,7 +2826,101 @@ def check_record_follows_beat() -> None:
         fail("the gate lost the leg that measures PC re-registering the port it actually bound")
 
 
+def check_mdns_goodbye_names_a_service() -> None:
+    """§2.1's goodbye names the service, not the machine - so the remembered name→prefix is the rule (#205).
+
+    The paper drew registration and the TXT block but never the moment a record leaves. The bodies were
+    never ambiguous about it: PC fills `_mdns_names` in `_resolve` only when the answer carried an `fp` and
+    pops it in `remove_service`; Android's `onServiceLost` takes `prefixesByService.remove(name)` and returns
+    when nothing was remembered; Harmony reads `discNames.get(info.serviceName)` and hands `remembered ?? ''`;
+    iOS is the same with `removeValue(forKey:)`. All four withdraw **that channel's presence** and leave the
+    machine listed, because the broadcast may still be answering every second - and the 15 s window on the
+    hearer's own clock is what actually removes a silent peer. This round wrote the sentence and pinned the
+    four readers; PC's two were being executed for the first time at all.
+    """
+    root = HERE.parent
+    sdk = HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk"
+
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    section = spec.split("## 2.", 1)[1].split("\n## ", 1)[0] if "## 2." in spec else ""
+    flat = re.sub(r"\s+", "", section)
+    for needle, why in (
+        ('一条 goodbye 只说"这个名字走了"，它**不带 `fp`**', "the goodbye carries nothing to key the roster by"),
+        ("必须自己记住上一次解析时这个名字对应哪个前缀", "so the remembered name->prefix is required, not optional"),
+        ("撤掉的也只是**这一条通道的在场**，不是这台机器", "and a goodbye must not evict a still-announcing peer"),
+        ("真正让一台机器离开名单的从来是**收件方自己那 15 s**", "which is why forgetting is an early act, not the rule"),
+    ):
+        if re.sub(r"\s+", "", needle) not in flat:
+            fail(f"§2.1 no longer says {needle!r} - {why}")
+
+    body = json.loads((CONTRACT / "protocol.json").read_text(encoding="utf-8-sig"))
+    note = re.sub(r"\s+", " ", body["discovery"]["note"])
+    for needle, why in (
+        ("A goodbye names the service, not the machine, and carries no `fp`", "the machine-readable half"),
+        ("withdraws only that channel's presence", "and the same limit on what it may remove"),
+    ):
+        if needle not in note:
+            fail(f"discovery.note no longer says {needle!r} - {why}")
+
+    discovery_py = (root / "app" / "net" / "discovery.py").read_text(encoding="utf-8")
+    resolve = discovery_py.split("def _resolve(self, zc, name: str)", 1)[1].split("\n    def ", 1)[0] if "def _resolve" in discovery_py else ""
+    if "self.service._mdns_names[name] = prefix" not in resolve:
+        fail("PC's resolver no longer remembers which prefix a service name answered under - a goodbye "
+             "then has nothing to withdraw")
+    if "if prefix:" not in resolve:
+        fail("PC remembers a name→prefix pair for a record with nothing to pin, which is the guess §2.1 bans")
+    remove_lines = discovery_py.split("def remove_service", 1)[1].splitlines() if "def remove_service" in discovery_py else []
+    remove = "\n".join(remove_lines[:6])
+    if 'prefix = self.service._mdns_names.pop(name, "")' not in remove:
+        fail("PC's remove_service no longer takes the remembered prefix off the list")
+    if "_mdns_names.pop" in discovery_py.split("def remove_service", 1)[0]:
+        fail("something before remove_service pops the name map, so the goodbye itself can no longer find it")
+    forget = discovery_py.split("def _forget_mdns", 1)[1].split("\n    def ", 1)[0] if "def _forget_mdns" in discovery_py else ""
+    if 'peer.via.discard("mdns")' not in forget:
+        fail("PC's _forget_mdns no longer removes just the mdns path")
+    if "del self._peers" in forget or "_peers.pop" in forget:
+        fail("PC's _forget_mdns is back to evicting the machine - a peer still announcing every 3 s would "
+             "vanish from the list because one path said goodbye")
+
+    kotlin = (sdk / "app-android" / "CsDiscovery.kt").read_text(encoding="utf-8")
+    lost = kotlin.split("override fun onServiceLost", 1)[1].split("\n            }", 1)[0] if "override fun onServiceLost" in kotlin else ""
+    if 'prefixesByService.remove(name)' not in lost:
+        fail("Android's goodbye no longer looks the service name up in what it remembered")
+    if 'if (prefix == "") {' not in lost:
+        fail("Android's goodbye no longer says 'nothing remembered, nothing to withdraw' - the case the 15 s "
+             "window exists for")
+
+    harmony = (sdk / "app-harmony" / "index.uts").read_text(encoding="utf-8")
+    ohos_lost = harmony.split("svc.on('serviceLost'", 1)[1].split("\n\t})", 1)[0] if "svc.on('serviceLost'" in harmony else ""
+    if "discNames.get(info.serviceName)" not in ohos_lost:
+        fail("Harmony's goodbye no longer resolves the name through the remembered prefix")
+    if "remembered ?? ''" not in ohos_lost:
+        fail("Harmony's goodbye hands out a guessed prefix instead of nothing when it never remembered one")
+    ohos_find = harmony.split("resolveLocalService(discContext(), info)", 1)[1].split("\n\t\t\t}).catch", 1)[0] if "resolveLocalService(discContext(), info)" in harmony else ""
+    if "discNames.set(" not in ohos_find:
+        fail("Harmony no longer records name→prefix when a service resolves, so its goodbye can never match")
+
+    kernel = (sdk / "cs-discovery.uts").read_text(encoding="utf-8")
+    bye = kernel.split("export function forgetMdns(", 1)[1].split("\n}", 1)[0] if "export function forgetMdns(" in kernel else ""
+    if "!= VIA_MDNS" not in bye:
+        fail("the shared model's forgetMdns no longer keeps the other path alive")
+    if "roster.peers =" in bye or ".splice(" in bye:
+        fail("the shared model's forgetMdns is dropping the candidate, not the channel - the mistake §2.1 "
+             "now names")
+    report = kernel.split("export function selfReport(", 1)[1] if "export function selfReport(" in kernel else ""
+    if "§2.1 一条没记住名字的 goodbye 什么都不撤" not in report:
+        fail("the kernel self-check lost the leg that runs an unmatched goodbye")
+
+    gate = (root / "scripts" / "protocol_selftest.py").read_text(encoding="utf-8")
+    legs = len(re.findall(r'check\("§2\.1 (解析到的那一趟把 name→fp 记下来|一条 goodbye 只撤掉 mdns 那一路|'
+                          r'撤完那份 name→fp 的记忆也放下|没记住那个名字的 goodbye 不炸名单)', gate))
+    if legs < 4:
+        fail(f"the gate runs {legs} of the 4 legs that execute PC's goodbye path - these two readers were "
+             f"never executed before #205")
+
+
 def main() -> int:
+
     stamp_path = CONTRACT / "SOURCE.json"
     for name in ("protocol.json", "spec.md", "SOURCE.json"):
         if not (CONTRACT / name).is_file():
@@ -2908,6 +3002,7 @@ def main() -> int:
     check_channels_with_listener()
     check_mdns_needs_fp()
     check_record_follows_beat()
+    check_mdns_goodbye_names_a_service()
 
     print(f"OK  protocol v{body['protocol_version']} from {stamp['source_repo']}@{stamp['source_commit'][:8]}")
     print(f"OK  {len(body['error_codes'])} error codes, {len(body['endpoints'])} endpoints, chunk {chunk // 1024} KiB")
@@ -2962,6 +3057,8 @@ def main() -> int:
           "below API 28 reports the whole channel unavailable instead of offering names nothing can pin")
     print("OK  §2.1's record is re-asked on §2.2's beat: a closed listener takes it down, a moved port withdraws "
           "it before registering again, and the PC's build-with-the-listener shape is measured by two gate legs")
+    print("OK  §2.1's goodbye names the service, not the machine: all four readers withdraw only that channel "
+          "while an unmatched goodbye is left to the 15 s window - PC's two were executed for the first time")
     return 0
 
 

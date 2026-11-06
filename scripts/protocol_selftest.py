@@ -2093,6 +2093,46 @@ def phase_discovery(proto: protocol_spec.Protocol, workspace: Path) -> None:
         check("§2.1 带 fp 的那一条照常进名单，端口与地址取自记录本身",
               len(after) == before + 1 and any(p.prefix == "1111222233334444" and p.port == 43720 for p in after),
               [(p.prefix, p.host, p.port) for p in after])
+
+        # 第三十八轮（#205）：§2.1 的**下线那一半**。一条 goodbye 只说"这个名字走了"，不带 `fp`，而名单按前缀键，
+        # 所以每一端必须自己记住上一次解析时 name→fp 的对应。PC 这两个读者（`_MdnsListener.remove_service` 与
+        # `_forget_mdns`）到今天才被真的执行过一次：上一批腿量的是同一台服务"进来"那一半。这里自己造一台陌生的
+        # 服务，走 add（要记下名字）→ remove（要撤掉通道而不是机器）→ 再 remove 一次（记忆已清空，什么都不动）。
+        from app.net.discovery import _MdnsListener
+
+        gone_prefix = "9999888877776666"
+        gone_name = f"下线那台.{b.proto.mdns_service_type}"
+
+        class _Resolver:
+            def __init__(self, info) -> None:  # noqa: ANN001 - zeroconf hands get_service_info a name
+                self._info = info
+                self.asks: list[str] = []
+
+            def get_service_info(self, service_type: str, name: str, timeout: int = 1500):
+                self.asks.append(name)
+                return self._info if name == self._info.name else None
+
+        resolver = _Resolver(_Record({"ver": "1", "name": "下线那台-PC", "fp": gone_prefix}, 43731, gone_name))
+        listener = _MdnsListener(b)
+        listener.add_service(resolver, b.proto.mdns_service_type, gone_name)
+        arrived = [p for p in b.candidates() if p.prefix == gone_prefix]
+        check("§2.1 解析到的那一趟把 name→fp 记下来，goodbye 才有东西可撤",
+              len(arrived) == 1 and "mdns" in arrived[0].via
+              and b._mdns_names.get(gone_name) == gone_prefix,
+              (len(arrived), arrived[0].via if arrived else [], b._mdns_names.get(gone_name, "")))
+        listener.remove_service(resolver, b.proto.mdns_service_type, gone_name)
+        stayed = [p for p in b.candidates() if p.prefix == gone_prefix]
+        check("§2.1 一条 goodbye 只撤掉 mdns 那一路，这台机器与它的地址端口都留在名单里",
+              len(stayed) == 1 and "mdns" not in stayed[0].via
+              and stayed[0].host == "192.168.1.77" and stayed[0].port == 43731,
+              [(p.prefix, p.via, p.host, p.port) for p in stayed])
+        check("§2.1 撤完那份 name→fp 的记忆也放下，第二次 goodbye 什么都不动",
+              gone_name not in b._mdns_names and len(stayed) == 1, b._mdns_names)
+        listener.remove_service(resolver, b.proto.mdns_service_type, f"没记住那台.{b.proto.mdns_service_type}")
+        check("§2.1 没记住那个名字的 goodbye 不炸名单，也不为它重解析一次",
+              len([p for p in b.candidates() if p.prefix == gone_prefix]) == 1
+              and arrived[0].via == set() and resolver.asks == [gone_name],
+              (len(resolver.asks), resolver.asks))
     finally:
         b.stop()
         a.stop()

@@ -563,6 +563,18 @@ export function selfReport(): string {
 	check('两条通道说的是同一台', viaBoth != null && viaBoth!.via.length == 2)
 	forgetMdns(both, PC)
 	check('mDNS 下线只剩广播也还认它', both.peers.length == 1 && viaBoth!.via.length == 1 && viaBoth!.via[0] == VIA_UDP)
+	// 7b. §2.1's other half (spec #205): a goodbye names the service, not the machine, and carries no `fp`.
+	//     The rule lives here because the failure it prevents is a *reasonable* reading of §2 - drop the
+	//     machine the platform just said is gone - while the broadcast may still be answering every second.
+	const bye = newRoster(SELF)
+	learn(bye, PC, '192.168.1.5', 43720, 'pc-1', '书房-PC', 1, VIA_UDP, 1000)
+	forgetMdns(bye, 'ffffffffffffffff')
+	check('§2.1 一条没记住名字的 goodbye 什么都不撤', bye.peers.length == 1 && peerAt(bye, PC)!.via.length == 1)
+	forgetMdns(bye, PC)
+	const keptAfterBye = peerAt(bye, PC)
+	check('§2.1 goodbye 撤的是通道在场，这台机器的地址端口与名字都还留着',
+		bye.peers.length == 1 && keptAfterBye != null && keptAfterBye!.host == '192.168.1.5'
+			&& keptAfterBye!.port == 43720 && keptAfterBye!.name == '书房-PC' && keptAfterBye!.peerId == 'pc-1')
 
 	// 8. mDNS resolves to a candidate through its TXT block, with the port from the service record.
 	const dns = newRoster(SELF)
