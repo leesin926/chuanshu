@@ -243,6 +243,9 @@ export type SessionState = {
 	recvListening: boolean
 	recvListen: string
 	recvListenClass: string
+	/** The number that line was written with: the port the listener actually bound, 0 for "nothing open".
+	 *  The pairing string reads this instead of the contract's constant, so one question gets one answer. */
+	recvPort: number
 	/** §6 said out loud: what this phone does about the system freezing a backgrounded receiver. */
 	recvHold: string
 	recvHoldClass: string
@@ -325,6 +328,7 @@ export const s = reactive({
 	recvListening: false,
 	recvListen: '还没开始监听',
 	recvListenClass: 'sub mt8',
+	recvPort: 0,
 	recvHold: '',
 	recvHoldClass: 'sub mt8',
 	recvAddrs: [] as string[],
@@ -955,14 +959,22 @@ function lanIp(): string {
 export function copyPairing() {
 	let text = '配对码 ' + s.recvCodeText + '　密码 ' + s.recvPassText
 	// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
-	if (s.recvListening) {
+	// The number this string hands out is the one the other end dials, so it is read off the listener
+	// rather than from the contract's constant - the same answer §2 demands of an announcement (#200),
+	// and the same number the card above prints. A phone cannot today bind another port (the listener
+	// fails to start when 43720 is taken), but the desktop can, and §2's reason for asking rather than
+	// naming does not wait for the two to diverge: nobody reading both can tell which is current.
+	// It reads the store's own `recvPort` because `livePort`/`servePort` only reach this file on the
+	// Harmony target - the Android and iOS builds would not compile against them.
+	const openPort = s.recvPort
+	if (openPort > 0) {
 		for (let i = 0; i < s.recvAddrs.length; i++) {
 			text = text + '　地址 ' + s.recvAddrs[i]
 		}
-		text = text + '　端口 ' + TRANSPORT_PORT.toString()
+		text = text + '　端口 ' + openPort.toString()
 		const ip = lanIp()
 		if (ip != '' && s.recvServedFp != '' && s.recvPassText != '还没有') {
-			text = 'chuanshu://p?h=' + ip + '&p=' + TRANSPORT_PORT.toString() +
+			text = 'chuanshu://p?h=' + ip + '&p=' + openPort.toString() +
 				'&v=1&f=' + s.recvServedFp + '&c=' + s.recvCodeText + '&k=' + s.recvPassText
 		}
 	}
@@ -1003,8 +1015,12 @@ function applyListen(text: string) {
 	const served = made!.getString('served', '') ?? ''
 	s.recvSelfFp = fp
 	s.recvServedFp = served == '' ? fp : served
+	// One number for two sentences: the card's line and the pairing string both have to name the port
+	// the listener actually bound, and 0 here means "nothing is open, say nothing about a port".
+	const bound = s.recvListening ? (made!.getNumber('port') ?? 0) : 0
+	s.recvPort = bound
 	s.recvListen = s.recvListening
-		? '正在监听 ' + (made!.getNumber('port') ?? 0).toString() + '，收到的文件落在 ' + root
+		? '正在监听 ' + bound.toString() + '，收到的文件落在 ' + root
 		: '没有监听：' + (made!.getString('note', '') ?? '')
 	s.recvListenClass = s.recvListening ? 'sub mt8 stateOk' : 'sub mt8 stateBad'
 	s.recvNote = '本机指纹 ' + (fp == '' ? '读不出来' : fp.substring(0, 16) + '…') + '，对端首次配对时固定它。'

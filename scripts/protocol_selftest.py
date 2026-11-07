@@ -1975,6 +1975,14 @@ def phase_discovery(proto: protocol_spec.Protocol, workspace: Path) -> None:
             check("§2 没监听时那一格 QR 不画一个拨不通的端口", False, "pairing_qr answered")
         except ValueError as error:
             check("§2 没监听时那一格 QR 不画一个拨不通的端口", "没有在接收" in str(error), str(error))
+        # 第四十轮（#207）：同一条串里的 `p` 是谁。§2 已经管住了公告的 `port`，这条串以前没人问过——PC 恰好
+        # 一直答对（`_dialable_port()` 读的是真绑上的那一个），手机那边念的是合同常量。这条腿钉住"答对"那一侧，
+        # 用的就是被占位退到临时口的那种形状：这里的 `b_svc.port` 是 port=0 真绑出来的，不等于 43720。
+        qr_live = listening.pairing_qr(code, host="127.0.0.1", passphrase="ABCDEFGH")
+        check("§3 配对串里那个 `p` 是本机此刻真绑上的端口，不是 ports.transport 那个常量",
+              f"p={b_svc.port}" in qr_live and f"p={proto.transport_port}" not in qr_live
+              and b_svc.port != proto.transport_port,
+              (qr_live, b_svc.port, proto.transport_port))
 
         # 第三十五轮（#201）：「监听常驻」的主语那一半——起了监听就得有一个在跑的公告线程。PC 两端今天都是
         # 这一形（图形端 `transfer.py:1484`、命令行 `receive` 也一样），手机那一半过去要人点一下才补上；

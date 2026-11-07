@@ -3004,8 +3004,67 @@ def check_hearing_outlives_the_port() -> None:
              f"port and 听 staying are two different assertions, and only the legs tell them apart")
 
 
-def main() -> int:
+def check_pairing_string_names_a_live_port() -> None:
+    """§3's `p=` is the same question §2's `port` answers, and one body was reading the contract constant (#207).
 
+    Round thirty-four pinned the announcement; the pairing string was never asked. PC answered correctly by
+    construction (`pairing_qr` calls `_dialable_port()`, which raises when nothing is listening), and the phone
+    put `TRANSPORT_PORT` into both the human line and the `chuanshu://` string. Those two numbers cannot
+    separate on a phone today - the Android and Harmony listeners refuse to start rather than take a second
+    port - so what this round caught was a second answer being buried, not one firing. §2's reason does not
+    wait for the failure: whoever reads two answers cannot tell which is current. The answer now travels
+    through the store's own `recvPort`, because `livePort`/`servePort` are imported into `session.uts`
+    only under the Harmony `#ifdef` - naming them from the shared 复制配对信息 path failed the Android
+    build with 找不到名称, which is the same trap as #89's template-only imports.
+    """
+    root = HERE.parent
+    session = (HERE / "chuanshu" / "store" / "session.uts").read_text(encoding="utf-8")
+    copy_leg = session.split("export function copyPairing()", 1)[1].split("\n}", 1)[0] if "export function copyPairing()" in session else ""
+    if "const openPort = s.recvPort" not in copy_leg:
+        fail("the phone's pairing string no longer reads the port the listener bound - §2.2's answer and "
+             "§3's `p=` must come from the one question")
+    if "TRANSPORT_PORT" in copy_leg:
+        fail("the phone is back to writing the contract's constant into a pairing string - it happens to be "
+             "right on a build that could bind 43720 and is a guess on every other one")
+    if "if (openPort > 0) {" not in copy_leg:
+        fail("the phone's pairing string is back to handing out an address and a port for a socket it does "
+             "not have - §3's other half says an end with nothing open leaves those fields out")
+    # `livePort`/`servePort` are only imported into this file on the Harmony target (#207 learned it the
+    # hard way: the Android build fails with 找不到名称). The portable source for the same number is the
+    # store's own `recvPort`, written from the listener snapshot by the code that paints 正在监听.
+    listen = session.split("function applyListen(", 1)[1].split("\n}", 1)[0] if "function applyListen(" in session else ""
+    if "s.recvPort = bound" not in listen or "const bound = s.recvListening ? (made!.getNumber('port') ?? 0) : 0" not in listen:
+        fail("the store no longer keeps one number for both the 正在监听 line and the pairing string")
+
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    section = spec.split("## 3.", 1)[1].split("\n## ", 1)[0] if "## 3." in spec else ""
+    flat = re.sub(r"\s+", "", section)
+    for needle, why in (
+        ("`p` 与 §2 公告里那个 `port` 是**同一个问题的同一个答案**", "one question, one answer, across the two paths"),
+        ("本机**此刻真绑上**的接收端口", "and what that answer is"),
+        ("**没在监听的一端没有 `p` 可给**", "the other half: an end with nothing open leaves the field out"),
+    ):
+        if re.sub(r"\s+", "", needle) not in flat:
+            fail(f"§3 no longer says {needle!r} - {why}")
+
+    body = json.loads((CONTRACT / "protocol.json").read_text(encoding="utf-8-sig"))
+    note = re.sub(r"\s+", " ", body["transport"]["note"])
+    if "The `p` of that string is the receiving port bound right now" not in note:
+        fail("transport.note no longer states the pairing port's source machine-readably")
+
+    discovery_py = (root / "app" / "net" / "discovery.py").read_text(encoding="utf-8")
+    qr = discovery_py.split("def pairing_qr", 1)[1].split("\n    def ", 1)[0] if "def pairing_qr" in discovery_py else ""
+    if "self._dialable_port()" not in qr:
+        fail("PC's pairing string no longer reads the port off the socket it actually holds")
+    if "transport_port" in qr:
+        fail("PC's pairing string is naming the contract constant, which is the guess §3 now forbids")
+
+    gate = (root / "scripts" / "protocol_selftest.py").read_text(encoding="utf-8")
+    if "§3 配对串里那个 `p` 是本机此刻真绑上的端口" not in gate:
+        fail("the gate lost the leg that measures the pairing string's port against an ephemeral bind")
+
+
+def main() -> int:
     stamp_path = CONTRACT / "SOURCE.json"
     for name in ("protocol.json", "spec.md", "SOURCE.json"):
         if not (CONTRACT / name).is_file():
@@ -3089,6 +3148,7 @@ def main() -> int:
     check_record_follows_beat()
     check_mdns_goodbye_names_a_service()
     check_hearing_outlives_the_port()
+    check_pairing_string_names_a_live_port()
 
     print(f"OK  protocol v{body['protocol_version']} from {stamp['source_repo']}@{stamp['source_commit'][:8]}")
     print(f"OK  {len(body['error_codes'])} error codes, {len(body['endpoints'])} endpoints, chunk {chunk // 1024} KiB")
@@ -3148,6 +3208,9 @@ def main() -> int:
     print("OK  §2 splits 跟着监听 in two: the beat and the record ride the port, the browse and the 43721 "
           "listener do not - the PC window reports its port instead of rebuilding discovery, and the phone's "
           "停止接收 still touches neither channel")
+    print("OK  §3's `p=` answers the same question as §2's `port`: the phone's pairing string asks "
+          "livePort(serveIsRunning(), servePort()) now instead of writing the contract's constant, and "
+          "PC's pairing_qr keeps reading the port it actually bound")
     return 0
 
 
