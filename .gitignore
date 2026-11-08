@@ -14,3 +14,5 @@
 # Per-machine tool config
 /.idea/
 /.qoder/
+# Qoder 用量报告与会话 Canvas 产物：本机会话记录，不是工程源码
+/.qoder-credits/
