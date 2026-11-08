@@ -67,6 +67,21 @@ py -X utf8 scripts/check_protocol.py
 第四条只做打包前的配置预校验，**不会**提交云打包、不扣费。真正出安装包要 `pack --iscustom true`，
 那一步用你的 DCloud 账号，别顺手跑。
 
+第五条（2026-11-08 出 0.1.0 时量到的两条出包边界）：
+
+- **安卓**：`pack` 必须给 `--android.packagename`（`manifest.json` 里没有，云打包也不会在
+  `--precheck` 阶段报它——预校验回的是 `errors:0, warnings:0`，到提交那一步才拦）。包名第一次出现时
+  DCloud 会警告"尚未在开发者中心录入"并**自己退出**，加 `--ignoreWarnings true` 才继续，代价是这个包名
+  被登记成 Android **测试包名**。证书这头本机没有 keystore，所以走 `--android.androidpacktype 3`
+  （云端证书）；`1`/`2` 那两档帮助里写明"仅适用于 uni-app"，uni-app x 用不了。
+  另外 `app-android.distribute.icons` 四格留空时包里就是 DCloud 的 logo，图由
+  `mobile/scripts/gen_android_icons.py` 从 `assets/icons/logo.svg` 渲，别手改 PNG。
+- **鸿蒙**：`cli pack app-harmony` 只做本地打包，且这台机器**没有配签名证书**，它会明说
+  `由于未配置相关数字证书，打包未签名`，交出 `app-harmony-release-unsigned.app` 与
+  `entry-default-unsigned.hap`（两者字节数相同）。也就是说这一端出不了"任何人都能装"的包——
+  正式证书要在华为 AGC 里申请；`launch app-harmony --compile true` 那条之所以能装，是因为它用的是
+  HBuilderX 的调试签名，那是另一回事，别把它当发布包。
+
 ## 两端共用同一套验收
 
 协议不看谁实现都得遵守同一条约定，所以手机端**不能只信 PC 端跑绿了**。要落地的是：
