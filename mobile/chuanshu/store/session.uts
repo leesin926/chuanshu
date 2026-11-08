@@ -24,7 +24,7 @@ import {
 	BufferCallback,
 	HexCallback
 } from '@/uni_modules/cs-transport/utssdk/cs-client.uts'
-import { TRANSPORT_PORT, PAIR_CODE_DIGITS, PASSPHRASE_CHARS, SESSION_IDLE_S, RandFn, codeReject, passReject, passOmitted, nameReject, digitsOnly, formatSize, parsePairUrl } from '@/uni_modules/cs-transport/utssdk/cs-protocol.uts'
+import { TRANSPORT_PORT, PAIR_CODE_DIGITS, PASSPHRASE_CHARS, SESSION_IDLE_S, RandFn, codeReject, passReject, passOmitted, nameReject, digitsOnly, formatSize, parsePairUrl, pairUrl } from '@/uni_modules/cs-transport/utssdk/cs-protocol.uts'
 import { selfInfo, signPair, request, prepareFile, readChunk, digestHex, transportMocked, transportNote, lanCheck } from '@/uni_modules/cs-transport'
 // #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
 import { pinnedFor, unpinPeer, receiveStart, receiveStop, receiveStatus } from '@/uni_modules/cs-transport'
@@ -973,9 +973,13 @@ export function copyPairing() {
 		}
 		text = text + '　端口 ' + openPort.toString()
 		const ip = lanIp()
-		if (ip != '' && s.recvServedFp != '' && s.recvPassText != '还没有') {
-			text = 'chuanshu://p?h=' + ip + '&p=' + openPort.toString() +
-				'&v=1&f=' + s.recvServedFp + '&c=' + s.recvCodeText + '&k=' + s.recvPassText
+		if (ip != '' && s.recvServedFp != '') {
+			// §3: the two secrets are asked of the receiver - the same two functions the card's snapshot
+			// reads - and never of the sentences painted beside it. A display field says 「还没有」 when
+			// the material is empty, so judging by it both sends a placeholder as a password the day the
+			// copy changes and takes the whole payload back today. The kernel's builder leaves the one
+			// empty key off instead: where to knock and what to pin do not depend on the second secret.
+			text = pairUrl(ip, openPort.toString(), s.recvServedFp, receiveCode(), receivePassphrase())
 		}
 	}
 	// #endif

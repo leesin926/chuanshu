@@ -1984,6 +1984,30 @@ def phase_discovery(proto: protocol_spec.Protocol, workspace: Path) -> None:
               and b_svc.port != proto.transport_port,
               (qr_live, b_svc.port, proto.transport_port))
 
+        # 第四十一轮（#208）：同一条串里 `k` 写不写，判的是接收方那份材料里有没有密码，不是卡片上印的那句话。
+        # PC 两处本来就对（`pairing_qr` 的 `if passphrase:`，加上 `qr_url` 对六格一视同仁的空值跳过），所以这几条
+        # 腿钉的是新写进纸面的那半句：**少一格不是少一条串**——没有 `k` 的那一条仍然拨得进去、只靠码就配上。
+        bare_qr = b.pairing_qr(code, host="127.0.0.1", passphrase="")
+        bare_fields = protocol_spec.parse_qr(bare_qr)
+        check("§3 没有密码的那一端不写 k 这个键，其余五格照给",
+              "k" not in bare_fields and bare_fields == {
+                  "h": "127.0.0.1", "p": str(b_svc.port), "v": str(proto.version),
+                  "f": b_id.served_fingerprint, "c": code},
+              (bare_qr, bare_fields))
+        sparse = protocol_spec.qr_url(h="127.0.0.1", p="", v=str(proto.version),
+                                      f=b_id.served_fingerprint, c=code, k="")
+        check("§3 值为空就不写键这条对六格一视同仁，不只管 k",
+              sparse == f"{proto.qr_scheme}?h=127.0.0.1&v={proto.version}&f={b_id.served_fingerprint}&c={code}",
+              sparse)
+        scanned_code, scanned_secret = protocol_spec.pairing_secrets(bare_qr, proto)
+        check("§3 读回来那一格是空的：这条串上「键不在」与「值是空」是同一个读法，报文里才分得开",
+              scanned_code == code and scanned_secret == "", (scanned_code, scanned_secret))
+        scanner = PeerConnection(load_or_create(workspace / "disc-scan"), "PC-扫了那条没有 k 的串",
+                                 "127.0.0.1", b_svc.port, b_id.served_fingerprint)
+        answered = scanner.pair(scanned_code, scanned_secret)
+        check("§3 少那一格不是少一条串：照它拨进去，只靠那 6 位码就拿到 token",
+              bool(answered.get("token")) and scanner.token != "", answered)
+
         # 第三十五轮（#201）：「监听常驻」的主语那一半——起了监听就得有一个在跑的公告线程。PC 两端今天都是
         # 这一形（图形端 `transfer.py:1484`、命令行 `receive` 也一样），手机那一半过去要人点一下才补上；
         # 这条腿钉的是三端要对齐的那个参照，名字来自 `_spawn(..., "announce")`。

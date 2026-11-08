@@ -1386,6 +1386,53 @@ py -X utf8 scripts/check_protocol.py
       y≈9449，`click` 依旧只能走派发事件那条路）。设备档照旧欠着（用户的话：暂停）——手机上那条串真的
       带上当下那个号，只有上机才读得到。
 
+55. **#208：第四十一轮把 §3 那条串里 `k` 的判据写进合同——判接收方那份材料，不是卡片上印的那句话；而少一格不是少一条串（手机改问 `receiveCode()`/`receivePassphrase()`，造串收进内核 `pairUrl()`）**
+    - **这一格跟手机端有什么关系**：上一轮只钉了 `p`，`k` 那一处判据按范围纪律记进了待办，本轮接手。
+      `store/session.uts` 的 `copyPairing()` 改前写的是 `s.recvPassText != '还没有'`——而 `recvPassText` 是
+      `refreshReceive()` 从快照推出来**给人看**的一格（`snap.passphrase == '' ? '还没有' : …`）。
+      **同一个变量既当判据又当写进 `k=` 的值**：换一次文案就会把「还没有」当密码发出去。而今天判错的代价更大——
+      **整条 payload 收回去**，只剩「配对码 X　密码 还没有」那一行人话，地址、端口、指纹一起没了，
+      而这三样与第二份秘密有没有**无关**。
+    - **改法**：造串这件事在手机与浏览器这一侧收进共用内核的一个作者——`cs-protocol.uts::pairUrl()`，
+      它是 `parsePairUrl` 的反函数（六格同序、值为空就不写键、`v` 念内核自己的 `PROTOCOL_VERSION`）。
+      `copyPairing()` 改问 `receiveCode()`/`receivePassphrase()`——**卡片快照问的就是这两个函数**，
+      显示文字从此只负责显示；浏览器 `demoQrUrl()` 也改问同一个作者（它改前无条件写 `k`）。
+      **上一轮那条坑这次先躲开了**：这两个名字在 `session.uts` 里由 `#ifdef APP-ANDROID || APP-IOS || WEB`
+      的导入块给，鸿蒙在下面自己定义同名的两个——三具 app 目标都看得见，所以共享的 store 只走共享的入口。
+      PC 一行没改：它两处本来就对（`pairing_qr` 的 `if passphrase:` + `qr_url` 的 `if k in fields and fields[k]`），
+      而且没有"拿显示文字当条件"的形状（`_pass_text()` 是从材料推显示，方向相反）；命令行根本不造这条串。
+    - **一条本轮回绝的假设，记下来免得下一轮重走**：「浏览器写一个空 `k=` 会被对面当成一次错误猜测」——**不成立**。
+      两个读的一方都把"键不在"与"值是空"读成同一个空串（PC `fields.get("k", "")`、内核 `PairTarget.secret`
+      的默认值），两个发送方上线时又都按 `if secret:` / `if (secret.length > 0)` 省略这个键。所以这条串上
+      根本没有第二十六轮在 JSON 报文里分出来的那两种形状，**那一轮的禁令照旧只管报文**——纸面已写明。
+    - **守卫钉住的那几处**：手机那一格五条 ban（`s.recvPassText`、`s.recvCodeText`、手拼 `'&k='`/`'&c='`、
+      字面 `chuanshu://`）加两条"整条串收回去"的 ban（`&& receivePassphrase()`、`&& receiveCode()`）；
+      内核钉六格同序 + 空值跳过 + 不许只特判某一格 + `pairJson` 仍省略空 secret；浏览器钉同一个作者与那六条腿；
+      PC 钉 `qr_url` 的空值跳过与顺序、`pairing_qr` 不许读显示字段。
+    - **一条新学到的平台规矩（安卓编译门这一趟真挂了，挂的不是语法而是"名字到不了"）**：`pairUrl` 明明
+      `export` 了、`session.uts:27` 也无条件 `import` 了（旁边同一条导入里的 `parsePairUrl` 编得过），Kotlin 仍在
+      导入处与调用处各报一条 `error: 找不到名称"pairUrl"`（`.probe/r41_compile_android.txt`）。查下去**不是缓存**：
+      产物 `index.kt.map` 的 `sourcesContent` 里带着新函数、md5 与源文件一致，而生成的 `index.kt` 里
+      `cs-protocol.uts` 那一段到 `parsePairUrl` 就停了——63 个导出只少了三个没被入口点名的
+      （`MDNS_SERVICE_TYPE`、`unescapeChunk`、`pairUrl`）。原因是：**Android 上一具 uni_modules 插件只保留它
+      自己入口（`utssdk/app-android/index.uts`）够得着的名字**，页面按深路径 import 不算数；入口自己那条注释
+      早就写着这件事（28-31 行）。补进那张 `export { … } from '../cs-protocol.uts'` 名单后重跑即绿，产物里
+      grep 得到 `fun pairUrl`。**鸿蒙不受这条管**（它的入口根本不能 import `cs-protocol.uts`，页面那半边是当
+      JavaScript 跑的，深路径本来就通）；iOS 已于 2026-10-24 终止，那张名单本来就落后，本轮没动。
+      所以守卫这一轮多钉的不是 `pairUrl` 一个名字，而是一条通则：**store 向内核要的每一名字，安卓入口都得点名**。
+    - **档位**：门禁 `313 → 317 条全绿`（`RESULT ALL PASS`、`rc=0`；四条新腿里最硬的那条真的拿没有 `k` 的串去
+      `PeerConnection.pair()` 并换回了 token——"少一格仍能只靠码配上"是跑出来的，不是读法推断）；
+      守卫 `39 → 40 行 OK`；负向 **27 处各红一次**（`未红/错红 0`，还原后 `rc=0`）；**两道编译门最终各
+      `项目 chuanshu 编译成功。`**（鸿蒙另带 `运行包制作成功`，未签名）——安卓中间那一趟是真失败的，
+      绿的那一趟按 `docs/feature-matrix.md` §7 那条读法核过三样：`cs-transport` **没有**"未发生变化"那一行、
+      它自己的 `CsDiscovery.kt:654` 警告在这一趟打出来、产物 `index.kt`（14:10:45）新过源文件（14:01:34）；
+      鸿蒙产物 `cs-protocol.js` 里 grep 到 `function pairUrl`、`store/session.js` 里 grep 到
+      `pairUrl(ip, openPort.toString()`。浏览器 `发送 77 → 83 / 接收 172 / 发现 39 全部通过`，`不符` 开头 0 行，
+      新六条在屏上逐条读到「通过」（`.probe/r41_web.txt`；本轮改动落在共用的 `store/session.uts` 与内核，
+      这一档证的就是 web 目标没被伤到）。PC 界面一行没动，`ui_selftest.py` 不欠新账。**设备档照旧欠着**
+      （用户的话：暂停）——手机上复制出来的那条串在没有密码时到底少不少那一格、少了还能不能扫进去，
+      只有上机才读得到。
+
 M2a 的最小切口是"手机发、PC 收"：扫（或粘贴）PC 的二维码拿到地址与完整指纹，用户只核对同屏的
 一次性配对码——PC 侧接收端已经跑绿，手机只要把
 `/v1/pair`、`/v1/offer`、`PUT chunk`、`/v1/finalize` 四条打出去就能有结论，发现层可以先不做。

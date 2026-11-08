@@ -77,6 +77,7 @@ Ed25519 叶、TLS 记录会乱序到达——这三条都是上机才知道的�
 | 发现：一条 mDNS goodbye 撤的是**这一路通道在场**，不是这台机器（#205，合同 §2.1；改前四具身体各自记住 name→前缀、各自只摘 `via`，而纸面只画了注册与 TXT） | `门禁`（四条新腿第一次执行 PC 的 `_MdnsListener.remove_service` 与 `_forget_mdns`：`{'mdns'}` → `set()` 而 `192.168.1.77:43731`、名字与 `peer_id` 都留在名单里；没记住那个名字的那条 goodbye 既不炸名单也不回头重解析。全文件 **304 条 PASS、`RESULT ALL PASS`**、`rc=0`） | `门禁`（同一份 `app/net/discovery.py`，CLI 不另起一套读者） | `门禁`（平台无关的那一份） | `浏览器` + `编译门` + `守卫`：规则在共用内核 `cs-discovery.uts::forgetMdns`（重建 `via`、**不动 `roster.peers`**），H5 `发现自检 37 → 39 项全部通过`（新两条就是"记不住名字什么都不撤"与"通道撤了机器留着"）；两道编译门各 `项目 chuanshu 编译成功。` 并在产物里 grep 到新腿的中文标签；守卫 `check_mdns_goodbye_names_a_service()` 钉 PC 三处 + 安卓两处 + 鸿蒙三处 + 内核两处，含两条 ban（`_forget_mdns` 不许 `del self._peers`、`forgetMdns` 不许 `roster.peers =`）。**平台到底会不会把这条 goodbye 交下来、交的时候带不带 TXT——只有设备档能答**，见待办 52 |
 | 发现：听不挂在监听上——`set_port` 只挪公告与注册（#206，合同 §2；改前 PC 图形端把整具 `DiscoveryService` 随接收建拆，关掉接收的人连附近设备都看不见） | `门禁`+`界面`（八条腿量"哪两路动了、哪两路没动"；界面档 406 条 `RESULT ALL PASS` 里三条新腿读的是同一个窗口的现场：`port is None` 而 `channels = {'mdns': 'ok', 'udp': 'ok'}`，「附近设备」那行不再出现「自动发现没有运行」） | `门禁`（`peers` 一直是这一形的标本：`port=None`，浏览与收包照跑；本轮把这条从"允许"升成"合同说的就是它"） | `门禁`（同一份 `app/net/discovery.py`，Linux 侧本机地址仍由同一个 `local_ipv4()` 现算） | `守卫`（手机与内核代码一行没动，三十八轮那两道编译门与 `发现自检 39 项` 的读数仍有效；新增 `check_hearing_outlives_the_port()` 里一条 ban 钉住"手机关接收不许顺手关听"）。**手机那一半本轮只有代码与守卫作证，没有屏上读数**——设备档恢复时与待办 51/52 一起补 |
 | §3 配对串里那个 `p`：与 §2 公告的 `port` 同一个来源——本机此刻真绑上的端口，没在监听时这一格不出现（#207；改前手机 `copyPairing()` 写的是 `TRANSPORT_PORT`，PC 一直读 `_dialable_port()`） | `门禁`（一条新腿在**临时口**那一趟上断言 `p=60133` 且不含 43720——不是两数恰好相等时的空过；全文件 **313 条 PASS、`RESULT ALL PASS`**、`rc=0`） | `门禁`（同一份 `pairing_qr`，CLI 画的就是它） | `门禁`（同一份代码） | `编译门` + `守卫` + `浏览器`：`s.recvPort` 由 `applyListen` 从监听器快照写、`copyPairing` 读它；守卫 `check_pairing_string_names_a_live_port()` 钉四处（含两条 ban：这一格不许出现常量、端口为 0 时不许还写地址）。**中间那趟安卓编译门真挂了**——`livePort`/`servePort` 在 `session.uts` 只在鸿蒙的 `#ifdef` 导入块里可见，三条 `找不到名称`；换成共享的 store 字段后两道门才绿。web 目标另用浏览器档确认没被伤到（接收 172 / 发送 77 / 发现 39 全过）。**手机上那条串实际带出去的那个数——仍只有设备档能读**，见待办 54 |
+| §3 配对串里那个 `k`：判的是接收方那份材料里有没有密码，不是卡片上印给人看的那句话；而**少一格不是少一条串**（#208；改前手机 `copyPairing()` 读 `s.recvPassText != '还没有'`，判错就把地址、端口、指纹一起收回去；浏览器那一具无条件写 `k`） | `门禁`（四条新腿，最硬的那条真的拿没有 `k` 的串去 `PeerConnection.pair()` 并换回 token；全文件 **317 条 PASS、`RESULT ALL PASS`**、`rc=0`。PC 一行没改——`pairing_qr` 的 `if passphrase:` 与 `qr_url` 的空值跳过本来就是参照，也没有"拿显示文字当条件"的形状） | `门禁`（同一份 `pairing_qr`/`qr_url`；命令行只印「配对码：…」「密码：…」两行，根本不造这条串） | `门禁`（同一份平台无关代码） | `编译门` + `守卫` + `浏览器`：造串收进共用内核 `cs-protocol.uts::pairUrl()`（`parsePairUrl` 的反函数，六格同序、空值不写键），`copyPairing()` 改问 `receiveCode()`/`receivePassphrase()`，浏览器 `demoQrUrl()` 问同一个作者；守卫 `check_pair_payload_asks_the_receiver()` 钉手机七条 ban + 内核 + 浏览器 + PC。**安卓编译门中间那一趟真挂了**：`pairUrl` 没被插件入口点名，生成的 `index.kt` 里根本没有这个名字（导入处与调用处各一条 `找不到名称`），补进 `utssdk/app-android/index.uts` 的再导出名单后两道门才绿，守卫因此多钉一条通则（store 向内核要的每一名字，入口都得点名）。web 目标 `发送 77 → 83 / 接收 172 / 发现 39` 全过。**手机上复制出来的那条串真的少不少那一格——仍只有设备档能读**，见待办 55 |
 | 防火墙状态读取与自述（被挡时界面自己说） | `门禁`+`真机`(WSLg 侧为 `模拟器`) | `门禁` | `门禁` | `门禁` |
 | 防火墙规则写入 | 安装器（per-exe，`netsh`，先清后放；本机实测过装完的判定） | 同左 | 不代跑：`fix_commands()` 给出 `firewall-cmd`/`ufw` 那两条命令，界面与 CLI 只打印 | 同左 |
 | 无边框自绘标题栏 / 深浅主题 / 托盘 / 开机自启 / 关闭询问 | `门禁`+`截图`+`真机`(窗口像素验收 #119) | — | `截图`(WSLg 实测)；托盘随桌面环境降级 | — |
@@ -2691,6 +2692,58 @@ Xcode，够不到任何一档编译门**——它改的原因只是共用的 sto
       否则"钉住一处"只是把另一处留在没人看的地方。另记一条身体侧的：跨端共享的文件里，**能用的名字以
       `#ifdef` 的导入块为界**——文本层面的守卫看不出这件事，编译器看得出，所以这一轮该感谢那道失败的编译门。
 
+58. **#208：合同逐条巡检第四十一轮——§3 那条串里 `k` 写不写由谁判：手机判的是卡片上印给人看的那句话，而判错的代价不是少一格，是整条串都不给**
+    - **量法**：接上一轮记进待办的那一格（第四十轮只钉了 `p`，`k` 那一处判据按范围纪律没动）。问四具身体
+      同一个问题：「这条 `chuanshu://` 串里第六格写不写，你判的是什么？」**PC 两处都对**——`pairing_qr` 的
+      `if passphrase:` 判的是 handed 进来的那份材料，`qr_url` 那句 `if k in fields and fields[k]` 对六格一视同仁；
+      而且它没有"拿显示文字当条件"的形状（`_pass_text()` 是从 `receiver.passphrase()` 推出显示，方向相反）。
+      **命令行根本不造这条串**（只印「配对码：…」「密码：…」两行）。**手机判的是显示文字**：`copyPairing()` 里
+      `s.recvPassText != '还没有'`，而 `recvPassText` 是 `refreshReceive()` 从快照推出来给人看的一格
+      （`snap.passphrase == '' ? '还没有' : …`）——**同一个变量既当判据又当写进 `k=` 的值**。**浏览器那一具无条件写 `k`**
+      （`demoQrUrl()` 手拼六格）。
+    - **这一格的性质**：两个后果叠在一起。①换一次文案就会把「还没有」当密码发出去（判据与值同源）；
+      ②今天判错时的代价更大——**整条 payload 收回去**，只剩「配对码 X　密码 还没有」那一行人话，
+      地址、端口、指纹一起没了，而这三样与第二份秘密有没有**无关**。所以纸面这一轮写的不只是"判据归谁"，
+      还有一句**少一格不是少一条串**。
+    - **改法**：造串这件事在手机与浏览器这一侧收进共用内核的一个作者——`cs-protocol.uts::pairUrl()`，
+      它是 `parsePairUrl` 的反函数（同一条规则、同一个顺序、`v` 念内核自己的 `PROTOCOL_VERSION` 而不是两处各写一个 `1`）；
+      手机 `copyPairing()` 改问 `receiveCode()`/`receivePassphrase()`——**卡片快照问的就是这两个函数**，显示文字从此只负责显示；
+      浏览器 `demoQrUrl()` 也改问同一个作者。PC 一行没改（它本来就是参照），门禁钉的是"对"不许退化。
+      守卫 `check_pair_payload_asks_the_receiver()`：手机那一格五条 ban（两个显示字段、手拼 `&k=`/`&c=`、字面 scheme）
+      加两条"整条串收回去"的 ban（`&& receivePassphrase()`、`&& receiveCode()`），内核钉六格同序 + 空值跳过 +
+      不许只特判某一格，浏览器钉同一个作者与那六条腿，PC 钉 `qr_url` 的空值跳过与顺序、`pairing_qr` 不许读显示字段。
+    - **安卓编译门这一趟真挂了，挂的不是语法而是「名字到不了」**：`pairUrl` 明明 `export` 了、`session.uts:27`
+      也无条件 `import` 了（旁边的 `parsePairUrl` 同一条导入编得过），Kotlin 仍在导入处与调用处各报一条
+      `error: 找不到名称"pairUrl"`（日志 `.probe/r41_compile_android.txt`）。查下去不是缓存：产物那只
+      `index.kt.map` 的 `sourcesContent` 里**带着**新函数、md5 与源文件一致，而生成的 `index.kt` 里
+      `cs-protocol.uts` 那一段到 `parsePairUrl` 就停了——63 个导出只少了三个没被入口点名的
+      （`MDNS_SERVICE_TYPE`、`unescapeChunk`、`pairUrl`）。原因写在插件入口自己的注释里
+      （`utssdk/app-android/index.uts:28-31`）：**Android 上一具 uni_modules 插件只保留它自己入口够得着的名字**，
+      页面按深路径 import 不算数。补进那张 `export { … } from '../cs-protocol.uts'` 名单后重跑即绿。
+      守卫因此多钉一条：**store 向内核要的每一名字，安卓入口都得点名**（不是只钉 `pairUrl` 这一个），
+      负向也多一处（把点名删掉，守卫必须为这一处红）。鸿蒙那一侧不受这条管：它的入口根本不能 import
+      `cs-protocol.uts`（页面那半边是当 JavaScript 跑的），所以深路径在那边本来就通。
+    - **一条本轮回绝的假设，记下来免得下一轮重走**：「浏览器写一个空 `k=` 会被对面当成一次错误猜测」——**不成立**。
+      两个读的一方都把"键不在"与"值是空"读成同一个空串（PC `fields.get("k", "")`、内核 `PairTarget.secret` 的默认值），
+      两个发送方上线时又都按 `if secret:` / `if (secret.length > 0)` 省略这个键。所以这条串上根本没有第二十六轮
+      在 JSON 报文里分出来的那两种形状，**那一轮的禁令照旧只管报文**——纸面把这句话写明了，省得下一轮把它挪过来。
+    - **一句话的形状**：**给人看的那一格不能同时当判据**。一个字段一旦被 `refreshXxx()` 推成显示文字，
+      它就带着文案的自由度（今天写「还没有」，明天可以写别的），而判据要的是材料本身。可执行的一条是：
+      **判据与显示同源时，问那个材料函数，不要问屏幕字段**——本轮手机上这两个函数早就存在（卡片快照一直在问），
+      缺的只是造串那一处没去问。另一条是**省略一个字段与撤回整条消息要分开写**，否则"没有第二份秘密"会被实现成
+      "连往哪里拨都不告诉你"。
+    - **档位**：门禁 `313 → 317 条全绿`（`RESULT ALL PASS`、`rc=0`，四条新腿里最硬的那条真的拿没有 `k` 的串
+      去 `PeerConnection.pair()` 并换回了 token——"少一格仍能只靠码配上"不是读法推断，是跑出来的）；
+      守卫 `39 → 40 行 OK`；负向 **27 处各红一次**（`未红/错红 0`，还原后 `rc=0`）；
+      **两道编译门各 `项目 chuanshu 编译成功。`**（鸿蒙另带 `运行包制作成功`，未签名）——安卓中间那一趟是真失败的，
+      原因与查法见上一条；绿的那一趟按 §7 那条读法核过三样：`cs-transport` **没有**"未发生变化"那一行、
+      它自己的 `CsDiscovery.kt:654` 警告在这一趟打出来、产物 `index.kt`（14:10:45）新过源文件（14:01:34），
+      并在里面 grep 到 `fun pairUrl`；鸿蒙产物 `cs-protocol.js` 里 grep 到 `function pairUrl`、
+      `store/session.js` 里 grep 到 `pairUrl(ip, openPort.toString()`。浏览器 `发送 77 → 83 / 接收 172 / 发现 39
+      全部通过`，`不符` 开头 0 行，新六条在屏上逐条读到「通过」（`.probe/r41_web.txt`）。
+      PC 界面这一轮一行没动，`ui_selftest.py` 不欠新账。**设备档照旧欠着**（用户的话：暂停）——手机上复制出来的
+      那条串在没有密码时到底少不少那一格、少了还能不能扫进去，只有上机才读得到，见待办 55。
+
 ### 需要用户点头才能做的四件事
 
 > 这张表的标题是历史遗留：四条里**第一条与第二条**仍是钥匙（唤醒设备 / `pack --iscustom`），
@@ -2976,6 +3029,17 @@ Xcode，够不到任何一档编译门**——它改的原因只是共用的 sto
   这次 `cs-client.js` 里能读到 `refused == "BAD_PAIR_CODE"`，判别确实走过了 ArkTS 的代码生成。
   还有一条顺带记着：`cli open` 这一步在 HBuilderX 已经开着的时候是多余的——本机那份是 19:48 用户自己起的，
   别去关它，也别说"我起了 IDE"。
+- **内核新加一个 `export`，Android 那一具插件不会自动带上它——插件入口得点名**（#208 撞的，代价是一趟真失败的编译门）：
+  `cs-protocol.uts` 里 `export function pairUrl(...)`、`store/session.uts:27` 也无条件 `import` 了它
+  （同一条导入里的 `parsePairUrl` 编得过），Kotlin 仍在导入处与调用处各报一条 `error: 找不到名称"pairUrl"`。
+  **先别怀疑缓存**：产物 `index.kt.map` 的 `sourcesContent` 里带着新函数、md5 与源文件一致（生成器读的是新源码），
+  而生成的 `index.kt` 里那一段到 `parsePairUrl` 就停了——63 个导出只少了三个没被
+  `utssdk/app-android/index.uts` 那张 `export { … } from '../cs-protocol.uts'` 名单点名的
+  （`MDNS_SERVICE_TYPE`、`unescapeChunk`、`pairUrl`）。规矩是：**Android 上一具 uni_modules 插件只保留它自己入口
+  够得着的名字，页面按深路径 import 不算数**（入口 28-31 行那条注释早就写着）。补进名单即绿，产物里 grep 得到 `fun pairUrl`。
+  **鸿蒙不受这条管**：它的入口根本不能 import `cs-protocol.uts`（页面那半边当 JavaScript 跑），深路径本来就通。
+  所以往共享内核加导出时，动手的顺序是：写函数 → **在安卓入口点名** → 才让 store/页面去 import；
+  守卫 `check_pair_payload_asks_the_receiver()` 末尾那条通则（store 向内核要的每一名字，安卓入口都得点名）就是替这一步站岗的。
 
 ## 8. 索引
 

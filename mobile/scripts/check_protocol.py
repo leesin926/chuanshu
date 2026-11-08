@@ -3064,6 +3064,149 @@ def check_pairing_string_names_a_live_port() -> None:
         fail("the gate lost the leg that measures the pairing string's port against an ephemeral bind")
 
 
+def check_pair_payload_asks_the_receiver() -> None:
+    """§3's `k` is judged by the receiver's material, and an empty field costs a key, not the payload (#208).
+
+    Round forty left this one in 待办: `copyPairing()` read `s.recvPassText != '还没有'`, a field
+    `refreshReceive()` paints for a human (`snap.passphrase == '' ? '还没有' : …`). One variable was both
+    the predicate and the value written into `k=`, so a copy change would send the placeholder as a
+    password - and the wrong answer today costs the whole string, address, port and fingerprint included.
+    PC was right twice over (`if passphrase:` plus `qr_url`'s uniform empty-skip) and has no
+    display-as-condition shape; the CLI builds no payload at all; the browser wrote `k` unconditionally.
+    The kernel now has one author (`pairUrl`, the inverse of `parsePairUrl`) that the phone and the demo
+    both ask. This check keeps the predicate on the material and the empty-skip on all six fields.
+    """
+    root = HERE.parent
+    session = (HERE / "chuanshu" / "store" / "session.uts").read_text(encoding="utf-8")
+    copy_leg = session.split("export function copyPairing()", 1)[1].split("\n}", 1)[0] if "export function copyPairing()" in session else ""
+    payload = copy_leg.split("// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS", 1)[1].split("// #endif", 1)[0] \
+        if "// #ifdef APP-ANDROID || APP-HARMONY || APP-IOS" in copy_leg else ""
+    if not payload:
+        fail("the phone's 复制配对信息 no longer builds a scannable payload on the app targets")
+    # Bans first: `fail()` raises, so a positive check above a ban would report the wrong reason.
+    for needle, why in (
+        ("s.recvPassText", "the sentence painted on the card is not the receiver's passphrase"),
+        ("s.recvCodeText", "nor is the card's code line the material the scanner is given"),
+        ("'&k='", "the payload is the kernel's to spell - a hand-written key is a second author"),
+        ("'&c='", "same for the code: one builder, one order"),
+        ("chuanshu://", "the scheme belongs to the kernel's QR_SCHEME, not to a literal here"),
+        ("&& receivePassphrase()", "withholding the whole payload when the second secret is empty takes back "
+                                  "where to knock and which leaf to pin - 少一格不是少一条串"),
+        ("&& receiveCode()", "same for the code: the five fields that do not depend on it still go out"),
+    ):
+        if needle in payload:
+            fail(f"the phone's pairing payload is back to {needle!r} - {why}")
+    for needle, why in (
+        ("pairUrl(", "the kernel is the one author of §3's string on this side"),
+        ("receiveCode()", "the code is asked of the receiver, the same function the card's snapshot asks"),
+        ("receivePassphrase()", "and so is the passphrase - display text only displays"),
+        ("s.recvServedFp", "the leaf to pin is still the one this end serves"),
+    ):
+        if needle not in payload:
+            fail(f"the phone's pairing payload no longer asks {needle!r} - {why}")
+
+    kernel = (HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk" / "cs-protocol.uts").read_text(encoding="utf-8")
+    builder = kernel.split("export function pairUrl(", 1)[1].split("\n}", 1)[0] if "export function pairUrl(" in kernel else ""
+    if not builder:
+        fail("the shared kernel no longer has `pairUrl` - the phone and the browser would each spell §3's string again")
+    for needle in ("keys[i] == 'k'", "i == 5", "keys[i] == 'p'"):
+        if needle in builder:
+            fail(f"`pairUrl` special-cases one field ({needle}) - §3's empty-skip is 六格一视同仁")
+    for needle, why in (
+        ("['h', 'p', 'v', 'f', 'c', 'k']", "the six fields in the contract's order"),
+        ("QR_SCHEME + '?'", "the same head `parsePairUrl` reads back"),
+        ("PROTOCOL_VERSION.toString()", "`v` is this kernel's own number, not a literal 1 at two call sites"),
+        ("if (values[i].length == 0)", "an empty value leaves its key off"),
+        ("continue", "and leaving it off is skipping the field, not writing it blank"),
+    ):
+        if needle not in builder:
+            fail(f"`pairUrl` no longer carries {needle!r} - {why}")
+    pair_json = kernel.split("export function pairJson(", 1)[1].split("\n}", 1)[0] if "export function pairJson(" in kernel else ""
+    if "if (secret.length > 0)" not in pair_json:
+        fail("the kernel's pair body no longer omits an empty secret - that omission is what makes a k-less "
+             "payload a code-only pairing rather than one wrong guess")
+
+    # A new kernel export is not reachable on Android just because the page imports it by deep path: the
+    # compiled plugin keeps only the names its own entry re-exports, and Kotlin then says 找不到名称 at both
+    # the import and the call. Round forty-one's `pairUrl` was dropped exactly this way - the generator read
+    # the fresh source (its sourcemap carries it) and emitted nothing for the one name the entry did not list.
+    entry = (HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk" / "app-android" / "index.uts").read_text(encoding="utf-8")
+    listed = re.search(r"export \{([^}]*)\} from '\.\./cs-protocol\.uts'", entry)
+    reexport = listed.group(1) if listed else ""
+    if not reexport:
+        fail("the Android plugin entry no longer re-exports the kernel - every name the page asks for by deep "
+             "path would be dropped from the compiled module")
+    store_from = "} from '@/uni_modules/cs-transport/utssdk/cs-protocol.uts'"
+    asked = session.split(store_from, 1)[0].rsplit("import {", 1)[1] if store_from in session else ""
+    if not asked:
+        fail("the store no longer imports the shared kernel by name - this check measures what it asks for")
+    for name in [part.strip() for part in asked.split(",") if part.strip()]:
+        if not re.search(r"\b" + re.escape(name) + r"\b", reexport):
+            fail(f"the store asks the kernel for {name!r} but the Android entry does not re-export it - the "
+                 f"compiled plugin keeps only the names its own entry can reach")
+
+    web = (HERE / "chuanshu" / "uni_modules" / "cs-transport" / "utssdk" / "web" / "index.uts").read_text(encoding="utf-8")
+    demo = web.split("export function demoQrUrl()", 1)[1].split("\n}", 1)[0] if "export function demoQrUrl()" in web else ""
+    if "pairUrl(" not in demo:
+        fail("the browser's demo PC is spelling the payload itself again - it must ask the same kernel author")
+    if "'&k='" in demo or "'&c='" in demo:
+        fail("the browser's demo PC is hand-writing a field of §3's string")
+    legs = web.split("// L2. 第四十一轮巡检（#208）", 1)[1].split("// M. 第三十轮巡检", 1)[0] \
+        if "// L2. 第四十一轮巡检（#208）" in web else ""
+    if legs.count("check(") < 6:
+        fail(f"the browser harness runs {legs.count('check(')} of the 6 legs that measure `pairUrl` - the "
+             f"empty-`k` string and the six-field rule are different assertions")
+    for needle, why in (
+        ("noSecret.indexOf('k=') < 0", "no passphrase means no key, not a blank value"),
+        ("parsePairUrl(noSecret)", "and what is left still reads back as a peer to dial and pin"),
+        (".get('secret') == null", "the pair body then carries no secret key at all"),
+        ("pairUrl('',", "the empty-skip is measured on a field other than `k` too"),
+    ):
+        if needle not in legs:
+            fail(f"the browser harness lost the leg asserting {needle!r} - {why}")
+
+    spec_py = (root / "app" / "net" / "spec.py").read_text(encoding="utf-8")
+    qr = spec_py.split("def qr_url(", 1)[1].split("\ndef ", 1)[0] if "def qr_url(" in spec_py else ""
+    if "if k in fields and fields[k]" not in qr:
+        fail("PC's `qr_url` no longer skips every empty field - that is the rule §3 now states for all six")
+    if '("h", "p", "v", "f", "c", "k")' not in qr:
+        fail("PC's `qr_url` no longer fixes the field order the kernel mirrors")
+    discovery_py = (root / "app" / "net" / "discovery.py").read_text(encoding="utf-8")
+    pc_payload = discovery_py.split("def pairing_qr", 1)[1].split("\n    def ", 1)[0] if "def pairing_qr" in discovery_py else ""
+    if "pass_text" in pc_payload:
+        fail("PC's pairing string is reading a display field - the direction §3 forbids on every body")
+    if "if passphrase:" not in pc_payload:
+        fail("PC's pairing string no longer judges `k` by the material it was handed")
+
+    spec = (CONTRACT / "spec.md").read_text(encoding="utf-8")
+    section = spec.split("## 3.", 1)[1].split("\n## ", 1)[0] if "## 3." in spec else ""
+    flat = re.sub(r"\s+", "", section)
+    for needle, why in (
+        ("这条串里**值为空的那一格不写键**，六格一视同仁", "the empty-skip is a rule about the string, all six fields"),
+        ("判的是**接收方此刻那份材料里有没有密码**", "and `k`'s predicate is the material"),
+        ("**不是卡片上印的那句话**", "never the display sentence beside it"),
+        ("**少一格不是少一条串**", "withdrawing the payload also withdraws where to knock and which leaf to pin"),
+        ("**空串 = 一次错误猜测那条规矩管的是 JSON 报文，不是这条串**", "the round-26 ban stays where it was measured"),
+    ):
+        if re.sub(r"\s+", "", needle) not in flat:
+            fail(f"§3 no longer says {needle!r} - {why}")
+
+    body = json.loads((CONTRACT / "protocol.json").read_text(encoding="utf-8-sig"))
+    note = re.sub(r"\s+", " ", body["transport"]["note"])
+    for needle in ("A field whose value is empty is left out of that string rather than written blank, all six fields alike",
+                   "Losing one field is not losing the payload",
+                   "governs the pair body only"):
+        if needle not in note:
+            fail(f"transport.note no longer states {needle!r} machine-readably")
+
+    gate = (root / "scripts" / "protocol_selftest.py").read_text(encoding="utf-8")
+    count = len(re.findall(r'check\("§3 (没有密码的那一端不写 k 这个键|值为空就不写键这条对六格一视同仁|'
+                           r'读回来那一格是空的|少那一格不是少一条串)', gate))
+    if count < 4:
+        fail(f"the gate runs {count} of the 4 legs that measure §3's k-less payload - omitting the key and "
+             f"still being able to pair on the code alone are two different assertions")
+
+
 def main() -> int:
     stamp_path = CONTRACT / "SOURCE.json"
     for name in ("protocol.json", "spec.md", "SOURCE.json"):
@@ -3149,6 +3292,7 @@ def main() -> int:
     check_mdns_goodbye_names_a_service()
     check_hearing_outlives_the_port()
     check_pairing_string_names_a_live_port()
+    check_pair_payload_asks_the_receiver()
 
     print(f"OK  protocol v{body['protocol_version']} from {stamp['source_repo']}@{stamp['source_commit'][:8]}")
     print(f"OK  {len(body['error_codes'])} error codes, {len(body['endpoints'])} endpoints, chunk {chunk // 1024} KiB")
@@ -3208,9 +3352,14 @@ def main() -> int:
     print("OK  §2 splits 跟着监听 in two: the beat and the record ride the port, the browse and the 43721 "
           "listener do not - the PC window reports its port instead of rebuilding discovery, and the phone's "
           "停止接收 still touches neither channel")
-    print("OK  §3's `p=` answers the same question as §2's `port`: the phone's pairing string asks "
-          "livePort(serveIsRunning(), servePort()) now instead of writing the contract's constant, and "
+    print("OK  §3's `p=` answers the same question as §2's `port`: the phone's pairing string reads the store's "
+          "own recvPort (the number the 正在监听 line is painted from) instead of the contract's constant, and "
           "PC's pairing_qr keeps reading the port it actually bound")
+    print("OK  §3's `k=` is judged by the receiver's material, not the card's sentence: one kernel author "
+          "(pairUrl, the inverse of parsePairUrl) spells the string for the phone and the browser, an empty "
+          "value costs its key on all six fields, and losing that key still leaves a payload to dial and pin - "
+          "and the Android entry re-exports every kernel name the store asks for, which is what keeps a new "
+          "export from being dropped out of the compiled plugin")
     return 0
 
 

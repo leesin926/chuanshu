@@ -36,6 +36,7 @@ import {
 	passReject,
 	passOmitted,
 	parsePairUrl,
+	pairUrl,
 	MAX_PATH_DEPTH,
 	MAX_NAME_BYTES,
 	MAX_FILES_PER_OFFER,
@@ -568,17 +569,18 @@ export function demoPeer(): UTSJSONObject {
 	if (peer.code == '') {
 		resetPeer()
 	}
-	const out: UTSJSONObject = { host: '127.0.0.1', port: 43720, code: peer.code, passphrase: peer.passphrase, fingerprint: peer.fingerprint, name: 'PC 演示机' }
+	const out: UTSJSONObject = { host: '127.0.0.1', port: TRANSPORT_PORT, code: peer.code, passphrase: peer.passphrase, fingerprint: peer.fingerprint, name: 'PC 演示机' }
 	return out
 }
 
 /** The pairing payload a real PC paints as a QR, so pasting in a browser does what scanning does on
- *  a phone. Same fields, same order: h, p, v, f, c, k. */
+ *  a phone. Built by the same kernel function the phone's 复制配对信息 calls, which is what keeps the
+ *  order and the "an empty value leaves its key off" rule in one place (§3, #208). */
 export function demoQrUrl(): string {
 	if (peer.code == '') {
 		resetPeer()
 	}
-	return 'chuanshu://p?h=127.0.0.1&p=43720&v=1&f=' + peer.fingerprint + '&c=' + peer.code + '&k=' + peer.passphrase
+	return pairUrl('127.0.0.1', TRANSPORT_PORT.toString(), peer.fingerprint, peer.code, peer.passphrase)
 }
 
 export function setDemoFault(fault: string): void {
@@ -3435,6 +3437,30 @@ export function senderSelfReport(): string {
 	check('码多抄了一位时同样在本地停住，原因是那 6 位', whyPair('&c=1234567&k=K7QMXZ2P').indexOf('6 位') >= 0, whyPair('&c=1234567&k=K7QMXZ2P'))
 	check('两个都抄错时先答码那一句：这里没有"第二个字段只在第一个没带时才问"那回事', whyPair('&c=12a456&k=k7qmxz2p').indexOf('数字') >= 0, whyPair('&c=12a456&k=k7qmxz2p'))
 	check('扫码/粘贴那一趟与手输那一格答的是同一句话', codeReject('12a456') != '' && codeReject('12a456') == whyPair('&c=12a456&k=K7QMXZ2P'), codeReject('12a456') + ' / ' + whyPair('&c=12a456&k=K7QMXZ2P'))
+
+	// L2. 第四十一轮巡检（#208）：同一条串里 `k` 写不写，判的是接收方那份材料里有没有密码，不是卡片上印的
+	// 那句话。改前手机判的是显示文字（材料为空时那一格写着「还没有」），而判错的代价不是少一格，是整条串
+	// 都不给——连"往哪里拨、钉哪张叶"一起收回。现在造串这件事在手机与浏览器这一侧只有一个作者（`pairUrl`，
+	// `parsePairUrl` 的反函数），PC 那一半的同一个作者在 `app/net/spec.py:qr_url`：六格同序，值为空就不写键。
+	const withSecret = pairUrl('192.0.2.1', TRANSPORT_PORT.toString(), myFp, '123456', 'K7QMXZ2P')
+	check('§3 有密码的那一档，六格同序，第六格写的就是那份材料本身',
+		withSecret == QR_SCHEME + '?h=192.0.2.1&p=' + TRANSPORT_PORT.toString() + '&v=' + PROTOCOL_VERSION.toString()
+			+ '&f=' + myFp + '&c=123456&k=K7QMXZ2P', withSecret)
+	const noSecret = pairUrl('192.0.2.1', TRANSPORT_PORT.toString(), myFp, '123456', '')
+	check('§3 没有密码的那一档不写 k 这个键，而不是写一个空值', noSecret.indexOf('k=') < 0, noSecret)
+	const readBack = parsePairUrl(noSecret)
+	check('§3 少那一格不是少一条串：往哪里拨、钉哪张叶、那 6 位码，五格照给',
+		readBack.reject == '' && readBack.host == '192.0.2.1' && readBack.port == TRANSPORT_PORT.toString()
+			&& readBack.fingerprint == myFp && readBack.code == '123456', readBack.reject + ' / ' + noSecret)
+	check('§3 读回来那一格是空的，形状这一问也不拦它（留空是省略，不是一次错猜）',
+		readBack.secret == '' && passReject(readBack.secret) == '', readBack.secret)
+	const fromPayload = parseJson(pairJson('peer-1', '对面', 'nonce', 'a2V5', 'c2ln', readBack.code, readBack.secret, myFp))
+	check('§3 于是上线那一趟根本没有 secret 这个键：对面按旧构建那条读法只核码',
+		fromPayload != null && fromPayload!.get('secret') == null && fromPayload!.getString('code', '') == '123456',
+		fromPayload == null ? 'null' : JSON.stringify(fromPayload!))
+	const noHost = pairUrl('', TRANSPORT_PORT.toString(), myFp, '123456', '')
+	check('§3 空值不写键这条对六格一视同仁，而拒掉缺地址那一串的是读的一方',
+		noHost.indexOf('h=') < 0 && parsePairUrl(noHost).reject.indexOf('没有地址或指纹') >= 0, noHost)
 
 	// M. 第三十轮巡检（#196）：§3 那句「token 丢了……发送方此时用已有的 key 做一次只靠签名、不靠配对码的重配对补回来」。
 	// 三档里以前量到的是两头——`stale token rejected by the receiver` 量对面回 403，`known key re-pairs without a

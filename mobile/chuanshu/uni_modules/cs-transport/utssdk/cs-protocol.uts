@@ -844,3 +844,28 @@ export function parsePairUrl(text: string): PairTarget {
 	return out
 }
 
+/** The inverse of `parsePairUrl`, and the one place this kernel spells §3's payload - the phone's
+ *  复制配对信息 and the browser's demo PC both ask here instead of concatenating six fields each.
+ *  The PC builds the same string in `app/net/spec.py:qr_url`: same order, and a key whose value is
+ *  empty is left off rather than written blank. That is what makes "this build has no passphrase"
+ *  still a payload somebody can scan - `h`/`p`/`f`/`c` say where to knock and what to pin, and none
+ *  of them depends on the second secret. `v` is this kernel's own number, for the same reason the
+ *  reader measures it against COMPATIBLE_VERSIONS instead of a literal.
+ *
+ *  Nothing here needs the escapes `decodeField` reads back: every value is ASCII out of the
+ *  contract's own alphabets (digits, hex, the 32-letter table, an address literal). */
+export function pairUrl(host: string, port: string, fingerprint: string, code: string, secret: string): string {
+	const keys: string[] = ['h', 'p', 'v', 'f', 'c', 'k']
+	const values: string[] = [host, port, PROTOCOL_VERSION.toString(), fingerprint, code, secret]
+	let out = QR_SCHEME + '?'
+	let written = 0
+	for (let i = 0; i < keys.length; i++) {
+		if (values[i].length == 0) {
+			continue
+		}
+		out = out + (written == 0 ? '' : '&') + keys[i] + '=' + values[i]
+		written = written + 1
+	}
+	return out
+}
+
