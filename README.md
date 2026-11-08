@@ -27,7 +27,7 @@
 
 ```
 app/
-  meta.py            应用名 / 版本 / 发布者（唯一改这里即可发新版）
+  meta.py            应用名 / 版本 / 发布者（唯一改这里即可发新版；安装包名、开始菜单、卸载项都跟着变）
   paths.py           源码运行 与 冻结(打包) 运行 的路径解析
   config.py          settings.json 读写，目录由 paths.user_data_dir() 给（Windows %APPDATA%、Linux $XDG_DATA_HOME）
   i18n.py            Qt-free gettext 核心：_()/_n()/N()、current()/available()/resolve()/use()
@@ -167,6 +167,9 @@ Remove-Item env:QT_QPA_PLATFORM; py scripts/ui_selftest.py      # 真字形 + �
 
 ## 传输面板（M1）
 
+`app/ui/transfer.py` 就是主窗口的正文（`main_window._build_body` 只放它）。**界面上写出来的每一句承诺
+都要有对应的入口**，别留"可以扫码"这种做不到的话。
+
 面板只有两条线程规矩，改之前先照镜子：
 
 - **接收端的决定回调跑在服务线程里**，它等一个 `threading.Event`；GUI 侧把 offer 转成
@@ -291,7 +294,8 @@ scratch `HOME`/`XDG_*` 指到 `/tmp`，27 条全绿。
 冻结版有个源码没有的行为：Windows 上它**按控制台代码页输出**（本机 cp936），`PYTHONIOENCODING` 和
 `PYTHONUTF8` 都不起作用——bootloader 自己配置解释器，PEP 587 那条读环境变量的路没走。管道进
 PowerShell 5.1 反而是对的（它按同一套代码页解码），要给 UTF-8 的消费者就读 `chcp 65001` 之后的输出，
-或者跑源码版加 `-X utf8`。自测脚本里那个 `decode()` 先 utf-8 再 gbk 就是这个原因。
+或者跑源码版加 `-X utf8`。`freeze_smoke.py` 里那个 `decode()` 先 utf-8 再 gbk 就是这个原因——要写解析
+冻结产物输出的脚本，先 `chcp 65001`，或者照它那样两种编码都试。
 
 另外 `_identity()` 现在替 `self`/`pair-code` 先把配对码铸出来：一台全新机器上只跑命令行、从没开过窗口，
 之前会印出两行空的"配对码："，而窗口里有码——同一份承诺不能一个 face 兑现、另一个 face 落空。
@@ -334,9 +338,14 @@ PowerShell 5.1 反而是对的（它按同一套代码页解码），要给 UTF-
   DWMWCP_ROUND=2)`，build < 22000 直接 no-op（无边框窗口在 Win10 上是直角），Linux 上也是 no-op——
   窗口管理器给不给圆角不由这里决定。`ctypes.wintypes` 在 Linux 上 import 就炸，所以这个模块不 import
   它，`ctypes.windll` 也只在这个函数里出现。
+- **换配色只改两处**：`app/ui/theme.py` 的 `LIGHT` / `DARK` 两套 Palette，QSS 与图标颜色都由它生成、
+  自动跟着变，别在别处再写一份色值。
 - **图标全部由配置驱动**：字形是 `assets/icons/*.svg` 里的独立文件（写 `currentColor`，
   单独打开也是合法 SVG），`assets/icons/icons.json` 决定"哪个按钮用哪个字形、多大"，
   带变体：`"theme": {"default":"sun","dark":"moon"}`、`"max": {"default":"maximize","maximized":"restore"}`。
+  换/加图标的动作是：把 SVG 丢进 `assets/icons/`，在 `icons.json` 的 `glyphs` 里起个名字，再改 `buttons`
+  里对应角色的映射（要按主题或最大化状态换字形就用上面那种变体写法）；`icon_sizes` 覆盖某个按钮的图标尺寸，
+  `pixmap_sizes` 是每个 QIcon 打包的尺寸。
   读取和光栅化都在 `app/icons.py`，任何模块 `from app import icons` 就能用
   `icons.button_icon("tray", color)` / `icons.icon("logo", color)`。颜色是参数不是常量，
   因为切主题要按当前 Palette 重画，所以 `TitleBar.restyle()` 仍然必须被调用。
@@ -358,6 +367,8 @@ PowerShell 5.1 反而是对的（它按同一套代码页解码），要给 UTF-
   一起降级——设置里"关闭窗口时"少了 `tray` 这一项（存过的 `tray` 会退回显示成"每次询问"，因为
   `findData` 找不到就取 0）、`Ctrl+H` 变灰、`hide_to_tray()` 直接不隐藏、关闭询问改成"关闭窗口就是退出
   程序"。把窗口藏进一个不存在的托盘，等于把一个还在收文件的面板弄丢。
+- **托盘那个菜单属性叫 `context_menu`**（`app/ui/tray.py`）：别改名回 `menu`，那会盖掉
+  `QSystemTrayIcon.menu()`。
 
 ## 设置窗口（`ui/settings_dialog.py`）
 
@@ -401,6 +412,11 @@ PC 端现在是两个产物：Windows（已出包）与 Linux（目标）。命�
 | 托盘 | 总是有 | `QSystemTrayIcon.isSystemTrayAvailable()` 可能为 False，界面整体降级（见上一节最后一条） |
 | 窗口圆角 | Win11 DWM 属性 | no-op；`ctypes.wintypes` 不 import，`apply_rounded_corners()` 第一行就返回 |
 | 端口被占 | bind 不报错，只能探测 | bind 报 `EADDRINUSE`，但实测同样是探测先认出来 |
+
+**平台差异只有四个落点**：路径问 `paths.user_data_dir()` / `autostart_desktop_path()`，开机自启问
+`autostart.is_supported()`，有没有托盘问 `tray.available()`，深色跟随问 `theme.system_prefers_dark()`。
+别在 UI 里再写 `sys.platform`——加第三个系统时只该动这四处，`ui_selftest.py` 里那条
+"没有托盘就不承诺托盘"的断言也只在 `tray.available()` 上挂钩子。
 
 **测到了什么层级**：`scripts/linux_selftest.py` 在 WSL Ubuntu-24.04（Python 3.12.3、
 cryptography 41.0.7、**没有 PySide6、没有 zeroconf**）跑，scratch `HOME`/`XDG_*` 指到 `/tmp`，
@@ -452,6 +468,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -Task all
 2. `pyinstaller app.spec` → `dist\ChuanShu\ChuanShu.exe` **加** `ChuanShu-cli.exe`（one-folder，启动快、
    好排查；一个 `COLLECT` 里两个入口，Inno 的 `recursesubdirs` 自动把第二个一起收）
 3. `ISCC installer\setup.iss` → `dist\installer\ChuanShu-Setup-0.1.0-x64.exe`
+
+`app.spec` 的形状别改：**两份 Analysis、两个 EXE、一个 COLLECT**。命令行必须是第二个 console 入口
+（`console=False` 的窗口进程没有 stdout），而两份的 `binaries`/`datas` 要经 `_merge()` 按文件名去重再交给
+COLLECT，直接拼两份 TOC 会在同一个包里撞出同名条目（CLI 那份为什么不会往包里再塞一套 Qt，见"命令行（headless）"）。
+加第三个入口照这个形状加，别改成 onefile。
+
+若要便携单文件 exe：把 `app.spec` 的 `EXE(...)` 改成 onefile（去掉 `COLLECT`，把
+`_merge(a.binaries, a_cli.binaries)`、`_merge(a.datas, a_cli.datas)` 传给每个 `EXE`），代价是每次启动先解包、
+而且两个入口会各自解一份。
+
+`assets/icons/` 必须进 `_internal`：`app.spec` 用 `paths.icons_dir()` 同一套相对路径收集，漏了的话窗口在
+启动构造标题栏时就抛 `IconConfigError`（这是故意的：配置缺失不该静默降级）。
 
 `dist\` 里现成那两套（Windows 的 `ChuanShu\` + 安装包、Linux 的 tar.gz）出在 #139，也就是「那一问也没人答时
 一次都不重写」（#137）之后——出这一批时本机没有正在跑的实例，所以直接出在正式 `dist\` 上，`freeze_smoke.py`
@@ -606,28 +634,3 @@ owns 三个监听口（`netstat`：TCP 43720、UDP 43721、每个网卡各一个
   在它的常量里找那三句新日志（Windows 侧读 `dist\ChuanShu\ChuanShu.exe`，Linux 侧在 WSL 里读解压出来的
   `ChuanShu/ChuanShu`）——两边都命中才算这次出包真的把 #130 带上了。这条不是例行步骤：只有"改了产品代码
   又重出包"那一轮值得做一次，因为那三句在包里是编译后的常量，grep 二进制搜不到。
-
-## 需要改的地方
-
-- `app/meta.py`：应用名、版本、发布者（安装包名、开始菜单、卸载项都跟着变）
-- `app/ui/transfer.py`：传输面板就是主窗口的正文（`main_window._build_body` 只放它）；
-  界面上写出来的每一句承诺都要有对应的入口，别留"可以扫码"这种做不到的话
-- `app/ui/theme.py` 的 `LIGHT` / `DARK`：换配色只改这两处，QSS 与图标颜色自动跟着变
-- 换/加图标：把 SVG 丢进 `assets/icons/`，在 `icons.json` 的 `glyphs` 里起个名字，再改
-  `buttons` 里对应角色的映射（要按主题或最大化状态换字形就用 `{"default":..,"dark":..}` 变体写法）；
-  `icon_sizes` 覆盖某个按钮的图标尺寸，`pixmap_sizes` 是每个 QIcon 打包的尺寸
-- 打包时 `assets/icons/` 必须进 `_internal`：`app.spec` 用 `paths.icons_dir()` 同一套相对路径收集，
-  漏了的话窗口在启动构造标题栏时就抛 `IconConfigError`（这是故意的：配置缺失不该静默降级）
-- `app/ui/tray.py` 的 `context_menu`：别改名回 `menu`，那会盖掉 `QSystemTrayIcon.menu()`
-- 平台差异只有四个落点：路径问 `paths.user_data_dir()` / `autostart_desktop_path()`，开机自启问
-  `autostart.is_supported()`，有没有托盘问 `tray.available()`，深色跟随问 `theme.system_prefers_dark()`。
-  别在 UI 里再写 `sys.platform`——加第三个系统时只该动这四处，`ui_selftest.py` 里那条
-  "没有托盘就不承诺托盘"的断言也只在 `tray.available()` 上挂钩子
-- `app.spec` 里是**两份 Analysis、两个 EXE、一个 COLLECT**：命令行必须是第二个 console 入口
-  （`console=False` 的窗口进程没有 stdout），而两份的 `binaries`/`datas` 要经 `_merge()` 按文件名去重再
-  交给 COLLECT，直接拼两份 TOC 会在同一个包里撞出同名条目。加第三个入口照这个形状加，别改成 onefile
-- 若要便携单文件 exe：把 `app.spec` 的 `EXE(...)` 改成 onefile（去掉 `COLLECT`，
-  把 `_merge(a.binaries, a_cli.binaries)`、`_merge(a.datas, a_cli.datas)` 传给每个 `EXE`），
-  代价是每次启动先解包、而且两个入口会各自解一份
-- 冻结版在 Windows 按控制台代码页写 stdout，`PYTHONIOENCODING` 不生效（见"命令行（headless）"）；
-  要写解析它输出的脚本，先 `chcp 65001` 或者照 `freeze_smoke.decode()` 那样两种编码都试
