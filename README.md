@@ -493,9 +493,13 @@ COLLECT，直接拼两份 TOC 会在同一个包里撞出同名条目（CLI 那�
 张叶，出包不再附带"已经配过对的那几台得重来一次"。
 
 Linux 那一侧重复同样的三步，只是产物是 tar.gz：`./build-linux.sh`（`--exe-only` 只出可执行文件不打包，
-`PY=python3.12` 换解释器）。它需要 `requirements.txt` + `requirements-dev.txt` 都装上。这条在 WSL 里真跑出过
-产物，`.probe/linux_build_real.sh` 是那次的输入（先把仓库从 `/mnt/e` 拷到 ext4，再用带 PySide6+PyInstaller 的
-venv 跑），跑法与产物见"Linux 侧"最后一段。
+`PY=<解释器>` 换解释器）。它需要 `requirements.txt` + `requirements-dev.txt` 都装上。**这台机器上那个解释器是
+`/root/.venvs/cs/bin/python`**（Python 3.12 + PySide6 + PyInstaller 6.22 + Babel 2.18），默认值 `python3`
+里什么都没装，直接跑会在 PyInstaller 那一步报 `No module named PyInstaller`。更要紧的是 **Babel 要和 Windows
+那侧同版本**：WSL 系统自带的 2.10 会按自己的写法重写 `locale/*.po`，改完的形状让 `scripts/i18n_sync.py`
+读出 51 条"未译"，既挡下构建也把跟踪中的目录改坏（2026-11-08 踩过，恢复靠 `git checkout -- locale/`）。
+这条在 WSL 里真跑出过产物，`.probe/linux_build_real.sh` 是那次的输入（先把仓库从 `/mnt/e` 拷到 ext4，再用带 PySide6+PyInstaller 的
+venv 跑），跑法与产物见"Linux 侧"最后一段；这一次没拷，直接在 `/mnt/e` 上跑通了，只是慢。
 
 Inno Setup 的定位顺序：`$env:ISCC` → 卸载注册表里的 `InstallLocation`（本机 7.1.0 装在 D 盘且不在
 PATH）→ 常见安装目录 → PATH。

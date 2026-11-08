@@ -47,11 +47,14 @@
 			"modules": {
 				"uni-barcode-scanning": {}
 			},
+			/* 这四格留空时 DCloud 会拿它自己的 logo 交差，桌面上就不是这个应用了。
+			   图由 mobile/scripts/gen_android_icons.py 从 assets/icons/logo.svg 渲出来，
+			   别手改 PNG。 */
 			"icons": {
-				"hdpi": "",
-				"xhdpi": "",
-				"xxhdpi": "",
-				"xxxhdpi": ""
+				"hdpi": "static/icons/android/hdpi.png",
+				"xhdpi": "static/icons/android/xhdpi.png",
+				"xxhdpi": "static/icons/android/xxhdpi.png",
+				"xxxhdpi": "static/icons/android/xxxhdpi.png"
 			},
 			"splashScreens": {
 				"default": {}

@@ -8,6 +8,13 @@
 # Needs the runtime and build dependencies first:
 #   python3 -m pip install -r requirements.txt -r requirements-dev.txt
 #
+# PY must point at an interpreter whose Babel matches the Windows side (2.18). On this machine
+# that is the venv, not the distro python:
+#   PY=/root/.venvs/cs/bin/python ./build-linux.sh
+# Ubuntu's system Babel is 2.10, and its `update` rewrites locale/*.po into a shape that
+# scripts/i18n_sync.py reads as 51 untranslated messages - a fake hole that stops the build
+# and leaves the tracked catalogs damaged.
+#
 # The product is one folder holding two executables: ChuanShu (the window) and ChuanShu-cli
 # (the terminal face). A tar.gz is what that shape ships as - the only format promised here.
 set -euo pipefail
