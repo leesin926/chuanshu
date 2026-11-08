@@ -11,7 +11,7 @@
 
 | | 位置 | 内容 |
 |---|---|---|
-| PC 端 | 本仓库根目录（仓库名按 `chuanshu-pc` 起的，但**还没配任何 remote**，两个端都在这一个工作树里） | PySide6 桌面端，Windows 已出包；Linux 是第二个目标平台：headless 半边（路径、身份权限、自启、端口、双向传输）与冻结产物都在 WSL 实测过，GUI 那条也拉到 WSLg 真显示上拍过（见"Linux 侧"）；macOS 未排期 |
+| PC 端 | 本仓库根目录（两个端都在这一个工作树里；公开在 [leesin926/chuanshu](https://github.com/leesin926/chuanshu)，只推 `main`） | PySide6 桌面端，Windows 已出包；Linux 是第二个目标平台：headless 半边（路径、身份权限、自启、端口、双向传输）与冻结产物都在 WSL 实测过，GUI 那条也拉到 WSLg 真显示上拍过（见"Linux 侧"）；macOS 未排期 |
 | 手机端 | `mobile/` | uni-app x，出 Android 与鸿蒙两个平台。iOS 2026-10-24 起终止：没有 Mac 就没法出可签名的包，`app-ios` 那两半边代码留在树里不再推进 |
 | 协议契约 | `protocol/` 与 `mobile/shared/protocol/` | `protocol.json` 是唯一真相源，手机端那份是 vendored 副本，带来源摘要戳，由 `mobile/scripts/check_protocol.py` 守着 |
 
@@ -19,7 +19,8 @@
 
 - `main` = 局域网直连（mDNS + UDP 广播 + 手输地址/粘贴配对串兜底），当前唯一有实现的路线。
 - `cloud-relay` = 云中转。它**不复制协议**，只替换寻址（见 `protocol/spec.md` §8）；中继服务
-  还没有，所以这条分支暂时与 `main` 同树，等中转服务端落地后只改寻址和账号鉴权。
+  还没有，所以这条分支只留在本地（停在 M1 发现层那 4 个提交，公开仓库只推 `main`），
+  等中转服务端落地后只改寻址和账号鉴权。
 
 两端各自跑同一份 `protocol/protocol.json` 校验自己那端；契约改动先改文件、再改代码。
 
