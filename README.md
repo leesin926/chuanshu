@@ -531,10 +531,12 @@ PATH）→ 常见安装目录 → PATH。
 `PyInstaller/building/api.py` 里被 `if is_darwin` 挡住，只有 macOS 能交叉编译；本机是 x64 Windows，
 所以 ARM64 那两只只能在那种 CPU 的 runner 上出（公开仓库的 `windows-11-arm` / `ubuntu-24.04-arm` 免费）。
 32 位 Windows 那一格是**硬边界**：Qt6 的 wheel 只有 `win_amd64` 与 `win_arm64`，没有 `win32`，
-所以那一档出不了窗口，只出命令行——`app/cli.py` 的 import 闭包是 13 个 app 模块加 cryptography、zeroconf，
+2026-11-10 直接量过——`pip download --only-binary=:all: --platform win32 --python-version 3.14 PySide6-Essentials`
+回的是 `from versions: none`。所以那一档出不了窗口，只出命令行——`app/cli.py` 的 import 闭包是 13 个 app 模块加 cryptography、zeroconf，
 不含 Qt（`app.spec` 的 CLI Analysis 用 `excludes=["PySide6"]` 把这条承诺变成构建期断言）。
 独立的 `app-cli.spec` + `requirements-cli.txt` 就是为这一档准备的，产物落 `dist\ChuanShu-cli\`，
-不会盖掉同一棵树里的 64 位 GUI 包。
+不会盖掉同一棵树里的 64 位 GUI 包。同一趟也量了 CLI 那两个依赖在 32 位上有没有得装：
+`cryptography-48.0.1-cp311-abi3-win32.whl`（3.3 MB）确实在，所以那一档不会掉进"从源码编 Rust"的坑。
 
 CI 每一档都**先断言 CPU 再上传**：`scripts/arch_probe.py --expect ARM64|aarch64|I386` 读 PE/ELF 头里的
 machine 字段，所以一个悄悄回退到 x64 解释器的作业会失败，而不是把 x64 的包贴上 arm64 的标签。
