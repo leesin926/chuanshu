@@ -10,6 +10,13 @@
 #    py -3.14-32 -m pip install -r requirements-cli.txt -r requirements-dev.txt
 #    py -3.14-32 -m PyInstaller --noconfirm app-cli.spec
 #
-# Floors are the versions this was verified against, same as requirements.txt.
-cryptography>=42
+# Floors are the versions this was verified against, same as requirements.txt - except the
+# cryptography cap below, which is not a style choice.
+#
+# cryptography stopped shipping 32-bit Windows wheels at 49.0.0 (measured on PyPI 2026-11-10:
+# 48.0.1 still has cp39-abi3-win32 and cp311-abi3-win32; 49.0.0 and 50.0.2 list win32 in none
+# of their files). Left unpinned, a win32 interpreter resolves 50.0.2, finds no wheel, falls
+# back to the sdist and tries to compile Rust - which is exactly how the windows-cli-x86 job
+# died on its first run. The cap keeps that leg on a wheel it can actually install.
+cryptography>=42,<49
 zeroconf>=0.151

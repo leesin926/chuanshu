@@ -520,10 +520,10 @@ PATH）→ 常见安装目录 → PATH。
 | 目标 | 产物 | 状态 |
 |---|---|---|
 | Windows x64 | `ChuanShu-Setup-0.1.0-x64.exe`（GUI + CLI） | 本机出，冻结自检过 |
-| Windows ARM64 | 同上，文件名 `-arm64` | `.github/workflows/build-arch.yml`，**还没跑** |
-| Windows 32 位 | `ChuanShu-0.1.0-win-x86-cli.zip`（**只有 CLI**） | 同上，**还没跑** |
+| Windows ARM64 | 同上，文件名 `-arm64` | 2026-11-10 第一次跑 CI：**死在装依赖**，没到冻结 |
+| Windows 32 位 | `ChuanShu-0.1.0-win-x86-cli.zip`（**只有 CLI**） | 同上，**同样死在装依赖**（已按上界修，见下） |
 | Linux x64 | `ChuanShu-0.1.0-linux-x64.tar.gz` | WSL 出，可执行体是 ELF 64-bit |
-| Linux ARM64 | `ChuanShu-0.1.0-linux-arm64.tar.gz` | 同上，**还没跑** |
+| Linux ARM64 | `ChuanShu-0.1.0-linux-arm64.tar.gz` | 2026-11-10 CI **出包成功**，产物在 Actions Artifacts 里，尚未下载核对 |
 | Android arm64-v8a / armeabi-v7a | 两只独立 APK | 云打包出，列 `lib/` 目录名核对过 |
 | HarmonyOS | `ChuanShu-0.1.0-harmony-unsigned.hap` | 本地出，**未签名** |
 
@@ -535,8 +535,13 @@ PATH）→ 常见安装目录 → PATH。
 回的是 `from versions: none`。所以那一档出不了窗口，只出命令行——`app/cli.py` 的 import 闭包是 13 个 app 模块加 cryptography、zeroconf，
 不含 Qt（`app.spec` 的 CLI Analysis 用 `excludes=["PySide6"]` 把这条承诺变成构建期断言）。
 独立的 `app-cli.spec` + `requirements-cli.txt` 就是为这一档准备的，产物落 `dist\ChuanShu-cli\`，
-不会盖掉同一棵树里的 64 位 GUI 包。同一趟也量了 CLI 那两个依赖在 32 位上有没有得装：
-`cryptography-48.0.1-cp311-abi3-win32.whl`（3.3 MB）确实在，所以那一档不会掉进"从源码编 Rust"的坑。
+不会盖掉同一棵树里的 64 位 GUI 包。这一档的依赖还有一条必须钉死：`cryptography` 从 **49.0.0 起不再发
+win32 轮子**（2026-11-10 在 PyPI 上逐版本点过：48.0.1 还有 `cp39-abi3-win32` 与 `cp311-abi3-win32`，
+49.0.0 与 50.0.2 的文件表里 win32 一个都没有）。所以 `requirements-cli.txt` 写的是 `>=42,<49`——
+不带这个上界，32 位解释器解析到 50.0.2、找不到轮子、退去编 sdist，CI 里就是那句从源码编 Rust 的失败
+（第一次跑 `build-arch` 时两条 Windows 腿都死在装依赖这一步，Linux 那条过了）。量过的对照：
+`pyinstaller` 6.22.3 三种 Windows 轮子（win32 / win_amd64 / win_arm64）都在，`babel` 2.18.0 是纯
+`py3-none-any`，`PySide6-Essentials` 6.12.0 有 `cp310-abi3-win_arm64` 但**就是没有 win32**。
 
 CI 每一档都**先断言 CPU 再上传**：`scripts/arch_probe.py --expect ARM64|aarch64|I386` 读 PE/ELF 头里的
 machine 字段，所以一个悄悄回退到 x64 解释器的作业会失败，而不是把 x64 的包贴上 arm64 的标签。
