@@ -76,6 +76,11 @@ py -X utf8 scripts/check_protocol.py
   （云端证书）；`1`/`2` 那两档帮助里写明"仅适用于 uni-app"，uni-app x 用不了。
   另外 `app-android.distribute.icons` 四格留空时包里就是 DCloud 的 logo，图由
   `mobile/scripts/gen_android_icons.py` 从 `assets/icons/logo.svg` 渲，别手改 PNG。
+  **32 位与 64 位是两只包，不是一只胖包**：`app-android.distribute.abiFilters` 是每次打包前改、
+  打完改回来的开关（仓库常驻 `["arm64-v8a"]`，出 v7a 那只时改成 `["armeabi-v7a"]`）。
+  键就在 `distribute` 底下，**不是** `distribute.android.abiFilters`——那是 4.71 以前的形，
+  这台 5.26 写进去不报错、静默按默认 arm64 出包。所以打完唯一的核对动作是列 APK 里的 `lib/` 目录名：
+  v7a 那只只有 `armeabi-v7a` 一层，且 `www/` 那 57 个文件与 arm64 那只逐字节相同（2026-11-08 量过）。
 - **鸿蒙**：`cli pack app-harmony` 只做本地打包，且这台机器**没有配签名证书**，它会明说
   `由于未配置相关数字证书，打包未签名`，交出 `app-harmony-release-unsigned.app` 与
   `entry-default-unsigned.hap`（两者字节数相同）。也就是说这一端出不了"任何人都能装"的包——
@@ -1144,10 +1149,17 @@ py -X utf8 scripts/check_protocol.py
       永远返回空、<26 走 `startService` 且不建 NotificationChannel、<34 的 `startForeground` 不带 `FOREGROUND_SERVICE_TYPE_DATA_SYNC`）。
       §6 那条保活承诺（#143）点名的机制在这台上根本不存在，要量的正是这一端改口说什么。
     - **两条路都要点头、都不免费**：① 换一台 **arm64** 真机（Android 6~8 最划算：装得上现有基座，又还在 API<28 那一支，一次量到两组分支）；
-      ② 云打包一个 32 位自定义基座——manifest 里 `app-android.distribute.android.abiFilters` 加上 `"armeabi-v7a"`，再
-      `"F:/HBuilderX/cli.exe" pack --project E:/wowo3/mobile/chuanshu --iscustom true`；这花的是 DCloud 账号的一次打包额度，
-      且 DCloud 那侧给不给 uni-app x 出 v7a 运行时无法在此证明，可以先 `--precheck true`（不提交、不花额度）听它怎么说。
+      ② 云打包一个 32 位基座——manifest 里把 `abiFilters` 换成 `["armeabi-v7a"]`，再
+      `"F:/HBuilderX/cli.exe" pack --project E:/wowo3/mobile/chuanshu --iscustom true`；这花的是 DCloud 账号的一次打包额度。
       2026-11-03 的决定是**只记边界**：打包与挑设备都还没动，边界写在 `docs/feature-matrix.md` §7 那四条里。
+      **2026-11-08 更新（②那半边已经做了，①还没有）**：用户点头花了额度，v7a 那只云包真出出来了，
+      `lib/` 里只有 `armeabi-v7a` 一层（13 个 `.so`，含 `libuniappx.so`/`libuts-runtime.so`），
+      且 `assets/apps/__UNI__8DB2EF6/www/` 那 57 个文件与 arm64 那只**逐字节相同**——所以 DCloud 给 uni-app x 出 v7a 运行时
+      这件事不再是"无法在此证明"，是量到了。**键的位置当时写错了**：这台 HBuilderX 5.26 认的是
+      `app-android.distribute.abiFilters`（4.71+ 的形），不是这里原先写的 `app-android.distribute.android.abiFilters`；
+      写错的那一格不会报错，只会静默按默认 arm64 出包，所以打完必须列 `lib/` 目录名核对。
+      这一格是**每次打包前改、打完改回来**的开关，仓库里常驻 `["arm64-v8a"]`。设备档那笔账照旧欠着：
+      包有了，那台 vivo 还没接上来跑过。
     - **顺手清掉一条旧假设**：Android 的版本下限**从来没写在纸上**——`protocol/spec.md`、`docs/feature-matrix.md` 与这份 README
       三份 grep `Android 5` / `minSdk` / `API 2` / `Android 9` 全空，而"需要 Android 9 以上"那句只活在 `CsDiscovery.kt:428` 一行里。
       「支持 Android」在生产上的真形状是「Android 5.0+ **且** 64 位用户态」：收窄它的不是协议，是 `.so` 的目录表。

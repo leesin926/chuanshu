@@ -1,0 +1,173 @@
+name: build-arch
+
+# Three shipping targets this project's own machine cannot host.
+#
+# Why CI at all: PyInstaller always freezes for the interpreter that runs it and has no
+# cross-compile - its --target-architecture is gated on is_darwin in PyInstaller.building.api,
+# so a Windows ARM64 or Linux ARM64 binary has to be produced on that architecture. And Qt6
+# publishes no win32 wheel at all, which is why the 32-bit leg below is the CLI only:
+# app/cli.py reaches 13 app modules and needs nothing but cryptography and zeroconf.
+#
+# Manual trigger on purpose: nothing here runs on a push, and every job asserts the CPU it
+# claims (scripts/arch_probe.py reads the PE/ELF machine field) before uploading, so a job
+# that silently fell back to an x64 interpreter fails instead of mislabelling an artifact.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 要打的分支或 tag
+        default: main
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  windows-arm64:
+    name: Windows ARM64 - GUI + CLI + installer
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          winget install -e --id JRSoftware.InnoSetup --accept-package-agreements --accept-source-agreements --silent
+          if ($LASTEXITCODE -ne 0) {
+            choco install innosetup -y
+            if ($LASTEXITCODE -ne 0) { throw "no way to get Inno Setup on this runner" }
+          }
+
+      - name: Freeze and package for ARM64
+        # The two macros are what stop the installer from claiming x64compatible: that value
+        # also matches ARM64 machines running x64 code under emulation, and this package is
+        # natively ARM64. See installer/setup.iss.
+        #
+        # -Py python, not the script's default `py`: the launcher picks the highest version
+        # registered on the image, which is not necessarily the ARM64 interpreter setup-python
+        # just put on PATH. `python` is the one this job installed its dependencies into.
+        shell: pwsh
+        run: .\build.ps1 -Task all -Py python -ArchTag arm64 -ArchAllowed arm64
+
+      - name: Assert the frozen binaries are ARM64
+        # Not the installer: Inno's setup.exe is a 32-bit stub by design and always reads I386.
+        run: python scripts/arch_probe.py --expect ARM64 dist\ChuanShu\ChuanShu.exe dist\ChuanShu\ChuanShu-cli.exe
+
+      - name: Smoke the frozen CLI
+        run: dist\ChuanShu\ChuanShu-cli.exe self
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-arm64
+          path: dist\installer\ChuanShu-Setup-*-arm64.exe
+          if-no-files-found: error
+
+  linux-arm64:
+    name: Linux ARM64 - tar.gz
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install the Qt runtime libraries
+        # PyInstaller's PySide6 hook imports the package during analysis, so a runner missing these
+        # dies in the freeze step rather than at runtime. The WSL machine that produced every Linux
+        # build so far had them installed by hand (README, "Linux 侧"). Precaution, not a measured
+        # minimum: this leg has never run, so nobody has yet found which of the list it can drop.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgl1 libfontconfig1 libdbus-1-3 libxkbcommon0 libxkbcommon-x11-0 \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
+            libxcb-render-util0 libxcb-shape0 libxcb-sync1 libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb1
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Freeze and pack
+        # PY pins the interpreter the dependencies went into; the script's default python3
+        # could otherwise be the image's system one, whose Babel is a different writer.
+        env:
+          PY: python
+        run: |
+          ./build-linux.sh
+          python scripts/arch_probe.py --expect aarch64 dist/ChuanShu/ChuanShu dist/ChuanShu/ChuanShu-cli
+
+      - name: Smoke the frozen CLI
+        run: dist/ChuanShu/ChuanShu-cli self
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm64
+          path: dist/ChuanShu-*-linux-arm64.tar.gz
+          if-no-files-found: error
+
+  windows-cli-x86:
+    name: Windows 32-bit - CLI only
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+          architecture: x86
+
+      - name: Assert the interpreter really is 32-bit
+        shell: pwsh
+        # setup-python's architecture input is a request, not a promise: if the win32 build of
+        # this version were missing it can fall back, and then PyInstaller would happily freeze
+        # an x64 binary into a file named win-x86. The interpreter's own pointer size is what
+        # makes the label true, so check it before spending a minute on the build.
+        run: python -c "import struct,sys; assert struct.calcsize('P')*8==32, sys.version; print('32-bit interpreter:', sys.version.split()[0])"
+
+      - name: Install CLI-only dependencies
+        shell: pwsh
+        # requirements.txt is deliberately NOT used here: its PySide6-Essentials line has no
+        # win32 wheel, so pip would go looking for a Qt source build and die.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-cli.txt -r requirements-dev.txt
+
+      - name: Freeze the terminal face
+        shell: pwsh
+        run: python -m PyInstaller --noconfirm --clean app-cli.spec
+
+      - name: Assert the frozen CLI is 32-bit
+        run: python scripts/arch_probe.py --expect I386 dist\ChuanShu-cli\ChuanShu-cli.exe
+
+      - name: Smoke the frozen CLI
+        run: dist\ChuanShu-cli\ChuanShu-cli.exe self
+
+      - name: Pack
+        shell: pwsh
+        run: |
+          $v = python -c "from app.meta import APP_NAME, VERSION; print(f'{APP_NAME}-{VERSION}-win-x86-cli')"
+          Compress-Archive -Path dist\ChuanShu-cli -DestinationPath "dist\$v.zip" -Force
+          Get-Item "dist\$v.zip" | Select-Object Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86-cli
+          path: dist/ChuanShu-*-win-x86-cli.zip
+          if-no-files-found: error

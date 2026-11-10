@@ -10,7 +10,12 @@ build.ps1 - one-command pipeline: translations -> exe -> installer.
 param(
     [ValidateSet('i18n', 'exe', 'installer', 'all', 'clean')]
     [string]$Task = 'all',
-    [string]$Py = 'py'
+    [string]$Py = 'py',
+    # Injected into installer/setup.iss. The defaults reproduce what this script shipped
+    # before the flag existed, so a local `build.ps1 -Task all` is byte-for-byte the same
+    # request as before; CI's Windows ARM64 job passes -ArchTag arm64 -ArchAllowed arm64.
+    [string]$ArchTag = 'x64',
+    [string]$ArchAllowed = 'x64compatible'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -69,7 +74,12 @@ function Step-I18n {
     $pybabel = Resolve-Pybabel
     & $pybabel extract --project=$($meta[0]) --version=$($meta[1]) -F babel.cfg -o locale/app.pot .
     if ($LASTEXITCODE -ne 0) { throw 'pybabel extract failed' }
-    & $pybabel update -D app -i locale/app.pot -d locale
+    # --ignore-pot-creation-date: extract stamps a fresh date every run, and without this flag
+    # `update` copies it into all eight .po, `compile` copies it into all eight .mo, and the
+    # frozen bundle then differs from the last build of the very same source. Measured: the
+    # only difference between two runs was 4 bytes per .mo. A release whose sha256 a recipient
+    # cannot reproduce by rebuilding is a release they cannot check.
+    & $pybabel update -D app -i locale/app.pot -d locale --ignore-pot-creation-date
     if ($LASTEXITCODE -ne 0) { throw 'pybabel update failed' }
     # An empty msgstr compiles into an empty translation, and Python's gettext returns it
     # instead of the msgid - mirror zh_CN and refuse to build while en has holes.
@@ -88,7 +98,8 @@ function Step-Installer {
     $meta = Get-Meta
     $iscc = Resolve-Iscc
     $innoDir = Split-Path -Parent $iscc
-    & $iscc "/DAppName=$($meta[0])" "/DAppVersion=$($meta[1])" "/DPublisher=$($meta[2])" "/DInnoDir=$innoDir" installer/setup.iss
+    & $iscc "/DAppName=$($meta[0])" "/DAppVersion=$($meta[1])" "/DPublisher=$($meta[2])" "/DInnoDir=$innoDir" `
+        "/DArchTag=$ArchTag" "/DArchAllowed=$ArchAllowed" installer/setup.iss
     # ISCC returns non-zero on a script error; without this check the pipeline would
     # report success while dist\installer kept the previous build.
     if ($LASTEXITCODE -ne 0) { throw 'ISCC failed to compile installer/setup.iss' }

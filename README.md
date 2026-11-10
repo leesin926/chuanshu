@@ -88,6 +88,11 @@ scripts/
                         语言只要还有空条目或 fuzzy 就直接构建失败（LANGUAGE_NAMES 承诺了却没
                         建目录的语言同样报错）
   receiver_host.py      给自测用的独立接收进程
+  arch_probe.py         读一个文件的 PE/ELF 头，报出里面那个 machine 字段（不读正文，只取前 512
+                        字节）。CI 每一档在上传前先 `--expect` 一次，所以一个悄悄回退到 x64
+                        解释器的作业会失败，而不是把 x64 的包贴上 arm64 的标签
+  arch_probe_selftest.py 上面那只探针自己的单测：31 条，含四种残缺 PE 头、大端 ELF、
+                        未列出的 machine、退出码 0/1/2 与"只读头部不吞整文件"那条
 assets/icons/
   icons.json         图标配置：`window_icon` 指定全应用 logo，`glyphs` 字形表，`buttons` 角色→字形
                      （含主题/最大化变体），`pixmap_sizes` 每个 QIcon 的尺寸，`icon_sizes` 每按钮尺寸
@@ -99,8 +104,14 @@ installer/setup.iss  Inno Setup 脚本（分区注释说明每个指令为什么
 installer/licenses/  免责声明文本（zh_CN / en，UTF-8 BOM）
 installer/languages/ 可选：项目自带的 ChineseSimplified.isl，优先于编译器版本
 app.spec             PyInstaller 配置（one-folder，一个 COLLECT 两个入口，捆绑 locale + assets/icons + protocol）
+app-cli.spec         同一份内核的另一只产物：只有命令行面，`excludes=["PySide6"]`，
+                     给 32 位 Windows 那一档用（Qt6 没有 win32 轮子，GUI 在那里根本打不出来）
+requirements-cli.txt app-cli.spec 那一只的依赖闭包（cryptography + zeroconf，不含 PySide6）
 build.ps1            i18n / exe / installer 流水线（Windows）
 build-linux.sh       同样三步的 Linux 版：i18n → PyInstaller → tar.gz
+.github/workflows/build-arch.yml
+                     这台机器打不出来的三只架构（Windows ARM64 / Linux ARM64 / Windows 32 位 CLI），
+                     手动触发的 Actions；每档上传前先跑 arch_probe.py 断言 CPU
 babel.cfg            pybabel 抽取映射
 ```
 
@@ -429,9 +440,9 @@ cryptography 41.0.7、**没有 PySide6、没有 zeroconf**）跑，scratch `HOME
 但字体度量与合成器行为在 offscreen 上证明不了（见"界面这层的验证"第一条），所以冻结产物又被拉到 WSLg 的
 **真显示**上跑了一遍（下一段）：那才是导轨宽度这类几何结论的来源。
 
-**真跑过 PyInstaller 的那半边**（#105）：`./build-linux.sh` 在 WSL Ubuntu-24.04 里出了六次产物，
-最后一次（#139，#137 那一条之后）就是仓库里那个 `dist/ChuanShu-0.1.0-linux-x64.tar.gz`
-（70,088,524 字节，一个目录两个可执行）。
+**真跑过 PyInstaller 的那半边**（#105）：`./build-linux.sh` 在 WSL Ubuntu-24.04 里出过多次产物，
+最近一次是 2026-11-08 的 #210（第 37~41 轮之后重出），就是仓库里那个 `dist/ChuanShu-0.1.0-linux-x64.tar.gz`
+（70,132,362 字节，一个目录两个可执行；#139 那一次是 70,088,524，后来被这次替掉）。
 在这之前还有一次纯脚本层的实跑（`.probe/linux_build_probe.sh`，一次性探针，不进仓库）：把 `-m PyInstaller`
 与翻译三步换成桩，其余照原样，于是 `--exe-only` 那条分支（真构建没走它）与"解压回来还在 +x"是那次拿到的结论。
 装的东西：`python3-venv`/`python3-pip`、PySide6 6.12.0 跑起来要的 Qt 运行库（`libxcb-*`、`libxkbcommon`
@@ -503,6 +514,47 @@ venv 跑），跑法与产物见"Linux 侧"最后一段；这一次没拷，直�
 
 Inno Setup 的定位顺序：`$env:ISCC` → 卸载注册表里的 `InstallLocation`（本机 7.1.0 装在 D 盘且不在
 PATH）→ 常见安装目录 → PATH。
+
+**架构覆盖：哪几只包已经有、哪几只还只在纸上**（2026-11-10）
+
+| 目标 | 产物 | 状态 |
+|---|---|---|
+| Windows x64 | `ChuanShu-Setup-0.1.0-x64.exe`（GUI + CLI） | 本机出，冻结自检过 |
+| Windows ARM64 | 同上，文件名 `-arm64` | `.github/workflows/build-arch.yml`，**还没跑** |
+| Windows 32 位 | `ChuanShu-0.1.0-win-x86-cli.zip`（**只有 CLI**） | 同上，**还没跑** |
+| Linux x64 | `ChuanShu-0.1.0-linux-x64.tar.gz` | WSL 出，可执行体是 ELF 64-bit |
+| Linux ARM64 | `ChuanShu-0.1.0-linux-arm64.tar.gz` | 同上，**还没跑** |
+| Android arm64-v8a / armeabi-v7a | 两只独立 APK | 云打包出，列 `lib/` 目录名核对过 |
+| HarmonyOS | `ChuanShu-0.1.0-harmony-unsigned.hap` | 本地出，**未签名** |
+
+三条腿为什么必须上 CI：PyInstaller 永远为**跑它的那个解释器**冻结，`--target-architecture` 在
+`PyInstaller/building/api.py` 里被 `if is_darwin` 挡住，只有 macOS 能交叉编译；本机是 x64 Windows，
+所以 ARM64 那两只只能在那种 CPU 的 runner 上出（公开仓库的 `windows-11-arm` / `ubuntu-24.04-arm` 免费）。
+32 位 Windows 那一格是**硬边界**：Qt6 的 wheel 只有 `win_amd64` 与 `win_arm64`，没有 `win32`，
+所以那一档出不了窗口，只出命令行——`app/cli.py` 的 import 闭包是 13 个 app 模块加 cryptography、zeroconf，
+不含 Qt（`app.spec` 的 CLI Analysis 用 `excludes=["PySide6"]` 把这条承诺变成构建期断言）。
+独立的 `app-cli.spec` + `requirements-cli.txt` 就是为这一档准备的，产物落 `dist\ChuanShu-cli\`，
+不会盖掉同一棵树里的 64 位 GUI 包。
+
+CI 每一档都**先断言 CPU 再上传**：`scripts/arch_probe.py --expect ARM64|aarch64|I386` 读 PE/ELF 头里的
+machine 字段，所以一个悄悄回退到 x64 解释器的作业会失败，而不是把 x64 的包贴上 arm64 的标签。
+断言对象是 `dist\ChuanShu\ChuanShu.exe`，**不是安装包**：Inno 的 `setup.exe` 引导壳按设计永远是 32 位 PE，
+拿它断言只会读到 I386。`x64compatible` 也不等于"只装 x64"——它同时匹配在 ARM64 上跑 x64 模拟的机器，
+所以原生 ARM64 那一趟用 `-ArchTag arm64 -ArchAllowed arm64` 把这两个值换掉。
+触发：仓库 Actions → `build-arch` → Run workflow（`workflow_dispatch`，不随 push 跑）；
+产物在该次运行的 Artifacts 里，下载后补进 `dist/release/SHA256SUMS.txt` 再进 release。
+Linux ARM64 那一趟先 `apt-get` 装了一遍 Qt 运行库：PyInstaller 的 PySide6 钩子在分析阶段就要 import
+一次，缺这些会死在冻结那一步而不是运行时。这一串是照 WSL 那台手装过的清单抄的**预防**，不是量出来的
+最小集。还有一条要说在前面：三档的冒烟都只跑冻结 CLI 的 `self`，所以**ARM64 上那只窗口至今没被
+拉起来过**——x64 那台"offscreen 活过 8 秒"的结论不会自动搬到 arm64。
+
+`pybabel update` 两侧都带 `--ignore-pot-creation-date`：`extract` 每跑一次就盖一个新日期，不带这个旗标
+`update` 会把它抄进 8 个 `.po`、`compile` 再抄进 8 个 `.mo`，于是**同一份源码的两次构建产物不同**
+（量到的差别是每个 `.mo` 4 个字节），收件人重算 sha256 永远对不上。带上之后重建一次，8 个 `.po` 与
+8 个 `.mo` 与 HEAD 逐字节相同，只剩 `locale/app.pot` 这个不被打包的模板在动。旗标只忽略日期：
+真新增一条 msgid 照样进目录，而 Babel 猜出来的那条是 fuzzy，`scripts/i18n_sync.py` 会当场挡下构建。
+即便如此产物也**不是**逐字节可复现的——PyInstaller 把构建时刻写进 PE 的 `TimeDateStamp`
+（本机量到 `2026-11-08T12:12:16Z`，正是那次构建的时刻），要完全复现得再钉 `SOURCE_DATE_EPOCH`，这一步没做。
 
 安装向导语言：英文用 `compiler:Default.isl`（6/7 都有；Inno 7 删掉了 `Languages\English.isl`，
 别写死那条路径）。简体中文优先用项目内 `installer\languages\ChineseSimplified.isl`，

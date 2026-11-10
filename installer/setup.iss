@@ -43,6 +43,17 @@
 #define LicEn AddBackslash(SourcePath) + "licenses\disclaimer-en.txt"
 #define LicZh AddBackslash(SourcePath) + "licenses\disclaimer-zh_CN.txt"
 
+; 架构标签与允许范围从命令行注入。build.ps1 不传这两个宏，所以本机的产物名和允许范围与今天
+; 逐字相同；CI 的 Windows ARM64 作业传 /DArchTag=arm64 /DArchAllowed=arm64。
+; 为什么不能只靠 x64compatible：那个值把 ARM64 算进"x64 兼容"，装上去跑的是模拟层，
+; 而我们要的是包内那批 .pyd/.dll 是 arm64 原生编译的这一份。
+#ifndef ArchTag
+  #define ArchTag "x64"
+#endif
+#ifndef ArchAllowed
+  #define ArchAllowed "x64compatible"
+#endif
+
 [Setup]
 ; ---- 基本信息：开始菜单、卸载列表、窗口标题都取自这几项 ----
 AppName={#AppName}
@@ -73,17 +84,18 @@ DisableProgramGroupPage=yes
 
 ; ---- 输出与压缩 ----
 OutputDir=..\dist\installer
-OutputBaseFilename={#AppName}-Setup-{#AppVersion}-x64
+OutputBaseFilename={#AppName}-Setup-{#AppVersion}-{#ArchTag}
 ; lzma2/max + solid：139MB 的 one-folder 目录（Qt 与 zeroconf 都在里面）压到约 41MB。
 Compression=lzma2/max
 SolidCompression=yes
 
 ; ---- 外观与平台 ----
 WizardStyle=modern
-; 只允许 64 位 x64 机器安装；x64compatible 需要 Inno Setup >= 6.3。
-ArchitecturesAllowed=x64compatible
+; 默认 x64compatible（需要 Inno Setup >= 6.3）；ARM64 那一趟由命令行把 {#ArchAllowed} 换成 arm64，
+; 于是这只包只认原生 ARM64，不会被 x64 机器拿去装一份跑在模拟层里的东西。
+ArchitecturesAllowed={#ArchAllowed}
 ; 让 {autopf}/{common*} 走 64 位视图，不被 WOW6432Node 重定向到 Program Files (x86)。
-ArchitecturesInstallIn64BitMode=x64compatible
+ArchitecturesInstallIn64BitMode={#ArchAllowed}
 
 ; ---- 权限与卸载 ----
 ; 默认按当前用户安装（免 UAC）；欢迎页的覆盖选项允许升级为全机器安装。

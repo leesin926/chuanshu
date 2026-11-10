@@ -44,6 +44,14 @@
 	},
 	"app-android": {
 		"distribute": {
+			/* 云打包默认只带 arm64-v8a。发布要 32 位与 64 位分开的两只 APK，所以这一格是
+			   每次打包前改、打完改回来的开关，不是常驻配置：出 arm64 那一只时它是
+			   ["arm64-v8a"]，出 armeabi-v7a 那一只时改成 ["armeabi-v7a"]。
+			   键的位置按 HBuilderX 4.71+ 的形（app-android → distribute → abiFilters）；
+			   仓库里另一处旧笔记写的 distribute.android.abiFilters 是 4.71 以前的形。 */
+			"abiFilters": [
+				"arm64-v8a"
+			],
 			"modules": {
 				"uni-barcode-scanning": {}
 			},

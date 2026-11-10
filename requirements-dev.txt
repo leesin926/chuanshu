@@ -1,3 +1,8 @@
 # Build-time only. Install with: py -m pip install -r requirements-dev.txt
 pyinstaller>=6.11
-babel>=2.16
+# Pinned, not floored: locale/*.po are checked-in artifacts and `pybabel update` rewrites them
+# with whatever formatting its own writer chooses. Measured on 2026-11-08 - the same tree run
+# through Babel 2.10 came back with 51 entries that scripts/i18n_sync.py reads as untranslated,
+# which stops the build and leaves the tracked catalogs damaged. Every host that packs this app
+# (Windows, the WSL venv, CI) is on 2.18, so the writer is part of the toolchain, not a detail.
+babel==2.18.*

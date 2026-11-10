@@ -29,12 +29,25 @@ exe_only=0
 name="$("$py" -c 'from app.meta import APP_NAME; print(APP_NAME)')"
 version="$("$py" -c 'from app.meta import VERSION; print(VERSION)')"
 
+# The archive says which CPU it was frozen for, and PyInstaller always freezes for the
+# interpreter running it - so the honest source of that word is the machine doing the build,
+# not a literal in this script. x86_64 keeps shipping as "x64" so the file name this project
+# has published so far is unchanged; anything else is named after uname itself.
+case "$(uname -m)" in
+    x86_64) arch=x64 ;;
+    aarch64) arch=arm64 ;;
+    *) arch="$(uname -m)" ;;
+esac
+
 if [[ $exe_only -eq 0 ]]; then
     echo "==> translations"
     # The .mo files are read from _MEIPASS at runtime, so a stale catalogue ships as stale UI.
     "$py" -m babel.messages.frontend extract --project="$name" --version="$version" \
         -F babel.cfg -o locale/app.pot .
-    "$py" -m babel.messages.frontend update -D app -i locale/app.pot -d locale
+    # --ignore-pot-creation-date keeps a rebuild of unchanged source from rewriting all eight
+    # .po and .mo with a fresh timestamp (4 bytes per .mo, measured) - the frozen bundle would
+    # otherwise differ from the last build of the same tree, and so would its sha256.
+    "$py" -m babel.messages.frontend update -D app -i locale/app.pot -d locale --ignore-pot-creation-date
     "$py" -X utf8 scripts/i18n_sync.py
     "$py" -m babel.messages.frontend compile -D app -d locale
 fi
@@ -42,7 +55,7 @@ fi
 echo "==> PyInstaller"
 "$py" -m PyInstaller --noconfirm --clean app.spec
 
-archive="dist/${name}-${version}-linux-x64.tar.gz"
+archive="dist/${name}-${version}-linux-${arch}.tar.gz"
 if [[ $exe_only -eq 1 ]]; then
     echo
     echo "  app       : dist/$name/$name"

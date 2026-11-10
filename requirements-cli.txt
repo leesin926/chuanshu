@@ -1,0 +1,15 @@
+# What the terminal face needs - and nothing else.
+#
+# This file exists because 32-bit Windows has no PySide6 wheel at all (Qt6 publishes
+# win_amd64 and win_arm64), so `pip install -r requirements.txt` on a win32 interpreter
+# fails on the Qt line before it can build anything. The CLI does not need Qt: walking the
+# import graph from app/cli.py reaches 13 app modules and exactly these two third-party
+# packages, and app.spec already excludes PySide6 from the CLI Analysis to keep that promise
+# enforceable at build time.
+#
+#    py -3.14-32 -m pip install -r requirements-cli.txt -r requirements-dev.txt
+#    py -3.14-32 -m PyInstaller --noconfirm app-cli.spec
+#
+# Floors are the versions this was verified against, same as requirements.txt.
+cryptography>=42
+zeroconf>=0.151
