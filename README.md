@@ -517,6 +517,13 @@ venv 跑），跑法与产物见"Linux 侧"最后一段；这一次没拷，直�
 Inno Setup 的定位顺序：`$env:ISCC` → 卸载注册表里的 `InstallLocation`（本机 7.1.0 装在 D 盘且不在
 PATH）→ 常见安装目录 → PATH。
 
+**`v0.1.0` 这个 tag 挪过一次位置**（2026-11-10）：原来切在 `697d036`，而两只桌面包（Windows 安装包与
+Linux tar.gz）是带 CLI 输出编码修复的 `47aabcc` 之后重出的，所以把 tag 移到了 `f930e28`——`f930e28` 与
+`47aabcc` 之间只有 README 一段文字不同，`app/ protocol/ locale/ mobile/chuanshu` 逐字节相同（`git diff
+--stat` 量过，不是推断）。挪之前的 tag 对象留在 `refs/backup/v0.1.0-at-697d036`，远端也在，退回去是
+一条 `git push --force` 的事。说明正文用字节级抽取重建过（607 字节与原文一致）——第一次用 awk 抽的时候
+把正文里那个空行吃了，GitHub 上会渲染成一坨，已重做。
+
 **架构覆盖：哪几只包已经有、哪几只还只在纸上**（2026-11-10）
 
 | 目标 | 产物 | 状态 |
