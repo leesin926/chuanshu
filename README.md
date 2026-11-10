@@ -441,8 +441,10 @@ cryptography 41.0.7、**没有 PySide6、没有 zeroconf**）跑，scratch `HOME
 **真显示**上跑了一遍（下一段）：那才是导轨宽度这类几何结论的来源。
 
 **真跑过 PyInstaller 的那半边**（#105）：`./build-linux.sh` 在 WSL Ubuntu-24.04 里出过多次产物，
-最近一次是 2026-11-08 的 #210（第 37~41 轮之后重出），就是仓库里那个 `dist/ChuanShu-0.1.0-linux-x64.tar.gz`
-（70,132,362 字节，一个目录两个可执行；#139 那一次是 70,088,524，后来被这次替掉）。
+最近一次是 2026-11-10 17:44（带 `47aabcc` 那条 CLI 输出编码修复），就是仓库里那个
+`dist/ChuanShu-0.1.0-linux-x64.tar.gz`（70,152,071 字节，一个目录两个可执行；#210 那次是 70,132,362，
+#139 那次是 70,088,524，都被往后替掉了）。跑法：`.probe/linux_build_real.sh` 把树拷进 `$HOME/csbuild`
+再建，tar.gz 拷回 `dist/`。
 在这之前还有一次纯脚本层的实跑（`.probe/linux_build_probe.sh`，一次性探针，不进仓库）：把 `-m PyInstaller`
 与翻译三步换成桩，其余照原样，于是 `--exe-only` 那条分支（真构建没走它）与"解压回来还在 +x"是那次拿到的结论。
 装的东西：`python3-venv`/`python3-pip`、PySide6 6.12.0 跑起来要的 Qt 运行库（`libxcb-*`、`libxkbcommon`
