@@ -520,8 +520,8 @@ PATH）→ 常见安装目录 → PATH。
 | 目标 | 产物 | 状态 |
 |---|---|---|
 | Windows x64 | `ChuanShu-Setup-0.1.0-x64.exe`（GUI + CLI） | 本机出，冻结自检过 |
-| Windows ARM64 | 同上，文件名 `-arm64` | 2026-11-10 第一次跑 CI：**死在装依赖**，没到冻结 |
-| Windows 32 位 | `ChuanShu-0.1.0-win-x86-cli.zip`（**只有 CLI**） | 同上，**同样死在装依赖**（已按上界修，见下） |
+| Windows ARM64 | 同上，文件名 `-arm64` | 2026-11-10 跑了两次：卡在**装依赖**（cryptography 没有 arm64 轮子），详见下 |
+| Windows 32 位 | `ChuanShu-0.1.0-win-x86-cli.zip`（**只有 CLI**） | 装依赖已由上界修好、I386 包打出来了；卡在冻结产物跑 `self` 的编码，已修 |
 | Linux x64 | `ChuanShu-0.1.0-linux-x64.tar.gz` | WSL 出，可执行体是 ELF 64-bit |
 | Linux ARM64 | `ChuanShu-0.1.0-linux-arm64.tar.gz` | 2026-11-10 CI **出包成功**，产物在 Actions Artifacts 里，尚未下载核对 |
 | Android arm64-v8a / armeabi-v7a | 两只独立 APK | 云打包出，列 `lib/` 目录名核对过 |
@@ -542,6 +542,30 @@ win32 轮子**（2026-11-10 在 PyPI 上逐版本点过：48.0.1 还有 `cp39-ab
 （第一次跑 `build-arch` 时两条 Windows 腿都死在装依赖这一步，Linux 那条过了）。量过的对照：
 `pyinstaller` 6.22.3 三种 Windows 轮子（win32 / win_amd64 / win_arm64）都在，`babel` 2.18.0 是纯
 `py3-none-any`，`PySide6-Essentials` 6.12.0 有 `cp310-abi3-win_arm64` 但**就是没有 win32**。
+
+**第二次跑（ref `3068560`）读出来的两条，一条已修、一条等拍板**
+
+- **已修，而且不是 32 位独有的 bug**：win32 那条走过了装依赖与冻结（`Assert the frozen CLI is 32-bit`
+  也过了，说明 `app-cli.spec` 真打出 I386 的包），死在 `ChuanShu-cli.exe self`：
+  `encodings\cp1252.py … UnicodeEncodeError: character maps to <undefined>`，stdout **0 字节**。
+  命令行面的话术按设计就是中文（`app/cli.py` 里那段"跟着系统 locale 会把一个德语标签留在中文里"的注释），
+  而**重定向的流继承 ANSI 代码页**：英文版 CI 机器是 cp1252，装不下汉字，于是进程在打印第一行之前就死了。
+  这台机器量不到它，两个原因叠着：本机 ACP 是 cp936（放得下中文），而 `scripts/cli_selftest.py` 的
+  `env_of()` 自己把 `PYTHONIOENCODING` 钉成了 utf-8。所以修的是产品不是 CI——`app/cli.py` 的
+  `_keep_output_encodable()` 在 `main()` 第一件事就把 stdout/stderr 换成 utf-8（真控制台本来就走宽字符 API，
+  这个改动只决定管道/文件里那些字节的编码）；同时在 `cli_selftest.py` 补了两条腿，用
+  `PYTHONIOENCODING=cp1252` 造出 CI 那个形状，**先证伪再证实**：把 `_keep_output_encodable` 换成空函数，
+  本机立刻复现 `rc=1 / UnicodeEncodeError / stdout 0 字节`，换回真函数就是 `rc=0 / 483 字节中文`。
+  受影响面比 CI 大：任何非 CJK locale 的 Windows 用户把 CLI 的输出接进管道或文件都会撞上它。
+- **等拍板**：ARM64 那条两次都停在装依赖，日志里的解释器路径是 `…\Python\3.14.10\arm64\python.exe`，
+  而这次上界 `<49` 已经在位——它还是去编了 sdist。结论只能是这样：`cryptography` **从来没发过
+  win_arm64 轮子**（46/48/49/50 逐个点过），而 ARM64 上的 pip **不拿 x64/x86 轮子当回退**（否则
+  48.0.1 的 `cp311-abi3-win_amd64` 就直接装上了）。编译这一路 Rust 是齐的（`pyo3`、`openssl-sys`
+  都进了 Compiling），缺的是 **arm64 的 OpenSSL**：`Could not find directory of OpenSSL installation`。
+  两条路：① 作业里先 `vcpkg install openssl:arm64-windows` 再导出 `OPENSSL_DIR`，让 cryptography 自己编——
+  代价是几十分钟编译，而且**发出去的包会链一个 runner 上现编的 OpenSSL**；② 承认原生 ARM64 没有干净路径，
+  ARM64 机器装现有 x64 包（Windows on ARM 跑 x64 是模拟执行，功能不缺），纸上把这一格标成"不做原生"。
+  2026-11-10 的状态是：**两条都还没动**，等一句拍板。
 
 CI 每一档都**先断言 CPU 再上传**：`scripts/arch_probe.py --expect ARM64|aarch64|I386` 读 PE/ELF 头里的
 machine 字段，所以一个悄悄回退到 x64 解释器的作业会失败，而不是把 x64 的包贴上 arm64 的标签。

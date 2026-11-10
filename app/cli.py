@@ -686,7 +686,26 @@ def cmd_pair_code(args: argparse.Namespace, out: Terminal) -> int:
     return 0
 
 
+def _keep_output_encodable() -> None:
+    """Speak UTF-8 on stdout and stderr whatever the host's code page claims.
+
+    The CLI's prose is Chinese by design (see ``main``), and a *redirected* stream inherits the
+    ANSI code page: on an en-US machine that is cp1252, where the first Chinese label raised
+    UnicodeEncodeError and killed `ChuanShu-cli self` before it printed a single line. A real
+    console is unaffected either way - CPython writes those with the wide API - so this only
+    decides what bytes a pipe or a file receives, and UTF-8 is what the rest of the app already
+    writes to its own files.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        encoding = (getattr(stream, "encoding", "") or "").lower().replace("-", "")
+        if reconfigure is None or encoding.startswith("utf"):
+            continue
+        reconfigure(encoding="utf-8")
+
+
 def main(argv: list[str] | None = None) -> int:
+    _keep_output_encodable()
     parser = build_parser()
     args = parser.parse_args(argv)
     settings = Settings()

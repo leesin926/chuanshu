@@ -300,6 +300,23 @@ def main() -> int:
           self_s.stdout.strip()[-160:])
     peers = cli("S", ["peers", "--seconds", "2", "--no-verify"])
     check("peers runs and answers", peers.returncode == 0, peers.stdout.strip()[-200:])
+
+    # --- the code page a redirected stream inherits, which nothing else in this file ever asks
+    # env_of pins PYTHONIOENCODING=utf-8 and this machine's ANSI code page is cp936, so the
+    # Chinese prose was never once put to the test. GitHub's win32 runner is a cp1252 pipe: the
+    # first label raised UnicodeEncodeError and `ChuanShu-cli self` printed zero bytes and died.
+    for verb in ("self", "pair-code"):
+        hostile = dict(env_of("ENC"), PYTHONIOENCODING="cp1252")
+        proc = subprocess.run([sys.executable, "-m", "app.cli", verb], cwd=str(ROOT),
+                              env=hostile, capture_output=True, timeout=90)
+        text = proc.stdout.decode("utf-8", "replace")
+        err = proc.stderr.decode("utf-8", "replace")
+        check(f"`{verb}` speaks Chinese into a cp1252 pipe",
+              proc.returncode == 0 and "UnicodeEncodeError" not in text + err
+              and any("一" <= ch <= "鿿" for ch in text),
+              f"rc={proc.returncode} stdout={len(proc.stdout)}B "
+              + (err.strip()[-160:] or text.strip()[-160:]))
+
     firewall_checks("R")
 
     stop(r1)
